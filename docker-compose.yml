@@ -1,0 +1,197 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-linksentinel}
+      POSTGRES_USER: ${POSTGRES_USER:-linksentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linksentinel}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-linksentinel} -d ${POSTGRES_DB:-linksentinel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-linksentinel}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-linksentinel-secret}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - minio_data:/data
+
+  api:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.example}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://linksentinel:linksentinel@postgres:5432/linksentinel}
+      DB_USE_PGBOUNCER: ${DB_USE_PGBOUNCER:-false}
+      SKIP_MIGRATIONS: ${SKIP_MIGRATIONS:-false}
+      SEED_DEMO: ${SEED_DEMO:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "-w", "3", "-b", "0.0.0.0:8000", "--timeout", "90"]
+
+  api-test:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: dev
+    env_file: ${ENV_FILE:-.env.example}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://linksentinel:linksentinel@postgres:5432/linksentinel}
+      DB_USE_PGBOUNCER: ${DB_USE_PGBOUNCER:-false}
+      ENVIRONMENT: test
+      SEED_DEMO: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: ["pytest", "-q"]
+
+  worker-http:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.example}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://linksentinel:linksentinel@postgres:5432/linksentinel}
+      DB_USE_PGBOUNCER: ${DB_USE_PGBOUNCER:-false}
+      SKIP_MIGRATIONS: "true"
+      SEED_DEMO: "false"
+    depends_on:
+      api:
+        condition: service_started
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "-Q", "crawl.http.0,crawl.http.1,crawl.http.2,crawl.http.3", "-n", "worker-http@%h", "--loglevel=INFO", "--concurrency=2"]
+
+  worker-render:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.example}
+    environment:
+      SKIP_MIGRATIONS: "true"
+      SEED_DEMO: "false"
+    shm_size: "1gb"
+    depends_on:
+      api:
+        condition: service_started
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "-Q", "crawl.render", "-n", "worker-render@%h", "--loglevel=INFO", "--concurrency=1"]
+
+  worker-default:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.example}
+    environment:
+      SKIP_MIGRATIONS: "true"
+      SEED_DEMO: "false"
+    depends_on:
+      api:
+        condition: service_started
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "-Q", "default,alerts,reports,maintenance,qa", "-n", "worker-default@%h", "--loglevel=INFO", "--concurrency=2"]
+
+  beat:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.example}
+    environment:
+      SKIP_MIGRATIONS: "true"
+      SEED_DEMO: "false"
+    depends_on:
+      api:
+        condition: service_started
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel=INFO"]
+
+  flower:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.example}
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    environment:
+      SKIP_MIGRATIONS: "true"
+      SEED_DEMO: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "flower", "--port=5555"]
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api/v1}
+    depends_on:
+      api:
+        condition: service_started
+
+  frontend-test:
+    profiles: ["test"]
+    build:
+      context: ./frontend
+      target: builder
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api/v1}
+    command: ["npm", "run", "typecheck"]
+
+  proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-80}:80"
+    depends_on:
+      frontend:
+        condition: service_started
+      api:
+        condition: service_started
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

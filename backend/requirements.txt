@@ -1,0 +1,49 @@
+# ── Web / API ────────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+gunicorn==22.0.0
+pydantic==2.7.4
+pydantic-settings==2.3.4
+python-multipart==0.0.9
+email-validator==2.2.0
+
+# ── Database ────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.31
+asyncpg==0.29.0
+alembic==1.13.2
+greenlet==3.0.3
+
+# ── Auth / Security ─────────────────────────────────────────────────────────
+argon2-cffi==23.1.0
+pyjwt==2.8.0
+cryptography==42.0.8
+
+# ── Queue / Workers ─────────────────────────────────────────────────────────
+celery==5.4.0
+redis==5.0.7
+flower==2.0.1
+celery-redbeat==2.2.0
+
+# ── Crawler ─────────────────────────────────────────────────────────────────
+httpx[http2]==0.27.0
+lxml==5.2.2
+selectolax==0.3.21
+playwright==1.45.0
+tldextract==5.1.2
+idna==3.7
+charset-normalizer==3.3.2
+
+# ── Reports / Exports ───────────────────────────────────────────────────────
+openpyxl==3.1.5
+weasyprint==62.1
+jinja2==3.1.4
+
+# ── Object storage ──────────────────────────────────────────────────────────
+boto3==1.34.144
+
+# ── Observability ───────────────────────────────────────────────────────────
+structlog==24.2.0
+prometheus-client==0.20.0
+sentry-sdk==2.7.1
+
+# ── Testing (kept here so the worker image can self-test; see requirements-dev) ─

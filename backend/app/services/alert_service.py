@@ -1,0 +1,282 @@
+"""Alert rules, evaluation, and notification queries (PRD §8.12).
+
+``evaluate`` is called by the QA/alerts worker after a crawl: it matches the
+crawl's change-detection events against active rules (severity + event-type +
+score-drop filters), applies dedup/quiet-hours, writes an in-app ``Notification``
+plus one per configured external channel, and returns the external notifications
+for the worker to dispatch.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, time, timedelta, timezone
+
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import AuthContext
+from app.core.errors import NotFoundError
+from app.models.alerts import AlertRule, Notification
+from app.models.backlink import BacklinkRecord
+from app.models.crawl import BacklinkHistory
+from app.models.enums import (
+    HistoryEventType,
+    NotificationChannel,
+    NotificationStatus,
+    Severity,
+)
+from app.schemas.alert import AlertRuleCreate, AlertRuleUpdate
+
+# Events that never alert on their own (too noisy without an explicit rule).
+_DEFAULT_EXCLUDED = {HistoryEventType.FIRST_CRAWL.value, HistoryEventType.SCORE_CHANGED.value}
+
+
+# ── CRUD ─────────────────────────────────────────────────────────────────────────
+async def list_rules(db: AsyncSession, ctx: AuthContext) -> list[AlertRule]:
+    stmt = select(AlertRule).where(AlertRule.workspace_id == ctx.workspace_id)
+    if ctx.allowed_project_ids is not None:
+        stmt = stmt.where(AlertRule.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
+    return list((await db.execute(stmt.order_by(AlertRule.created_at.desc()))).scalars().all())
+
+
+async def create_rule(db: AsyncSession, ctx: AuthContext, payload: AlertRuleCreate) -> AlertRule:
+    from app.core.security import encrypt_secret
+
+    if payload.project_id is not None:
+        ctx.assert_project(payload.project_id)
+    elif ctx.allowed_project_ids is not None:
+        from app.core.errors import PermissionDeniedError
+
+        raise PermissionDeniedError("Project-scoped users must select a project for alert rules")
+
+    config = dict(payload.channel_config)
+    for secret_key in ("smtp_password", "slack_token", "webhook_secret"):
+        if config.get(secret_key):
+            config[secret_key] = encrypt_secret(config[secret_key])
+
+    rule = AlertRule(
+        workspace_id=ctx.workspace_id,
+        project_id=payload.project_id,
+        name=payload.name,
+        event_types=payload.event_types,
+        min_severity=Severity(payload.min_severity),
+        score_drop_threshold=payload.score_drop_threshold,
+        channels=payload.channels,
+        channel_config=config,
+        dedup_window_minutes=payload.dedup_window_minutes,
+        quiet_hours=payload.quiet_hours,
+        digest_mode=payload.digest_mode,
+        is_active=payload.is_active,
+    )
+    db.add(rule)
+    await db.flush()
+    return rule
+
+
+async def update_rule(
+    db: AsyncSession, ctx: AuthContext, rule_id: uuid.UUID, payload: AlertRuleUpdate
+) -> AlertRule:
+    rule = await _get_rule(db, ctx, rule_id)
+    data = payload.model_dump(exclude_unset=True)
+    if "min_severity" in data and data["min_severity"]:
+        data["min_severity"] = Severity(data["min_severity"])
+    for field, value in data.items():
+        setattr(rule, field, value)
+    await db.flush()
+    return rule
+
+
+async def delete_rule(db: AsyncSession, ctx: AuthContext, rule_id: uuid.UUID) -> None:
+    await db.delete(await _get_rule(db, ctx, rule_id))
+
+
+async def _get_rule(db: AsyncSession, ctx: AuthContext, rule_id: uuid.UUID) -> AlertRule:
+    rule = await db.get(AlertRule, rule_id)
+    if rule is None or rule.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Alert rule not found")
+    if rule.project_id is None and ctx.allowed_project_ids is not None:
+        raise NotFoundError("Alert rule not found")
+    if rule.project_id is not None:
+        ctx.assert_project(rule.project_id)
+    return rule
+
+
+# ── Notifications ─────────────────────────────────────────────────────────────────
+async def list_notifications(
+    db: AsyncSession, ctx: AuthContext, *, unread_only: bool = False, limit: int = 50
+) -> list[Notification]:
+    stmt = select(Notification).where(
+        Notification.workspace_id == ctx.workspace_id,
+        Notification.channel == NotificationChannel.IN_APP,
+    )
+    if ctx.allowed_project_ids is not None:
+        stmt = stmt.where(Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
+    if unread_only:
+        stmt = stmt.where(Notification.status != NotificationStatus.READ)
+    stmt = stmt.order_by(Notification.created_at.desc()).limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def unread_count(db: AsyncSession, ctx: AuthContext) -> int:
+    from sqlalchemy import func
+
+    stmt = select(func.count(Notification.id)).where(
+        Notification.workspace_id == ctx.workspace_id,
+        Notification.channel == NotificationChannel.IN_APP,
+        Notification.status != NotificationStatus.READ,
+    )
+    if ctx.allowed_project_ids is not None:
+        stmt = stmt.where(Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
+    return int((await db.execute(stmt)).scalar_one())
+
+
+async def mark_read(db: AsyncSession, ctx: AuthContext, notification_id: uuid.UUID) -> None:
+    notif = await db.get(Notification, notification_id)
+    if notif is None or notif.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Notification not found")
+    if notif.project_id is not None:
+        ctx.assert_project(notif.project_id)
+    elif ctx.allowed_project_ids is not None:
+        raise NotFoundError("Notification not found")
+    notif.status = NotificationStatus.READ
+    notif.read_at = datetime.now(timezone.utc)
+    await db.flush()
+
+
+# ── Evaluation (worker side) ──────────────────────────────────────────────────────
+async def evaluate(
+    db: AsyncSession, backlink: BacklinkRecord, events: list[BacklinkHistory]
+) -> list[Notification]:
+    """Match events against rules; return external-channel notifications to dispatch."""
+    if not events:
+        return []
+
+    rules = (
+        await db.execute(
+            select(AlertRule).where(
+                AlertRule.workspace_id == backlink.workspace_id,
+                AlertRule.is_active.is_(True),
+                or_(
+                    AlertRule.project_id.is_(None),
+                    AlertRule.project_id == backlink.project_id,
+                ),
+            )
+        )
+    ).scalars().all()
+    if not rules:
+        return []
+
+    to_dispatch: list[Notification] = []
+    now = datetime.now(timezone.utc)
+
+    for rule in rules:
+        if _in_quiet_hours(rule, now):
+            continue
+        matched = [ev for ev in events if _event_matches(rule, ev)]
+        if not matched:
+            continue
+        top = max(matched, key=lambda e: (e.severity.rank if e.severity else 0))
+        dedup_key = f"{rule.id}:{backlink.id}:{top.event_type.value}"
+        if await _is_duplicate(db, dedup_key, rule.dedup_window_minutes, now):
+            continue
+
+        title, body = _render(backlink, top, matched)
+        # In-app notification always created.
+        db.add(_make_notification(rule, backlink, top, NotificationChannel.IN_APP, title, body,
+                                  dedup_key, status=NotificationStatus.SENT, sent_at=now))
+        # External channels created pending; returned for the worker to dispatch.
+        for channel in rule.channels:
+            if channel == NotificationChannel.IN_APP.value:
+                continue
+            notif = _make_notification(
+                rule, backlink, top, NotificationChannel(channel), title, body, dedup_key,
+                status=NotificationStatus.PENDING,
+            )
+            db.add(notif)
+            to_dispatch.append(notif)
+
+    await db.flush()
+    return to_dispatch
+
+
+def _event_matches(rule: AlertRule, ev: BacklinkHistory) -> bool:
+    etype = ev.event_type.value
+    if rule.event_types:
+        if etype not in rule.event_types:
+            return False
+    elif etype in _DEFAULT_EXCLUDED:
+        return False
+
+    if etype == HistoryEventType.SCORE_CHANGED.value and rule.score_drop_threshold:
+        return ev.score_delta is not None and ev.score_delta <= -abs(rule.score_drop_threshold)
+
+    if ev.severity is None:
+        return False
+    return ev.severity.rank >= rule.min_severity.rank
+
+
+async def _is_duplicate(
+    db: AsyncSession, dedup_key: str, window_minutes: int, now: datetime
+) -> bool:
+    since = now - timedelta(minutes=window_minutes)
+    existing = (
+        await db.execute(
+            select(Notification.id).where(
+                and_(Notification.dedup_key == dedup_key, Notification.created_at >= since)
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    return existing is not None
+
+
+def _in_quiet_hours(rule: AlertRule, now: datetime) -> bool:
+    qh = rule.quiet_hours or {}
+    start, end = qh.get("start"), qh.get("end")
+    if start is None or end is None:
+        return False
+    try:
+        s = time.fromisoformat(str(start))
+        e = time.fromisoformat(str(end))
+    except ValueError:
+        return False
+    cur = now.timetz().replace(tzinfo=None)
+    return (s <= cur < e) if s <= e else (cur >= s or cur < e)
+
+
+def _make_notification(
+    rule: AlertRule, backlink: BacklinkRecord, ev: BacklinkHistory,
+    channel: NotificationChannel, title: str, body: str, dedup_key: str,
+    *, status: NotificationStatus, sent_at: datetime | None = None,
+) -> Notification:
+    return Notification(
+        workspace_id=backlink.workspace_id,
+        project_id=backlink.project_id,
+        backlink_id=backlink.id,
+        alert_rule_id=rule.id,
+        channel=channel,
+        status=status,
+        severity=ev.severity,
+        title=title,
+        body=body,
+        dedup_key=dedup_key,
+        sent_at=sent_at,
+        payload={
+            "event_type": ev.event_type.value,
+            "old": ev.old_value,
+            "new": ev.new_value,
+            "source_page_url": backlink.source_page_url,
+            "target_url": backlink.target_url,
+        },
+    )
+
+
+def _render(
+    backlink: BacklinkRecord, top: BacklinkHistory, matched: list[BacklinkHistory]
+) -> tuple[str, str]:
+    title = f"[{top.event_type.value.replace('_', ' ').title()}] {backlink.source_page_url}"
+    lines = [f"Backlink: {backlink.source_page_url} → {backlink.target_url}"]
+    for ev in matched:
+        change = f"{ev.field}: {ev.old_value} → {ev.new_value}" if ev.field else ev.event_type.value
+        lines.append(f"• {ev.event_type.value}: {change}")
+    return title[:400], "\n".join(lines)

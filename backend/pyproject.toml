@@ -1,0 +1,34 @@
+[project]
+name = "linksentinel"
+version = "1.0.0"
+description = "LinkSentinel — enterprise backlink QA, monitoring, validation, reporting & alerting."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "integration: tests that require Postgres/Redis (skipped if unavailable)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "C4", "SIM"]
+ignore = ["B008", "E501"]  # B008: FastAPI Depends() in defaults is idiomatic
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+plugins = []
+warn_unused_ignores = false
+check_untyped_defs = true
+exclude = ["alembic/"]

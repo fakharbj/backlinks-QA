@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -1 *.json *.mjs *.ts)",
+      "Bash(ls -1 components)",
+      "Bash(ls -1 lib)",
+      "Bash(ls -1 app)",
+      "Bash(npm --version)",
+      "Bash(npm run *)",
+      "Bash(find . -path ./frontend/node_modules -prune -o \\\\\\( -iname \"docker-compose*\" -o -iname \"Dockerfile*\" -o -iname \"*.env*\" -o -iname \"nginx*\" -o -iname \"conftest*\" -o -iname \"pytest*\" -o -iname \"README*\" \\\\\\) -print)",
+      "Bash(ls -1 backend/tests)",
+      "Bash(ls -1 scripts)",
+      "Bash(ls -1 tests)",
+      "Bash(ls -1 conftest.py pyproject.toml pytest.ini)"
+    ]
+  }
+}
