@@ -26,7 +26,7 @@ async def list_members(db: AsyncSession, ctx: AuthContext) -> list[tuple[Workspa
             select(WorkspaceMember, User)
             .join(User, User.id == WorkspaceMember.user_id)
             .where(WorkspaceMember.workspace_id == ctx.workspace_id)
-            .order_by(WorkspaceMember.role.desc(), User.full_name)
+            .order_by(WorkspaceMember.role, User.full_name)
         )
     ).all()
     return [(member, user) for member, user in rows]
