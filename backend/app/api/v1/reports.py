@@ -5,15 +5,22 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, status
+from starlette.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.errors import ValidationAppError
 from app.core.rbac import Permission
-from app.integrations.storage import presigned_url_async
+from app.integrations.storage import get_bytes_async
 from app.models.enums import AuditAction, ReportStatus
-from app.schemas.report import ReportCreate, ReportDownload, ReportOut
+from app.schemas.report import ReportCreate, ReportOut
 from app.services import audit_service, report_service
+
+_REPORT_MEDIA_TYPES = {
+    "pdf": "application/pdf",
+    "csv": "text/csv",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -48,10 +55,17 @@ async def get_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Rep
     return ReportOut.model_validate(await report_service.get_report(db, ctx, report_id))
 
 
-@router.get("/{report_id}/download", response_model=ReportDownload)
-async def download_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> ReportDownload:
+@router.get("/{report_id}/download")
+async def download_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> StreamingResponse:
     report = await report_service.get_report(db, ctx, report_id)
     if report.status is not ReportStatus.COMPLETED or not report.file_key:
         raise ValidationAppError("Report is not ready for download")
-    url = await presigned_url_async(settings.S3_BUCKET_REPORTS, report.file_key)
-    return ReportDownload(url=url, expires_in=settings.SIGNED_URL_TTL_SECONDS)
+
+    data = await get_bytes_async(settings.S3_BUCKET_REPORTS, report.file_key)
+    fmt = report.format.value if hasattr(report.format, "value") else str(report.format)
+    safe = (report.title or "report").strip().replace("/", "-").replace(" ", "_") or "report"
+    return StreamingResponse(
+        iter([data]),
+        media_type=_REPORT_MEDIA_TYPES.get(fmt, "application/octet-stream"),
+        headers={"Content-Disposition": f'attachment; filename="{safe}.{fmt}"'},
+    )

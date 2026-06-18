@@ -1,8 +1,14 @@
-"""Dashboard aggregation — reads materialized views for sub-2s loads (Arch §10).
+"""Dashboard aggregation — live queries over the backlink table (always fresh).
 
-Matviews are not ORM-mapped, so they're queried via parameterised ``text()``. Tenant
-+ project scoping is always applied. Time-window "lost" counts come from the
-(indexed, partitioned) ``backlink_history`` table.
+Status totals and the issue-mix come straight from ``backlink_records`` so the
+dashboard never lags a crawl (no materialized-view refresh in the hot path — that
+indirection caused stale zeros). Time-window "lost" counts and the recent-changes
+feed come from the partitioned ``backlink_history`` table. Tenant + project
+scoping is always applied.
+
+At very large scale the per-domain / per-vendor rollups can be moved back onto the
+``mv_*`` materialized views (kept in ``db/ddl.py``); for typical workspaces the
+live queries are instantaneous and correct by construction.
 """
 
 from __future__ import annotations
@@ -25,6 +31,12 @@ from app.schemas.dashboard import (
     StatusTotals,
     VendorFailure,
 )
+
+
+def _effective(prefix: str = "") -> str:
+    """Effective status = manual override when present, else computed verdict."""
+    p = f"{prefix}." if prefix else ""
+    return f"coalesce({p}override_status, {p}status)"
 
 
 def _scope_clause(
@@ -54,26 +66,28 @@ async def build_dashboard(
     db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID | None = None
 ) -> DashboardResponse:
     where, params = _scope_clause(ctx, project_id)
+    eff = _effective()
 
     totals_sql, _ = _bind(
         f"""
         SELECT
-            coalesce(sum(total),0)                                    AS total,
-            coalesce(sum(pass_count),0)                               AS pass_count,
-            coalesce(sum(warning_count),0)                            AS warning_count,
-            coalesce(sum(fail_count),0)                               AS fail_count,
-            coalesce(sum(unknown_count),0)                            AS unknown_count,
-            coalesce(sum(review_count),0)                             AS review_count,
-            coalesce(sum(pending_count),0)                            AS pending_count,
-            CASE WHEN sum(total) > 0
-                 THEN round(sum(avg_score*total)/nullif(sum(total),0),1) END AS avg_score,
-            coalesce(sum(nofollow_count),0)                           AS nofollow_count,
-            coalesce(sum(noindex_count),0)                            AS noindex_count,
-            coalesce(sum(robots_blocked_count),0)                     AS robots_blocked_count,
-            coalesce(sum(canonical_issue_count),0)                    AS canonical_issue_count,
-            coalesce(sum(broken_count),0)                             AS broken_count,
-            coalesce(sum(link_missing_count),0)                       AS link_missing_count
-        FROM mv_project_dashboard WHERE {where}
+            count(*)                                                  AS total,
+            count(*) FILTER (WHERE {eff} = 'PASS')                    AS pass_count,
+            count(*) FILTER (WHERE {eff} = 'WARNING')                 AS warning_count,
+            count(*) FILTER (WHERE {eff} = 'FAIL')                    AS fail_count,
+            count(*) FILTER (WHERE {eff} = 'UNKNOWN')                 AS unknown_count,
+            count(*) FILTER (WHERE {eff} = 'NEEDS_MANUAL_REVIEW')     AS review_count,
+            count(*) FILTER (WHERE {eff} = 'PENDING')                 AS pending_count,
+            round(avg(score) FILTER (WHERE score IS NOT NULL), 1)     AS avg_score,
+            count(*) FILTER (WHERE current_rel = 'nofollow')          AS nofollow_count,
+            count(*) FILTER (WHERE indexability = 'not_indexable')    AS noindex_count,
+            count(*) FILTER (WHERE robots_status = 'blocked')         AS robots_blocked_count,
+            count(*) FILTER (WHERE canonical_status IN ('mismatch','cross_domain'))
+                                                                      AS canonical_issue_count,
+            count(*) FILTER (WHERE http_status >= 400)                AS broken_count,
+            count(*) FILTER (WHERE link_found = false)                AS link_missing_count
+        FROM backlink_records
+        WHERE {where}
         """,
         params,
     )
@@ -93,8 +107,8 @@ async def build_dashboard(
     )
 
     lost = await _lost_window(db, ctx, project_id)
-    domains = await _top_domains(db, where, params)
-    vendors = await _top_vendors(db, where, params)
+    domains = await _top_domains(db, ctx, project_id)
+    vendors = await _top_vendors(db, ctx, project_id)
     recent = await _recent_changes(db, ctx, project_id)
 
     return DashboardResponse(
@@ -128,12 +142,22 @@ async def _lost_window(
     return LostWindow(today=r.get("today", 0), week=r.get("week", 0), month=r.get("month", 0))
 
 
-async def _top_domains(db: AsyncSession, where: str, params: dict) -> list[DomainFailure]:
+async def _top_domains(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID | None
+) -> list[DomainFailure]:
+    where, params = _scope_clause(ctx, project_id)
+    eff = _effective()
     sql, _ = _bind(
         f"""
-        SELECT source_domain, total, fail_count, failure_rate
-        FROM mv_domain_failures
-        WHERE {where} AND fail_count > 0
+        SELECT source_domain,
+               count(*)                                AS total,
+               count(*) FILTER (WHERE {eff} = 'FAIL')  AS fail_count,
+               round(100.0 * count(*) FILTER (WHERE {eff} = 'FAIL')
+                     / nullif(count(*), 0), 1)         AS failure_rate
+        FROM backlink_records
+        WHERE {where} AND source_domain IS NOT NULL
+        GROUP BY source_domain
+        HAVING count(*) FILTER (WHERE {eff} = 'FAIL') > 0
         ORDER BY fail_count DESC, failure_rate DESC NULLS LAST
         LIMIT 10
         """,
@@ -146,15 +170,26 @@ async def _top_domains(db: AsyncSession, where: str, params: dict) -> list[Domai
     ]
 
 
-async def _top_vendors(db: AsyncSession, where: str, params: dict) -> list[VendorFailure]:
+async def _top_vendors(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID | None
+) -> list[VendorFailure]:
+    # Prefix with ``b`` so ``workspace_id`` is unambiguous across the vendors join.
+    where, params = _scope_clause(ctx, project_id, prefix="b")
+    eff = _effective("b")
     sql, _ = _bind(
         f"""
-        SELECT v.id AS vendor_id, ven.name AS vendor_name, v.total, v.fail_count,
-               v.failure_rate, v.avg_score
-        FROM mv_vendor_failure_rates v
-        LEFT JOIN vendors ven ON ven.id = v.vendor_id
-        WHERE {where} AND v.fail_count > 0
-        ORDER BY v.failure_rate DESC NULLS LAST, v.fail_count DESC
+        SELECT b.vendor_id, ven.name AS vendor_name,
+               count(*)                                  AS total,
+               count(*) FILTER (WHERE {eff} = 'FAIL')    AS fail_count,
+               round(100.0 * count(*) FILTER (WHERE {eff} = 'FAIL')
+                     / nullif(count(*), 0), 1)           AS failure_rate,
+               round(avg(b.score) FILTER (WHERE b.score IS NOT NULL), 1) AS avg_score
+        FROM backlink_records b
+        LEFT JOIN vendors ven ON ven.id = b.vendor_id
+        WHERE {where} AND b.vendor_id IS NOT NULL
+        GROUP BY b.vendor_id, ven.name
+        HAVING count(*) FILTER (WHERE {eff} = 'FAIL') > 0
+        ORDER BY failure_rate DESC NULLS LAST, fail_count DESC
         LIMIT 10
         """,
         params,

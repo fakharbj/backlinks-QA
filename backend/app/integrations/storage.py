@@ -1,4 +1,11 @@
-"""Object storage (S3 / MinIO) — raw snapshots, report files, import uploads.
+"""Object storage — raw snapshots, report files, import uploads.
+
+Two backends share one interface, selected by ``settings.STORAGE_BACKEND``:
+  * ``local`` (default) writes blobs to ``STORAGE_DIR/<bucket>/<key>`` on the host
+    filesystem — zero external dependencies, ideal for single-node deploys. The
+    API and worker share the same directory, so downloads are streamed back
+    through authenticated endpoints rather than signed URLs.
+  * ``s3`` uses boto3 against S3/MinIO for horizontally-scaled deploys.
 
 Large blobs never touch Postgres (Arch §10); only the object key is stored. boto3
 is synchronous, so async callers use ``asyncio.to_thread`` wrappers.
@@ -9,9 +16,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from functools import lru_cache
-
-import boto3
-from botocore.config import Config
+from pathlib import Path
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -26,8 +31,19 @@ ALL_BUCKETS = (
 )
 
 
+def _is_local() -> bool:
+    return settings.STORAGE_BACKEND == "local"
+
+
+def _local_path(bucket: str, key: str) -> Path:
+    return Path(settings.STORAGE_DIR) / bucket / key
+
+
 @lru_cache
 def _client():
+    import boto3
+    from botocore.config import Config
+
     return boto3.client(
         "s3",
         endpoint_url=settings.S3_ENDPOINT_URL,
@@ -44,6 +60,11 @@ def _client():
 def ensure_buckets() -> None:
     global _buckets_ready
     if _buckets_ready:
+        return
+    if _is_local():
+        for bucket in ALL_BUCKETS:
+            (Path(settings.STORAGE_DIR) / bucket).mkdir(parents=True, exist_ok=True)
+        _buckets_ready = True
         return
     client = _client()
     ready = True
@@ -62,15 +83,25 @@ def ensure_buckets() -> None:
 
 def put_bytes(bucket: str, key: str, data: bytes, content_type: str) -> str:
     ensure_buckets()
+    if _is_local():
+        path = _local_path(bucket, key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return key
     _client().put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
     return key
 
 
 def get_bytes(bucket: str, key: str) -> bytes:
+    if _is_local():
+        return _local_path(bucket, key).read_bytes()
     return _client().get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
 def presigned_url(bucket: str, key: str, *, expires: int | None = None) -> str:
+    if _is_local():
+        # Local blobs are streamed through authenticated API endpoints, not signed URLs.
+        raise NotImplementedError("local storage streams downloads; presigned URLs are S3-only")
     return _client().generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": key},

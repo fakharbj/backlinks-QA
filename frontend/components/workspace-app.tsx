@@ -29,6 +29,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AlertRule,
   api,
+  API_BASE,
   ApiError,
   BacklinkDetail,
   BacklinkRow,
@@ -939,8 +940,19 @@ function ReportsDesk({
 
   async function download(report: Report) {
     try {
-      const data = await api<{ url: string }>(`/reports/${report.id}/download`, { token });
-      window.open(data.url, "_blank", "noopener,noreferrer");
+      const res = await fetch(`${API_BASE}/reports/${report.id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${report.title || "report"}.${report.format}`.replace(/\s+/g, "_");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
     } catch (err) {
       onNotice(err instanceof Error ? err.message : "Download failed");
     }

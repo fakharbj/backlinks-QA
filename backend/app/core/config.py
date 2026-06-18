@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     S3_BUCKET_IMPORTS: str = "ls-imports"
     S3_FORCE_PATH_STYLE: bool = True  # required by MinIO
     SIGNED_URL_TTL_SECONDS: int = 600
+    # "local" stores blobs on the worker/API filesystem under STORAGE_DIR (reliable
+    # on a single host, no MinIO needed); "s3" uses the S3/MinIO settings above.
+    STORAGE_BACKEND: Literal["s3", "local"] = "local"
+    STORAGE_DIR: str = "var/storage"
 
     # ── Auth / JWT ───────────────────────────────────────────────────────────
     JWT_SECRET: str = Field(default="change-me-in-prod-please-32-chars-min")
