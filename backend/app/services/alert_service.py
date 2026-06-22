@@ -24,6 +24,7 @@ from app.models.enums import (
     HistoryEventType,
     NotificationChannel,
     NotificationStatus,
+    OverallStatus,
     Severity,
 )
 from app.schemas.alert import AlertRuleCreate, AlertRuleUpdate
@@ -198,6 +199,161 @@ async def evaluate(
 
     await db.flush()
     return to_dispatch
+
+
+# ── Built-in zero-config alerting (PRD §8.12, broken-link lifecycle) ───────────────
+# HTTP statuses we treat as "the page is genuinely broken" (worth an email). 403/401
+# are deliberately excluded — they are bot/auth blocks routed to manual review, not
+# proof the link is gone, so they raise an in-app flag but do not email the team.
+_BROKEN_HTTP = {404, 410, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530}
+
+
+async def evaluate_builtin(
+    db: AsyncSession, backlink: BacklinkRecord
+) -> list[Notification]:
+    """Zero-config alerting that runs on *every* crawl (no rule needed).
+
+    • Broken / removed / server-error  → in-app alert + email (if SMTP set).
+    • Still broken on a later scan      → re-alert, at most once per
+      ``ALERT_RENOTIFY_HOURS`` so the team is reminded without being spammed.
+    • Recovered after being broken      → a single "back up" note.
+
+    Returns the external (email) notifications for the worker to dispatch.
+    """
+    from app.core.config import settings
+
+    if not settings.ALERT_DEFAULT_ENABLED:
+        return []
+
+    broken = (
+        backlink.link_found is False
+        or backlink.status == OverallStatus.FAIL
+        or (backlink.http_status is not None and backlink.http_status in _BROKEN_HTTP)
+    )
+    now = datetime.now(timezone.utc)
+    window = timedelta(hours=max(1, settings.ALERT_RENOTIFY_HOURS))
+    to_dispatch: list[Notification] = []
+
+    if broken:
+        dedup_key = f"builtin:{backlink.id}:broken"
+        last = await _last_builtin(db, dedup_key)
+        if last is not None and (now - last) < window:
+            return []  # already alerted recently — wait out the re-notify window
+        reason = _broken_reason(backlink)
+        title = f"[Backlink broken] {backlink.source_page_url}"
+        body = (
+            f"{reason}\n\n"
+            f"Source page: {backlink.source_page_url}\n"
+            f"Target link: {backlink.target_url}\n"
+            f"Status: {backlink.status.value}  •  HTTP: {backlink.http_status}  "
+            f"•  Consecutive failures: {backlink.consecutive_failures}\n\n"
+            "We will keep checking it on every scan and email again if it stays broken."
+        )
+        to_dispatch += await _emit_builtin(
+            db, backlink, dedup_key, title, body, Severity.CRITICAL, now
+        )
+    else:
+        # Recovery: only if it was broken more recently than our last "recovered".
+        broke_at = await _last_builtin(db, f"builtin:{backlink.id}:broken")
+        if broke_at is not None:
+            healed_at = await _last_builtin(db, f"builtin:{backlink.id}:recovered")
+            if healed_at is None or broke_at > healed_at:
+                dedup_key = f"builtin:{backlink.id}:recovered"
+                title = f"[Backlink recovered] {backlink.source_page_url}"
+                body = (
+                    "Good news — this backlink is healthy again.\n\n"
+                    f"Source page: {backlink.source_page_url}\n"
+                    f"Target link: {backlink.target_url}\n"
+                    f"Status: {backlink.status.value}  •  HTTP: {backlink.http_status}"
+                )
+                to_dispatch += await _emit_builtin(
+                    db, backlink, dedup_key, title, body, Severity.INFO, now
+                )
+
+    return to_dispatch
+
+
+def _broken_reason(backlink: BacklinkRecord) -> str:
+    if backlink.link_found is False:
+        return "The backlink to your site was not found on the source page (removed)."
+    if backlink.http_status is not None and backlink.http_status in _BROKEN_HTTP:
+        return f"The source page is not loading (HTTP {backlink.http_status})."
+    return "The backlink failed our quality checks and needs attention."
+
+
+async def _emit_builtin(
+    db: AsyncSession,
+    backlink: BacklinkRecord,
+    dedup_key: str,
+    title: str,
+    body: str,
+    severity: Severity,
+    now: datetime,
+) -> list[Notification]:
+    from app.core.config import settings
+
+    payload = {
+        "builtin": True,
+        "source_page_url": backlink.source_page_url,
+        "target_url": backlink.target_url,
+        "http_status": backlink.http_status,
+        "status": backlink.status.value,
+    }
+    # In-app alert — always, so the Alerts tab works with no setup.
+    db.add(
+        Notification(
+            workspace_id=backlink.workspace_id, project_id=backlink.project_id,
+            backlink_id=backlink.id, alert_rule_id=None,
+            channel=NotificationChannel.IN_APP, status=NotificationStatus.SENT,
+            severity=severity, title=title[:400], body=body, dedup_key=dedup_key,
+            sent_at=now, payload=payload,
+        )
+    )
+
+    dispatch: list[Notification] = []
+    recipients = await _default_recipients(db, backlink.workspace_id)
+    if settings.SMTP_HOST and recipients:
+        email_notif = Notification(
+            workspace_id=backlink.workspace_id, project_id=backlink.project_id,
+            backlink_id=backlink.id, alert_rule_id=None,
+            channel=NotificationChannel.EMAIL, status=NotificationStatus.PENDING,
+            severity=severity, title=title[:400], body=body, dedup_key=dedup_key,
+            payload={**payload, "recipients": recipients},
+        )
+        db.add(email_notif)
+        dispatch.append(email_notif)
+
+    await db.flush()
+    return dispatch
+
+
+async def _last_builtin(db: AsyncSession, dedup_key: str) -> datetime | None:
+    """Most recent created_at for a built-in notification with this dedup key."""
+    return (
+        await db.execute(
+            select(Notification.created_at)
+            .where(Notification.dedup_key == dedup_key)
+            .order_by(Notification.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _default_recipients(db: AsyncSession, workspace_id: uuid.UUID) -> list[str]:
+    """Built-in email recipients: the configured list, else every active member."""
+    from app.core.config import settings
+    from app.models.user import User, WorkspaceMember
+
+    if settings.ALERT_DEFAULT_EMAILS:
+        return list(settings.ALERT_DEFAULT_EMAILS)
+    rows = (
+        await db.execute(
+            select(User.email)
+            .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
+            .where(WorkspaceMember.workspace_id == workspace_id, User.is_active.is_(True))
+        )
+    ).scalars().all()
+    return [e for e in rows if e]
 
 
 def _event_matches(rule: AlertRule, ev: BacklinkHistory) -> bool:

@@ -8,7 +8,6 @@ vendor exports while still carrying the evidence users need.
 from __future__ import annotations
 
 import csv
-import html
 import io
 import uuid
 from collections import defaultdict
@@ -327,43 +326,64 @@ def _to_xlsx(headers: list[str], rows: list[dict[str, Any]], title: str) -> byte
 
 
 def _to_pdf(headers: list[str], rows: list[dict[str, Any]], title: str) -> bytes:
-    from weasyprint import HTML
+    """Render a landscape PDF table with fpdf2.
 
-    head = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
-    body = "\n".join(
-        "<tr>"
-        + "".join(f"<td>{html.escape(_display(row.get(h)))}</td>" for h in headers)
-        + "</tr>"
-        for row in rows[:5000]
-    )
-    truncated = ""
-    if len(rows) > 5000:
-        truncated = f"<p>PDF preview includes 5,000 of {len(rows)} rows.</p>"
-
-    doc = f"""
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <style>
-        body {{ font-family: Arial, sans-serif; font-size: 10px; color: #111; }}
-        h1 {{ font-size: 20px; margin-bottom: 4px; }}
-        p {{ color: #555; }}
-        table {{ width: 100%; border-collapse: collapse; }}
-        th, td {{ border: 1px solid #ddd; padding: 5px; vertical-align: top; }}
-        th {{ background: #f2f4f7; text-align: left; }}
-        tr:nth-child(even) {{ background: #fafafa; }}
-      </style>
-    </head>
-    <body>
-      <h1>{html.escape(title)}</h1>
-      <p>Generated {html.escape(datetime.now(timezone.utc).isoformat())}</p>
-      {truncated}
-      <table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>
-    </body>
-    </html>
+    fpdf2 is pure-Python (no system libraries), so PDF export works on a bare
+    server — unlike the previous HTML→PDF engine which needed Pango/Cairo. We
+    print a focused, readable column set; the exhaustive detail lives in CSV/XLSX.
     """
-    return HTML(string=doc).write_pdf()
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    _PDF_PRIORITY = [
+        "Project", "Source URL", "Target URL", "Status", "Score",
+        "Link Found", "HTTP Status", "Rel", "Issues", "Last Checked",
+    ]
+    cols = [h for h in _PDF_PRIORITY if h in headers] or headers[:8]
+    weights = {"Source URL": 3.0, "Target URL": 3.0, "Issues": 3.0, "Project": 1.6}
+    col_widths = tuple(weights.get(c, 1.0) for c in cols)
+
+    capped = rows[:8000]
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(0, 9, _latin(title), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(110, 110, 110)
+    note = f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} — {len(rows)} row(s)"
+    if len(rows) > len(capped):
+        note += f" (showing {len(capped)}; full data in CSV/XLSX)"
+    pdf.cell(0, 5, _latin(note), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(17, 17, 17)
+    pdf.ln(2)
+
+    pdf.set_font("Helvetica", "", 7)
+    with pdf.table(
+        col_widths=col_widths,
+        text_align="LEFT",
+        first_row_as_headings=True,
+        headings_style=FontFace(emphasis="BOLD", fill_color=(238, 242, 238)),
+        line_height=4.6,
+        wrapmode="CHAR",  # break long URLs by character so cells never overflow
+    ) as table:
+        head = table.row()
+        for col in cols:
+            head.cell(_latin(col))
+        for row in capped:
+            tr = table.row()
+            for col in cols:
+                tr.cell(_latin(_display(row.get(col))))
+
+    return bytes(pdf.output())
+
+
+def _latin(value: str) -> str:
+    """fpdf2 core fonts are Latin-1 only; replace anything outside it safely."""
+    text = "" if value is None else str(value)
+    return text.encode("latin-1", "replace").decode("latin-1")
 
 
 def _display(value: Any) -> str:

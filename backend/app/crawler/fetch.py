@@ -56,12 +56,31 @@ def build_client(
         verify=verify,
         proxy=proxy,
         headers={
+            # A full, browser-like header set. Bare bot-style requests (just a
+            # User-Agent + Accept) are a common trigger for 403/WAF blocks; real
+            # browsers always send the Sec-Fetch and client-hint headers below.
             "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8"
+            ),
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Sec-CH-UA": '"Chromium";v="124", "Not.A/Brand";v="24", "Google Chrome";v="124"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Windows"',
         },
     )
+
+
+# Statuses that usually mean "blocked / try again as a different agent" rather
+# than a genuine dead page — we retry these once with the fallback User-Agent.
+_BLOCK_RETRY_STATUSES = {403, 429, 503}
 
 
 def _classify_exc(exc: Exception) -> tuple[FetchError, str]:
@@ -106,12 +125,19 @@ async def fetch_raw(
     *,
     max_redirects: int,
     max_bytes: int,
+    retry_user_agent: str | None = None,
 ) -> FetchOutcome:
-    """Fetch ``url``, following redirects manually with SSRF re-checks per hop."""
+    """Fetch ``url``, following redirects manually with SSRF re-checks per hop.
+
+    If a page returns a block status (403/429/503) and ``retry_user_agent`` is
+    given, the page is fetched once more with that agent before giving up — many
+    sites that block our default agent allow a well-known crawler like Googlebot.
+    """
     outcome = FetchOutcome()
     started = time.perf_counter()
     current = url
     seen: set[str] = set()
+    retried_block = False
 
     try:
         for hop in range(max_redirects + 1):
@@ -132,6 +158,19 @@ async def fetch_raw(
             req = client.build_request("GET", current)
             response = await client.send(req, stream=True)
             outcome.tls_valid = current.startswith("https://")
+
+            # Blocked? Retry this exact URL once with the fallback agent.
+            if (
+                retry_user_agent
+                and not retried_block
+                and response.status_code in _BLOCK_RETRY_STATUSES
+            ):
+                retried_block = True
+                await response.aclose()
+                req = client.build_request(
+                    "GET", current, headers={"User-Agent": retry_user_agent}
+                )
+                response = await client.send(req, stream=True)
 
             if response.status_code in _REDIRECT_STATUSES and response.headers.get("location"):
                 location = str(response.url.join(response.headers["location"]))

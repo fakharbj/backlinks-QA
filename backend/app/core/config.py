@@ -82,13 +82,20 @@ class Settings(BaseSettings):
     SECRETS_ENCRYPTION_KEY: str = Field(default="dev-only-fernet-key-32bytes-base64==")
 
     # ── Crawler defaults ─────────────────────────────────────────────────────
+    # A real browser User-Agent by default: many sites/WAFs return 403 to obvious
+    # bot agents even when the page is live for real visitors. We identify as a
+    # current Chrome build so a normal fetch matches what a human browser sees.
     CRAWL_USER_AGENT: str = (
-        "LinkSentinelBot/1.0 (+https://linksentinel.example/bot; "
-        "backlink QA; contact: ops@linksentinel.example)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
     CRAWL_GOOGLEBOT_UA: str = (
         "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
     )
+    # When a fetch is blocked (403/429/503) we retry the page once with this
+    # fallback agent (Googlebot) — many publishers allow-list it. Set False to
+    # disable the second attempt.
+    CRAWL_BLOCK_RETRY: bool = True
     CRAWL_CONNECT_TIMEOUT: float = 10.0
     CRAWL_READ_TIMEOUT: float = 20.0
     CRAWL_TOTAL_TIMEOUT: float = 35.0
@@ -106,7 +113,11 @@ class Settings(BaseSettings):
     CIRCUIT_BREAKER_COOLDOWN_SECONDS: int = 900
 
     # ── Render escalation (Playwright) ───────────────────────────────────────
-    RENDER_ENABLED: bool = True
+    # Off by default: the headless browser pool (Playwright) is an optional add-on
+    # and is not installed on the standard single-node deployment. With it off,
+    # every link still gets a full raw-HTTP verdict and fires alerts immediately
+    # instead of waiting on a render worker that may not exist.
+    RENDER_ENABLED: bool = False
     RENDER_TIMEOUT_MS: int = 20_000
     RENDER_WAIT_UNTIL: Literal["load", "domcontentloaded", "networkidle"] = "networkidle"
     # Escalate to a headless render only when the link is absent in raw HTML AND
@@ -138,15 +149,28 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "alerts@linksentinel.example"
     SMTP_USE_TLS: bool = True
 
+    # ── Built-in alerting (zero-config) ──────────────────────────────────────
+    # Out of the box — without anyone creating an alert rule — the system raises
+    # an in-app alert whenever a backlink is broken, removed, or errors, and
+    # emails the team if SMTP is configured. While a link stays broken it
+    # re-alerts every ALERT_RENOTIFY_HOURS (not on every scan) so the team gets a
+    # reminder without being spammed. It also sends one "recovered" note when a
+    # previously broken link comes back.
+    ALERT_DEFAULT_ENABLED: bool = True
+    # Who receives the built-in emails. Leave empty to fall back to every active
+    # member of the link's workspace. Accepts a comma-separated string in .env.
+    ALERT_DEFAULT_EMAILS: list[str] = Field(default_factory=list)
+    ALERT_RENOTIFY_HOURS: int = 24
+
     # ── Observability ────────────────────────────────────────────────────────
     SENTRY_DSN: str | None = None
     PROMETHEUS_ENABLED: bool = True
 
-    @field_validator("CORS_ORIGINS", mode="before")
+    @field_validator("CORS_ORIGINS", "ALERT_DEFAULT_EMAILS", mode="before")
     @classmethod
-    def _split_cors(cls, v: object) -> object:
+    def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
+            return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
     @model_validator(mode="after")

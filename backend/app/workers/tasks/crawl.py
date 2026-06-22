@@ -187,8 +187,12 @@ async def _persist_one(
             recheck_interval_hours=interval,
         )
         external: list[uuid.UUID] = []
-        if fire_alerts and events:
-            notifs = await alert_service.evaluate(s, record, events)
+        if fire_alerts:
+            notifs: list = []
+            if events:
+                notifs += await alert_service.evaluate(s, record, events)
+            # Zero-config broken-link lifecycle alerts run on every crawl.
+            notifs += await alert_service.evaluate_builtin(s, record)
             external = [n.id for n in notifs]
         await s.flush()
         # ids resolved after flush

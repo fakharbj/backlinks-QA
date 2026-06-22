@@ -2,7 +2,7 @@
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 gunicorn==22.0.0
-pydantic==2.7.4
+pydantic>=2.10.0          # 2.7.x pydantic-core has no Python 3.13 wheel
 pydantic-settings==2.3.4
 python-multipart==0.0.9
 email-validator==2.2.0
@@ -11,7 +11,7 @@ email-validator==2.2.0
 sqlalchemy[asyncio]==2.0.31
 asyncpg==0.29.0
 alembic==1.13.2
-greenlet==3.0.3
+greenlet>=3.1.0  # 3.0.x fails to build on Python 3.13
 
 # ── Auth / Security ─────────────────────────────────────────────────────────
 argon2-cffi==23.1.0
@@ -22,20 +22,21 @@ cryptography==42.0.8
 celery==5.4.0
 redis==5.0.7
 flower==2.0.1
-celery-redbeat==2.2.0
+celery-redbeat>=2.3.2     # 2.2.0 not published for current setuptools
 
 # ── Crawler ─────────────────────────────────────────────────────────────────
 httpx[http2]==0.27.0
 lxml==5.2.2
-selectolax==0.3.21
-playwright==1.45.0
 tldextract==5.1.2
 idna==3.7
 charset-normalizer==3.3.2
+# Optional headless-render add-on (RENDER_ENABLED=true). Not installed by default
+# — Playwright + its browsers are heavy and unsupported on some Python 3.13 builds.
+# playwright==1.45.0
 
 # ── Reports / Exports ───────────────────────────────────────────────────────
 openpyxl==3.1.5
-weasyprint==62.1
+fpdf2==2.7.9              # pure-Python PDF (no Pango/Cairo system libs needed)
 jinja2==3.1.4
 
 # ── Object storage ──────────────────────────────────────────────────────────

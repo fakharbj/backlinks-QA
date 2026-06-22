@@ -35,10 +35,16 @@ def classify(artifact: CrawlArtifact, issues: list[Issue], score: int) -> Overal
         and 200 <= artifact.http_status < 300
         and not artifact.is_html
     )
+    # A 403 that survived the fallback-agent retry is almost always a bot/WAF
+    # block rather than a dead page — the link is often still live for real
+    # visitors. Route it to manual review instead of a confident FAIL/WARNING.
+    hard_403 = artifact.http_status == 403
+
     review = (
         det.captcha
         or det.cloudflare_challenge
         or det.waf_block
+        or hard_403
         or bool(labels & _REVIEW_LABELS)
         or non_html_200
         or any(i.code in _CONFLICT_CODES for i in issues)

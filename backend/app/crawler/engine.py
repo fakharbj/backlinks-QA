@@ -62,6 +62,7 @@ class CrawlConfig:
     max_bytes: int = 8 * 1024 * 1024
     respect_robots: bool = True
     robots_ttl: int = 24 * 3600
+    block_retry: bool = True
     render_enabled: bool = True
     render_timeout_ms: int = 20_000
     render_wait_until: str = "networkidle"
@@ -83,6 +84,7 @@ class CrawlConfig:
             max_bytes=settings.CRAWL_MAX_RESPONSE_BYTES,
             respect_robots=settings.CRAWL_RESPECT_ROBOTS,
             robots_ttl=settings.ROBOTS_CACHE_TTL_SECONDS,
+            block_retry=settings.CRAWL_BLOCK_RETRY,
             render_enabled=settings.RENDER_ENABLED,
             render_timeout_ms=settings.RENDER_TIMEOUT_MS,
             render_wait_until=settings.RENDER_WAIT_UNTIL,
@@ -161,6 +163,11 @@ class CrawlEngine:
             request,
             max_redirects=self.config.max_redirects,
             max_bytes=self.config.max_bytes,
+            retry_user_agent=(
+                self.config.googlebot_ua
+                if (self.config.block_retry and not request.use_googlebot_ua)
+                else None
+            ),
         )
         self._apply_fetch(artifact, outcome)
         if outcome.error in (

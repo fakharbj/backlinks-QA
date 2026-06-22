@@ -84,7 +84,7 @@ async def _send(payload: dict[str, Any]) -> None:
 
 
 def _send_email(config: dict[str, Any], title: str, body: str, payload: dict[str, Any]) -> None:
-    recipients = _recipients(config)
+    recipients = _recipients(config, payload)
     if not recipients:
         raise ValueError("Email alert has no recipients configured")
 
@@ -167,8 +167,16 @@ async def _mark(notification_id: uuid.UUID, status: NotificationStatus, error: s
             notif.sent_at = datetime.now(timezone.utc)
 
 
-def _recipients(config: dict[str, Any]) -> list[str]:
-    raw = config.get("emails") or config.get("recipients") or config.get("to")
+def _recipients(config: dict[str, Any], payload: dict[str, Any] | None = None) -> list[str]:
+    # Rule config first, then recipients carried on a built-in notification, then
+    # the global default list — so zero-config broken-link emails still have a To.
+    raw = (
+        config.get("emails")
+        or config.get("recipients")
+        or config.get("to")
+        or (payload or {}).get("recipients")
+        or settings.ALERT_DEFAULT_EMAILS
+    )
     if isinstance(raw, list):
         return [str(v).strip() for v in raw if str(v).strip()]
     if isinstance(raw, str):
