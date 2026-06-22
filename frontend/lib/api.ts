@@ -138,6 +138,9 @@ export type CrawlResultOut = {
   score_breakdown: ScoreStep[];
   word_count: number | null;
   outbound_link_count: number | null;
+  published_date: string | null;
+  modified_date: string | null;
+  date_source: string | null;
   raw_html_key: string | null;
   rendered_html_key: string | null;
 };

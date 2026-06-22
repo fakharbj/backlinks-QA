@@ -121,6 +121,10 @@ class PageSignals:
     outbound_link_count: int = 0
     load_time_ms: int | None = None
     spam_keyword_hits: list[str] = field(default_factory=list)
+    # Posted/published date discovered on the page (JSON-LD, meta, or <time>).
+    published_date: str | None = None
+    modified_date: str | None = None
+    date_source: str | None = None  # where we found it (for transparency)
 
 
 @dataclass(slots=True)

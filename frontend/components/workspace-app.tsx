@@ -603,6 +603,14 @@ function BacklinkDetailDrawer({
               <FactRow k="Anchor (observed)" v={data.current_anchor_text} />
               <FactRow k="Expected anchor" v={data.expected_anchor_text} />
               <FactRow k="Canonical / Robots" v={`${data.canonical_status ?? "-"} / ${data.robots_status ?? "-"}`} />
+              <FactRow
+                k="Posted / published date"
+                v={
+                  data.latest_result?.published_date
+                    ? `${data.latest_result.published_date}${data.latest_result.date_source ? ` (from ${data.latest_result.date_source})` : ""}`
+                    : "Not detected on page"
+                }
+              />
             </DetailBlock>
 
             {data.score_breakdown.length ? (

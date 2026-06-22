@@ -8,8 +8,10 @@ malformed markup (lxml's recovering parser).
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from lxml import etree, html as lxml_html
 
@@ -217,6 +219,7 @@ def parse_html(
     base_for_links = page.base_href or final_url
 
     _extract_meta(tree, page)
+    _extract_dates(tree, page)  # before _extract_signals strips <script> (JSON-LD)
     _extract_links(tree, page, base_for_links, final_url, mode, trailing_slash_policy)
     _extract_signals(tree, body, page)
 
@@ -243,6 +246,123 @@ def _extract_meta(tree: object, page: ParsedPage) -> None:
     page.canonical_count = len(canonicals)
     if canonicals:
         page.canonical_url = canonicals[0]
+
+
+# ── Published-date extraction ───────────────────────────────────────────────────
+# Meta property/name keys that commonly carry the publish date, in priority order.
+_PUBLISHED_META_KEYS = (
+    "article:published_time", "datepublished", "date", "pubdate", "publishdate",
+    "publish-date", "publication_date", "dc.date", "dc.date.issued", "sailthru.date",
+    "parsely-pub-date", "og:published_time", "rnews:datepublished",
+)
+_MODIFIED_META_KEYS = ("article:modified_time", "datemodified", "og:updated_time", "lastmod")
+
+
+def _extract_dates(tree: object, page: ParsedPage) -> None:
+    """Find the page's posted/published date from JSON-LD, meta tags, or <time>.
+
+    Tries the most reliable sources first and stops at the first hit. Leaves the
+    fields ``None`` when nothing trustworthy is present (the UI then shows a plain
+    "not detected" line rather than guessing).
+    """
+    s = page.signals
+    published = modified = None
+    source: str | None = None
+
+    # 1) JSON-LD (schema.org Article/BlogPosting/NewsArticle) — most reliable.
+    for script in tree.iter("script"):
+        if "ld+json" not in (script.get("type") or "").lower():
+            continue
+        raw = (script.text or "") or "".join(getattr(script, "itertext", lambda: [])())
+        if not raw.strip():
+            continue
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        for node in _iter_jsonld_nodes(data):
+            if published is None and node.get("datePublished"):
+                published, source = node.get("datePublished"), "json-ld"
+            if published is None and node.get("dateCreated"):
+                published, source = node.get("dateCreated"), "json-ld"
+            if modified is None and node.get("dateModified"):
+                modified = node.get("dateModified")
+        if published:
+            break
+
+    # 2) Meta tags (Open Graph, Dublin Core, itemprop, publisher-specific).
+    if published is None:
+        for meta in tree.iter("meta"):
+            key = (
+                meta.get("property") or meta.get("name") or meta.get("itemprop") or ""
+            ).lower()
+            content = (meta.get("content") or "").strip()
+            if not content:
+                continue
+            if published is None and key in _PUBLISHED_META_KEYS:
+                published, source = content, "meta"
+            if modified is None and key in _MODIFIED_META_KEYS:
+                modified = content
+
+    # 3) A <time> element explicitly marked as the publish date.
+    if published is None:
+        for tel in tree.iter("time"):
+            dt = (tel.get("datetime") or "").strip()
+            if not dt:
+                continue
+            itemprop = (tel.get("itemprop") or "").lower()
+            hint = " ".join(
+                filter(None, [tel.get("class", ""), tel.get("id", ""), itemprop])
+            ).lower()
+            if (
+                tel.get("pubdate") is not None
+                or "datepublished" in itemprop
+                or any(h in hint for h in ("publish", "posted", "entry-date", "post-date"))
+            ):
+                published, source = dt, "time"
+                break
+
+    s.published_date = _clean_date(published)
+    s.modified_date = _clean_date(modified)
+    s.date_source = source if s.published_date else None
+
+
+def _iter_jsonld_nodes(data: object):
+    """Yield every dict in a JSON-LD blob (handles arrays and @graph nesting)."""
+    if isinstance(data, dict):
+        yield data
+        for value in data.values():
+            yield from _iter_jsonld_nodes(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _iter_jsonld_nodes(item)
+
+
+_DATE_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y",
+    "%d %B %Y", "%B %d, %Y", "%d %b %Y", "%b %d, %Y", "%B %d %Y",
+)
+
+
+def _clean_date(value: object) -> str | None:
+    """Normalise a found date to YYYY-MM-DD; fall back to the raw text if odd."""
+    if not value:
+        return None
+    raw = str(value).strip()[:60]
+    if not raw:
+        return None
+    iso = raw.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(iso).date().isoformat()
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return raw  # show whatever the page provided rather than dropping it
 
 
 def _extract_links(

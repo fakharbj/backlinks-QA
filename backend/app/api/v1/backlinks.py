@@ -104,6 +104,9 @@ async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
             is_indexable=latest.is_indexable.value if latest.is_indexable else None,
             score_breakdown=latest.score_breakdown or [], word_count=latest.word_count,
             outbound_link_count=latest.outbound_link_count,
+            published_date=(latest.page_signals or {}).get("published_date"),
+            modified_date=(latest.page_signals or {}).get("modified_date"),
+            date_source=(latest.page_signals or {}).get("date_source"),
             raw_html_key=latest.raw_html_key, rendered_html_key=latest.rendered_html_key,
         )
     detail.history = [
