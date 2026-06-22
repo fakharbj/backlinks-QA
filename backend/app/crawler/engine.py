@@ -41,6 +41,16 @@ _JS_FRAMEWORK_MARKERS = (
 )
 _ROBOTS_FETCH_TIMEOUT = 8.0
 
+# When an https-first attempt fails at the transport level we retry the original
+# http:// URL (the secure endpoint genuinely isn't reachable). A real HTTP answer
+# like 403/404 is kept as-is — it's the site's true response.
+_HTTPS_FALLBACK_ERRORS = (
+    FetchError.DNS,
+    FetchError.SSL,
+    FetchError.CONNECTION,
+    FetchError.TIMEOUT,
+)
+
 
 class RobotsCache(Protocol):
     async def get(self, key: str) -> str | None: ...
@@ -63,6 +73,7 @@ class CrawlConfig:
     respect_robots: bool = True
     robots_ttl: int = 24 * 3600
     block_retry: bool = True
+    https_first: bool = True
     render_enabled: bool = True
     render_timeout_ms: int = 20_000
     render_wait_until: str = "networkidle"
@@ -85,6 +96,7 @@ class CrawlConfig:
             respect_robots=settings.CRAWL_RESPECT_ROBOTS,
             robots_ttl=settings.ROBOTS_CACHE_TTL_SECONDS,
             block_retry=settings.CRAWL_BLOCK_RETRY,
+            https_first=settings.CRAWL_HTTPS_FIRST,
             render_enabled=settings.RENDER_ENABLED,
             render_timeout_ms=settings.RENDER_TIMEOUT_MS,
             render_wait_until=settings.RENDER_WAIT_UNTIL,
@@ -157,18 +169,32 @@ class CrawlEngine:
             return artifact
 
         # ── Raw fetch ────────────────────────────────────────────────────────
-        outcome = await fetch_raw(
-            self.client,
-            source.original,
-            request,
-            max_redirects=self.config.max_redirects,
-            max_bytes=self.config.max_bytes,
-            retry_user_agent=(
-                self.config.googlebot_ua
-                if (self.config.block_retry and not request.use_googlebot_ua)
-                else None
-            ),
+        retry_ua = (
+            self.config.googlebot_ua
+            if (self.config.block_retry and not request.use_googlebot_ua)
+            else None
         )
+
+        async def _fetch(target: str) -> FetchOutcome:
+            return await fetch_raw(
+                self.client, target, request,
+                max_redirects=self.config.max_redirects,
+                max_bytes=self.config.max_bytes,
+                retry_user_agent=retry_ua,
+            )
+
+        # HTTPS-first: for any http:// source, request the secure URL up front
+        # (matches how modern browsers behave, skips the http→https redirect hop,
+        # and plain-HTTP requests draw bot challenges more often). Only if https is
+        # unreachable at the transport level do we fall back to the original http.
+        if self.config.https_first and source.original.lower().startswith("http://"):
+            https_target = "https://" + source.original[len("http://"):]
+            outcome = await _fetch(https_target)
+            if outcome.error in _HTTPS_FALLBACK_ERRORS:
+                outcome = await _fetch(source.original)
+        else:
+            outcome = await _fetch(source.original)
+
         self._apply_fetch(artifact, outcome)
         if outcome.error in (
             FetchError.DNS, FetchError.SSL, FetchError.CONNECTION, FetchError.TIMEOUT,

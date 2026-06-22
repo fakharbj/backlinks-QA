@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     # fallback agent (Googlebot) — many publishers allow-list it. Set False to
     # disable the second attempt.
     CRAWL_BLOCK_RETRY: bool = True
+    # Try the secure (https://) URL first for any http:// source. Modern browsers
+    # do this (HTTPS-first), it skips the http→https redirect hop, and plain-HTTP
+    # requests are more likely to be met with a bot challenge. Falls back to the
+    # original http:// URL if https can't be reached.
+    CRAWL_HTTPS_FIRST: bool = True
     CRAWL_CONNECT_TIMEOUT: float = 10.0
     CRAWL_READ_TIMEOUT: float = 20.0
     CRAWL_TOTAL_TIMEOUT: float = 35.0
