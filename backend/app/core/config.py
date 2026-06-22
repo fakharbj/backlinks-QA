@@ -146,32 +146,34 @@ class Settings(BaseSettings):
     RETENTION_SNAPSHOT_DAYS: int = 30
     RETENTION_AUDIT_DAYS: int = 730
 
-    # ── Moz Links API (Domain Authority + Spam Score) ────────────────────────
-    # DA/PA/Spam Score are Moz's proprietary metrics — not crawlable. When a token
-    # is set we fetch them per source domain and cache for MOZ_CACHE_DAYS (they
-    # change slowly). Off by default: the columns simply show "—" until enabled.
-    MOZ_ENABLED: bool = False
-    # Provider:
-    #  • "rapidapi" — a RapidAPI proxy such as "Moz DA PA" (x-rapidapi-key/host,
-    #    body {"q": domain}). Easiest to sign up for; usually DA + PA.
-    #  • "official" — Moz's own Links API (DA + PA + Spam Score).
-    MOZ_PROVIDER: Literal["rapidapi", "official"] = "rapidapi"
+    # ── Source-site metrics (Similarweb / Moz via RapidAPI) ───────────────────
+    # Authority/traffic metrics for the SOURCE domain of each backlink. These come
+    # from an external API (they can't be crawled) and are cached per domain for
+    # SITE_METRICS_CACHE_DAYS. Off by default → the column shows "—" until set.
+    SITE_METRICS_ENABLED: bool = False
+    #  • "similarweb"   — Similarweb Insights on RapidAPI (global rank + traffic).
+    #  • "moz_rapidapi" — a "Moz DA PA" RapidAPI proxy (DA + PA).
+    #  • "moz_official" — Moz's own Links API (DA + PA + Spam Score).
+    SITE_METRICS_PROVIDER: Literal["similarweb", "moz_rapidapi", "moz_official"] = "similarweb"
+    SITE_METRICS_CACHE_DAYS: int = 30
+    SITE_METRICS_TIMEOUT_SECONDS: float = 15.0
 
-    # ── RapidAPI provider ────────────────────────────────────────────────────
+    # RapidAPI key — shared by the similarweb + moz_rapidapi providers.
     RAPIDAPI_KEY: str | None = None
-    RAPIDAPI_HOST: str = "moz-da-pa1.p.rapidapi.com"
-    RAPIDAPI_DA_ENDPOINT: str = "https://moz-da-pa1.p.rapidapi.com/v1/getDaPa"
 
-    # ── Official Moz Links API ───────────────────────────────────────────────
-    #  • Classic Links API:  MOZ_ACCESS_ID + MOZ_SECRET_KEY  (HTTP Basic)
-    #  • Newer API token:     MOZ_API_TOKEN                   (Bearer)
+    # Similarweb Insights (RapidAPI): GET {endpoint}?domain=<domain>
+    SIMILARWEB_HOST: str = "similarweb-insights.p.rapidapi.com"
+    SIMILARWEB_ENDPOINT: str = "https://similarweb-insights.p.rapidapi.com/traffic"
+
+    # Moz DA/PA (RapidAPI): POST {endpoint} with {"q": <domain>}
+    MOZ_RAPIDAPI_HOST: str = "moz-da-pa1.p.rapidapi.com"
+    MOZ_RAPIDAPI_ENDPOINT: str = "https://moz-da-pa1.p.rapidapi.com/v1/getDaPa"
+
+    # Moz official Links API: POST {endpoint} with {"targets": [<domain>]}
     MOZ_ACCESS_ID: str | None = None
     MOZ_SECRET_KEY: str | None = None
     MOZ_API_TOKEN: str | None = None
     MOZ_API_ENDPOINT: str = "https://lsapi.seomoz.com/v2/url_metrics"
-
-    MOZ_CACHE_DAYS: int = 30
-    MOZ_TIMEOUT_SECONDS: float = 15.0
 
     # ── Integrations ─────────────────────────────────────────────────────────
     SMTP_HOST: str | None = None

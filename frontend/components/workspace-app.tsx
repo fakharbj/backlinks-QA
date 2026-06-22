@@ -38,6 +38,7 @@ import {
   Project,
   Report,
   Role,
+  SiteMetrics,
   TeamMember,
   TokenPair
 } from "@/lib/api";
@@ -478,7 +479,7 @@ function Backlinks({
               <Th>Target</Th>
               <Th>HTTP</Th>
               <Th>Rel</Th>
-              <Th>DA / Spam</Th>
+              <Th>Rank / Visits</Th>
               <Th>Issue</Th>
               <Th>Checked</Th>
             </tr>
@@ -496,7 +497,7 @@ function Backlinks({
                 <Td><Url value={row.target_url} /></Td>
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
-                <Td>{row.extra?.moz ? `${row.extra.moz.da ?? "-"} / ${row.extra.moz.spam_score ?? "-"}` : "-"}</Td>
+                <Td>{formatSiteMetric(row.extra?.metrics)}</Td>
                 <Td>{row.top_issue_label ?? (row.issue_count ? `${row.issue_count} issues` : "-")}</Td>
                 <Td>{formatDate(row.last_checked_at)}</Td>
               </tr>
@@ -614,11 +615,11 @@ function BacklinkDetailDrawer({
                 }
               />
               <FactRow
-                k="Source DA / Spam (Moz)"
+                k="Source site metrics"
                 v={
-                  data.extra?.moz && (data.extra.moz.da != null || data.extra.moz.spam_score != null)
-                    ? `DA ${data.extra.moz.da ?? "-"}  •  PA ${data.extra.moz.pa ?? "-"}  •  Spam ${data.extra.moz.spam_score ?? "-"}`
-                    : "Not fetched (Moz API not configured)"
+                  data.extra?.metrics
+                    ? formatSiteMetricLong(data.extra.metrics)
+                    : "Not fetched (metrics API not configured)"
                 }
               />
             </DetailBlock>
@@ -1163,6 +1164,38 @@ function Url({ value }: { value: string }) {
 function formatDate(value: string | null) {
   if (!value) return "-";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function compactNum(n: number) {
+  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
+}
+
+// Compact grid cell: Similarweb → "#12.3K • 1.2M", Moz → "DA 50 / Spam 2".
+function formatSiteMetric(m?: SiteMetrics | null) {
+  if (!m) return "-";
+  if (m.global_rank != null || m.monthly_visits != null) {
+    const parts: string[] = [];
+    if (m.global_rank != null) parts.push(`#${compactNum(m.global_rank)}`);
+    if (m.monthly_visits != null) parts.push(compactNum(m.monthly_visits));
+    return parts.join(" • ") || "-";
+  }
+  if (m.da != null || m.spam_score != null) {
+    return `DA ${m.da ?? "-"} / Sp ${m.spam_score ?? "-"}`;
+  }
+  return "-";
+}
+
+// Fuller detail line with labels.
+function formatSiteMetricLong(m?: SiteMetrics | null) {
+  if (!m) return "Not fetched (metrics API not configured)";
+  const parts: string[] = [];
+  if (m.global_rank != null) parts.push(`Global rank #${m.global_rank.toLocaleString()}`);
+  if (m.monthly_visits != null) parts.push(`Visits ${compactNum(m.monthly_visits)}`);
+  if (m.category) parts.push(`Category ${m.category}`);
+  if (m.da != null) parts.push(`DA ${m.da}`);
+  if (m.pa != null) parts.push(`PA ${m.pa}`);
+  if (m.spam_score != null) parts.push(`Spam ${m.spam_score}`);
+  return parts.length ? parts.join("  •  ") : "No metrics returned for this domain";
 }
 
 function toneClass(tone: "ink" | "ocean" | "ember" | "danger" | "plum") {
