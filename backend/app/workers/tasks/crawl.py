@@ -186,6 +186,11 @@ async def _persist_one(
             rendered_html_key=artifact.rendered_html_key,
             recheck_interval_hours=interval,
         )
+        # Enrich with Moz Domain Authority / Spam Score (no-op unless configured).
+        from app.integrations import moz
+
+        await moz.enrich(record)
+
         external: list[uuid.UUID] = []
         if fire_alerts:
             notifs: list = []

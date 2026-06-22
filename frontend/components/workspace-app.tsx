@@ -478,6 +478,7 @@ function Backlinks({
               <Th>Target</Th>
               <Th>HTTP</Th>
               <Th>Rel</Th>
+              <Th>DA / Spam</Th>
               <Th>Issue</Th>
               <Th>Checked</Th>
             </tr>
@@ -495,6 +496,7 @@ function Backlinks({
                 <Td><Url value={row.target_url} /></Td>
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
+                <Td>{row.extra?.moz ? `${row.extra.moz.da ?? "-"} / ${row.extra.moz.spam_score ?? "-"}` : "-"}</Td>
                 <Td>{row.top_issue_label ?? (row.issue_count ? `${row.issue_count} issues` : "-")}</Td>
                 <Td>{formatDate(row.last_checked_at)}</Td>
               </tr>
@@ -609,6 +611,14 @@ function BacklinkDetailDrawer({
                   data.latest_result?.published_date
                     ? `${data.latest_result.published_date}${data.latest_result.date_source ? ` (from ${data.latest_result.date_source})` : ""}`
                     : "Not detected on page"
+                }
+              />
+              <FactRow
+                k="Source DA / Spam (Moz)"
+                v={
+                  data.extra?.moz && (data.extra.moz.da != null || data.extra.moz.spam_score != null)
+                    ? `DA ${data.extra.moz.da ?? "-"}  •  PA ${data.extra.moz.pa ?? "-"}  •  Spam ${data.extra.moz.spam_score ?? "-"}`
+                    : "Not fetched (Moz API not configured)"
                 }
               />
             </DetailBlock>

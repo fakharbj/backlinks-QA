@@ -81,6 +81,14 @@ export type BacklinkRow = {
   next_check_at: string | null;
   assigned_user_id: string | null;
   tags: string[];
+  extra?: { moz?: MozMetrics } | null;
+};
+
+export type MozMetrics = {
+  da?: number | null;
+  pa?: number | null;
+  spam_score?: number | null;
+  fetched_at?: string | null;
 };
 
 export type Page<T> = {

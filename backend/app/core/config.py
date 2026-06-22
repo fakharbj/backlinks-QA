@@ -146,6 +146,21 @@ class Settings(BaseSettings):
     RETENTION_SNAPSHOT_DAYS: int = 30
     RETENTION_AUDIT_DAYS: int = 730
 
+    # ── Moz Links API (Domain Authority + Spam Score) ────────────────────────
+    # DA/PA/Spam Score are Moz's proprietary metrics — not crawlable. When a token
+    # is set we fetch them per source domain and cache for MOZ_CACHE_DAYS (they
+    # change slowly). Off by default: the columns simply show "—" until enabled.
+    MOZ_ENABLED: bool = False
+    # Two auth styles are supported — set whichever your Moz account uses:
+    #  • Classic Links API:  MOZ_ACCESS_ID + MOZ_SECRET_KEY  (HTTP Basic)
+    #  • Newer API token:     MOZ_API_TOKEN                   (Bearer)
+    MOZ_ACCESS_ID: str | None = None
+    MOZ_SECRET_KEY: str | None = None
+    MOZ_API_TOKEN: str | None = None
+    MOZ_API_ENDPOINT: str = "https://lsapi.seomoz.com/v2/url_metrics"
+    MOZ_CACHE_DAYS: int = 30
+    MOZ_TIMEOUT_SECONDS: float = 15.0
+
     # ── Integrations ─────────────────────────────────────────────────────────
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587

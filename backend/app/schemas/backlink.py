@@ -65,6 +65,7 @@ class BacklinkRow(ORMModel):
     next_check_at: datetime | None
     assigned_user_id: uuid.UUID | None
     tags: list[str]
+    extra: dict[str, Any] = Field(default_factory=dict)  # carries extra["moz"] = {da,pa,spam_score}
 
 
 class IssueOut(BaseModel):

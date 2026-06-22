@@ -47,6 +47,9 @@ _BACKLINK_HEADERS = [
     "Indexability",
     "Robots",
     "Canonical",
+    "Source DA",
+    "Source PA",
+    "Spam Score",
     "Issues",
     "Recommendations",
     "Vendor",
@@ -149,6 +152,7 @@ async def _backlink_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for bl, project_name, vendor_name, campaign_name in results:
         current_issues = issues.get(bl.id, [])
+        moz = (bl.extra or {}).get("moz") or {}
         rows.append(
             {
                 "Project": project_name,
@@ -165,6 +169,9 @@ async def _backlink_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
                 "Indexability": _value(bl.indexability),
                 "Robots": bl.robots_status,
                 "Canonical": bl.canonical_status,
+                "Source DA": moz.get("da"),
+                "Source PA": moz.get("pa"),
+                "Spam Score": moz.get("spam_score"),
                 "Issues": "; ".join(i["issue"] for i in current_issues),
                 "Recommendations": "; ".join(
                     i["recommendation"] for i in current_issues if i["recommendation"]
