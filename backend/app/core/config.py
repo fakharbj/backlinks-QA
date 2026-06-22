@@ -151,13 +151,25 @@ class Settings(BaseSettings):
     # is set we fetch them per source domain and cache for MOZ_CACHE_DAYS (they
     # change slowly). Off by default: the columns simply show "—" until enabled.
     MOZ_ENABLED: bool = False
-    # Two auth styles are supported — set whichever your Moz account uses:
+    # Provider:
+    #  • "rapidapi" — a RapidAPI proxy such as "Moz DA PA" (x-rapidapi-key/host,
+    #    body {"q": domain}). Easiest to sign up for; usually DA + PA.
+    #  • "official" — Moz's own Links API (DA + PA + Spam Score).
+    MOZ_PROVIDER: Literal["rapidapi", "official"] = "rapidapi"
+
+    # ── RapidAPI provider ────────────────────────────────────────────────────
+    RAPIDAPI_KEY: str | None = None
+    RAPIDAPI_HOST: str = "moz-da-pa1.p.rapidapi.com"
+    RAPIDAPI_DA_ENDPOINT: str = "https://moz-da-pa1.p.rapidapi.com/v1/getDaPa"
+
+    # ── Official Moz Links API ───────────────────────────────────────────────
     #  • Classic Links API:  MOZ_ACCESS_ID + MOZ_SECRET_KEY  (HTTP Basic)
     #  • Newer API token:     MOZ_API_TOKEN                   (Bearer)
     MOZ_ACCESS_ID: str | None = None
     MOZ_SECRET_KEY: str | None = None
     MOZ_API_TOKEN: str | None = None
     MOZ_API_ENDPOINT: str = "https://lsapi.seomoz.com/v2/url_metrics"
+
     MOZ_CACHE_DAYS: int = 30
     MOZ_TIMEOUT_SECONDS: float = 15.0
 

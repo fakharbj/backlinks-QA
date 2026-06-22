@@ -29,11 +29,14 @@ _NEGATIVE = "__none__"  # cache misses too, so we don't hammer Moz for dead doma
 
 
 def is_enabled() -> bool:
-    has_creds = bool(
+    if not settings.MOZ_ENABLED:
+        return False
+    if settings.MOZ_PROVIDER == "rapidapi":
+        return bool(settings.RAPIDAPI_KEY)
+    return bool(
         settings.MOZ_API_TOKEN
         or (settings.MOZ_ACCESS_ID and settings.MOZ_SECRET_KEY)
     )
-    return bool(settings.MOZ_ENABLED and has_creds)
 
 
 async def domain_metrics(domain: str) -> dict[str, Any] | None:
@@ -69,19 +72,29 @@ async def domain_metrics(domain: str) -> dict[str, Any] | None:
 
 
 async def _fetch_from_moz(domain: str) -> dict[str, Any] | None:
-    """Call the Moz Links API v2 url_metrics endpoint for one domain."""
-    payload = {"targets": [domain]}
-    headers = {"Content-Type": "application/json"}
-    auth: tuple[str, str] | None = None
-    if settings.MOZ_API_TOKEN:
-        headers["Authorization"] = f"Bearer {settings.MOZ_API_TOKEN}"
-    elif settings.MOZ_ACCESS_ID and settings.MOZ_SECRET_KEY:
-        auth = (settings.MOZ_ACCESS_ID, settings.MOZ_SECRET_KEY)
+    """Fetch DA/PA/Spam for one domain from the configured provider."""
+    if settings.MOZ_PROVIDER == "rapidapi":
+        endpoint = settings.RAPIDAPI_DA_ENDPOINT
+        payload = {"q": domain}
+        headers = {
+            "Content-Type": "application/json",
+            "x-rapidapi-host": settings.RAPIDAPI_HOST,
+            "x-rapidapi-key": settings.RAPIDAPI_KEY or "",
+        }
+        auth = None
+    else:
+        endpoint = settings.MOZ_API_ENDPOINT
+        payload = {"targets": [domain]}
+        headers = {"Content-Type": "application/json"}
+        auth = None
+        if settings.MOZ_API_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.MOZ_API_TOKEN}"
+        elif settings.MOZ_ACCESS_ID and settings.MOZ_SECRET_KEY:
+            auth = (settings.MOZ_ACCESS_ID, settings.MOZ_SECRET_KEY)
+
     try:
         async with httpx.AsyncClient(timeout=settings.MOZ_TIMEOUT_SECONDS) as client:
-            resp = await client.post(
-                settings.MOZ_API_ENDPOINT, json=payload, headers=headers, auth=auth
-            )
+            resp = await client.post(endpoint, json=payload, headers=headers, auth=auth)
         if resp.status_code != 200:
             log.warning("moz_http_error", domain=domain, status=resp.status_code,
                         body=resp.text[:300])
@@ -91,16 +104,48 @@ async def _fetch_from_moz(domain: str) -> dict[str, Any] | None:
         log.warning("moz_request_failed", domain=domain, error=repr(exc))
         return None
 
-    results = data.get("results") or data.get("url_metrics") or []
-    if not results:
-        return None
-    row = results[0]
-    da = _num(row.get("domain_authority"))
-    pa = _num(row.get("page_authority"))
-    spam = _num(row.get("spam_score"))
+    return _parse_metrics(data)
+
+
+# Possible key names for each metric across providers (Moz official + RapidAPI
+# proxies vary), checked case-insensitively at any nesting depth.
+_DA_KEYS = ("domain_authority", "da", "domainauthority", "domain_auth")
+_PA_KEYS = ("page_authority", "pa", "pageauthority", "page_auth")
+_SPAM_KEYS = ("spam_score", "spam", "spamscore", "spam_score_percent")
+
+
+def _parse_metrics(data: Any) -> dict[str, Any] | None:
+    """Pull DA/PA/Spam out of any provider's response shape."""
+    flat: dict[str, Any] = {}
+    _flatten(data, flat)
+    da = _first(flat, _DA_KEYS)
+    pa = _first(flat, _PA_KEYS)
+    spam = _first(flat, _SPAM_KEYS)
     if da is None and pa is None and spam is None:
         return None
     return {"da": da, "pa": pa, "spam_score": spam}
+
+
+def _flatten(data: Any, out: dict[str, Any]) -> None:
+    """Collect every scalar leaf keyed by its (lowercased) field name."""
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                _flatten(value, out)
+            elif key.lower() not in out:
+                out[key.lower()] = value
+    elif isinstance(data, list):
+        for item in data:
+            _flatten(item, out)
+
+
+def _first(flat: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        if key in flat:
+            num = _num(flat[key])
+            if num is not None:
+                return num
+    return None
 
 
 def _num(value: Any) -> int | None:
