@@ -177,6 +177,7 @@ class CrawlArtifact:
     tls_valid: bool | None = None
     crawl_mode: CrawlMode = CrawlMode.RAW
     crawl_duration_ms: int | None = None
+    egress: str = "direct"  # "direct" or "proxy" — which path produced this result
 
     # ── Parsed page ──────────────────────────────────────────────────────────
     meta_robots: RobotsDirectives = field(default_factory=RobotsDirectives)

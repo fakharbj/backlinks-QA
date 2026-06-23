@@ -117,6 +117,23 @@ class Settings(BaseSettings):
     CIRCUIT_BREAKER_FAILS: int = 8
     CIRCUIT_BREAKER_COOLDOWN_SECONDS: int = 900
 
+    # ── Proxy egress (IPRoyal Web Unblocker) ─────────────────────────────────
+    # Normal crawl first; route through the proxy only when a page is blocked
+    # (PROXY_MODE=escalate). "always" proxies every request; "off" disables it.
+    # Credentials come from env ONLY — never commit them.
+    PROXY_ENABLED: bool = False
+    PROXY_MODE: Literal["off", "escalate", "always"] = "escalate"
+    PROXY_PROVIDER: str = "iproyal"
+    IPROYAL_PROXY_HOST: str | None = None
+    IPROYAL_PROXY_PORT: int = 12323
+    IPROYAL_PROXY_USERNAME: str | None = None
+    IPROYAL_PROXY_PASSWORD: str | None = None
+    # The Web Unblocker terminates TLS (MITM), so certificate verification must be
+    # OFF for proxied requests — this mirrors the `-k` flag in IPRoyal's curl docs.
+    PROXY_VERIFY_TLS: bool = False
+    # The unblocker is slower (it retries/renders server-side) → a longer timeout.
+    PROXY_TIMEOUT: float = 90.0
+
     # ── Render escalation (Playwright) ───────────────────────────────────────
     # Off by default: the headless browser pool (Playwright) is an optional add-on
     # and is not installed on the standard single-node deployment. With it off,

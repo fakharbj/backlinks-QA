@@ -45,6 +45,7 @@ def build_client(
     total_timeout: float,
     proxy: str | None = None,
     verify: bool = True,
+    http2: bool = True,
 ) -> httpx.AsyncClient:
     timeout = httpx.Timeout(total_timeout, connect=connect_timeout, read=read_timeout)
     limits = httpx.Limits(max_connections=200, max_keepalive_connections=40)
@@ -52,7 +53,7 @@ def build_client(
         follow_redirects=False,            # we follow manually (see module docstring)
         timeout=timeout,
         limits=limits,
-        http2=True,
+        http2=http2,
         verify=verify,
         proxy=proxy,
         headers={

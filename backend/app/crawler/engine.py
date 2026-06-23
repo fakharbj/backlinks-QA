@@ -51,6 +51,27 @@ _HTTPS_FALLBACK_ERRORS = (
     FetchError.TIMEOUT,
 )
 
+# Signals that a page is blocked / behind a bot challenge and is worth retrying
+# through the proxy (PROXY_MODE=escalate).
+_BLOCK_STATUSES = {403, 429, 503, 520, 521, 522, 523, 524, 525, 526, 530}
+_CHALLENGE_MARKERS = (
+    "just a moment", "cf-browser-verification", "challenge-platform", "_cf_chl",
+    "cf-challenge", "/cdn-cgi/challenge-platform", "attention required",
+    "g-recaptcha", "recaptcha", "hcaptcha", "px-captcha", "captcha-delivery",
+    "access denied", "request blocked",
+)
+
+
+def _looks_blocked(outcome: "FetchOutcome") -> bool:
+    """A block status, or a challenge/CAPTCHA fingerprint in the body."""
+    if outcome.status in _BLOCK_STATUSES:
+        return True
+    body = outcome.body or ""
+    if body:
+        low = body[:20000].lower()
+        return any(marker in low for marker in _CHALLENGE_MARKERS)
+    return False
+
 
 class RobotsCache(Protocol):
     async def get(self, key: str) -> str | None: ...
@@ -74,6 +95,11 @@ class CrawlConfig:
     robots_ttl: int = 24 * 3600
     block_retry: bool = True
     https_first: bool = True
+    # Proxy egress (IPRoyal Web Unblocker). proxy_mode: "off" | "escalate" | "always".
+    proxy_mode: str = "off"
+    proxy_egress_url: str | None = None
+    proxy_verify: bool = False
+    proxy_timeout: float = 90.0
     render_enabled: bool = True
     render_timeout_ms: int = 20_000
     render_wait_until: str = "networkidle"
@@ -84,6 +110,7 @@ class CrawlConfig:
     @classmethod
     def from_settings(cls) -> "CrawlConfig":
         from app.core.config import settings
+        from app.integrations import proxy
 
         return cls(
             user_agent=settings.CRAWL_USER_AGENT,
@@ -97,6 +124,10 @@ class CrawlConfig:
             robots_ttl=settings.ROBOTS_CACHE_TTL_SECONDS,
             block_retry=settings.CRAWL_BLOCK_RETRY,
             https_first=settings.CRAWL_HTTPS_FIRST,
+            proxy_mode=proxy.mode(),
+            proxy_egress_url=proxy.proxy_url(),
+            proxy_verify=settings.PROXY_VERIFY_TLS,
+            proxy_timeout=settings.PROXY_TIMEOUT,
             render_enabled=settings.RENDER_ENABLED,
             render_timeout_ms=settings.RENDER_TIMEOUT_MS,
             render_wait_until=settings.RENDER_WAIT_UNTIL,
@@ -119,6 +150,7 @@ class CrawlEngine:
         self._browser = browser
         self._rate_limiter = rate_limiter
         self._client: httpx.AsyncClient | None = None
+        self._proxy_client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "CrawlEngine":
         self._client = build_client(
@@ -128,12 +160,26 @@ class CrawlEngine:
             total_timeout=self.config.total_timeout,
             proxy=self.config.proxy,
         )
+        # A second client routed through the IPRoyal Web Unblocker, used when a
+        # page is blocked (escalate) or for every request (always). The unblocker
+        # MITMs TLS, so verification is off; http/2 is disabled for proxy safety.
+        if self.config.proxy_egress_url and self.config.proxy_mode in ("escalate", "always"):
+            self._proxy_client = build_client(
+                user_agent=self.config.user_agent,
+                connect_timeout=self.config.connect_timeout,
+                read_timeout=self.config.proxy_timeout,
+                total_timeout=self.config.proxy_timeout,
+                proxy=self.config.proxy_egress_url,
+                verify=self.config.proxy_verify,
+                http2=False,
+            )
         return self
 
     async def __aexit__(self, *exc) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        for client in (self._client, self._proxy_client):
+            if client is not None:
+                await client.aclose()
+        self._client = self._proxy_client = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -168,32 +214,55 @@ class CrawlEngine:
             artifact.fetch_error_detail = "robots.txt disallows source page"
             return artifact
 
-        # ── Raw fetch ────────────────────────────────────────────────────────
+        # ── Raw fetch (direct, then escalate to proxy if blocked) ────────────
         retry_ua = (
             self.config.googlebot_ua
             if (self.config.block_retry and not request.use_googlebot_ua)
             else None
         )
 
-        async def _fetch(target: str) -> FetchOutcome:
-            return await fetch_raw(
-                self.client, target, request,
-                max_redirects=self.config.max_redirects,
-                max_bytes=self.config.max_bytes,
-                retry_user_agent=retry_ua,
-            )
+        async def _fetch_via(client: httpx.AsyncClient, *, via_proxy: bool) -> FetchOutcome:
+            # The unblocker manages anti-bot itself, so skip the alt-UA retry there.
+            ua_retry = None if via_proxy else retry_ua
 
-        # HTTPS-first: for any http:// source, request the secure URL up front
-        # (matches how modern browsers behave, skips the http→https redirect hop,
-        # and plain-HTTP requests draw bot challenges more often). Only if https is
-        # unreachable at the transport level do we fall back to the original http.
-        if self.config.https_first and source.original.lower().startswith("http://"):
-            https_target = "https://" + source.original[len("http://"):]
-            outcome = await _fetch(https_target)
-            if outcome.error in _HTTPS_FALLBACK_ERRORS:
-                outcome = await _fetch(source.original)
+            async def _one(target: str) -> FetchOutcome:
+                return await fetch_raw(
+                    client, target, request,
+                    max_redirects=self.config.max_redirects,
+                    max_bytes=self.config.max_bytes,
+                    retry_user_agent=ua_retry,
+                )
+
+            # HTTPS-first: for any http:// source, request the secure URL up front
+            # (browser-like, skips the http→https hop, fewer bot challenges). Fall
+            # back to http only if https is unreachable at the transport level.
+            if self.config.https_first and source.original.lower().startswith("http://"):
+                https_target = "https://" + source.original[len("http://"):]
+                out = await _one(https_target)
+                if out.error in _HTTPS_FALLBACK_ERRORS:
+                    out = await _one(source.original)
+                return out
+            return await _one(source.original)
+
+        if self.config.proxy_mode == "always" and self._proxy_client is not None:
+            outcome = await _fetch_via(self._proxy_client, via_proxy=True)
+            artifact.egress = "proxy"
         else:
-            outcome = await _fetch(source.original)
+            outcome = await _fetch_via(self.client, via_proxy=False)
+            artifact.egress = "direct"
+            # Escalate a blocked page (403/429/5xx or a Cloudflare/CAPTCHA body)
+            # through the proxy, and keep the proxied result if it cleared the block.
+            if (
+                self.config.proxy_mode == "escalate"
+                and self._proxy_client is not None
+                and _looks_blocked(outcome)
+            ):
+                proxied = await _fetch_via(self._proxy_client, via_proxy=True)
+                if (not _looks_blocked(proxied)) or (
+                    proxied.error is FetchError.NONE and outcome.error is not FetchError.NONE
+                ):
+                    outcome = proxied
+                    artifact.egress = "proxy"
 
         self._apply_fetch(artifact, outcome)
         if outcome.error in (

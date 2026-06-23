@@ -86,6 +86,7 @@ async def persist(
             "published_date": artifact.signals.published_date,
             "modified_date": artifact.signals.modified_date,
             "date_source": artifact.signals.date_source,
+            "egress": artifact.egress,
         },
         status=qa.status,
         score=qa.score,
