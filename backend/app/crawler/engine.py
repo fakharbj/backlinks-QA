@@ -54,21 +54,28 @@ _HTTPS_FALLBACK_ERRORS = (
 # Signals that a page is blocked / behind a bot challenge and is worth retrying
 # through the proxy (PROXY_MODE=escalate).
 _BLOCK_STATUSES = {403, 429, 503, 520, 521, 522, 523, 524, 525, 526, 530}
+# STRONG, unambiguous interstitial fingerprints. We deliberately exclude weak words
+# like "captcha"/"recaptcha"/"access denied" because normal content pages reference
+# them in scripts (e.g. Crunchbase loads reCAPTCHA for its forms) — matching those
+# caused false "blocked" verdicts and needless proxy escalation.
 _CHALLENGE_MARKERS = (
-    "just a moment", "cf-browser-verification", "challenge-platform", "_cf_chl",
-    "cf-challenge", "/cdn-cgi/challenge-platform", "attention required",
-    "g-recaptcha", "recaptcha", "hcaptcha", "px-captcha", "captcha-delivery",
-    "access denied", "request blocked",
+    "just a moment", "cf-browser-verification", "/cdn-cgi/challenge-platform",
+    "attention required! | cloudflare", "checking your browser before",
+    "ddos protection by cloudflare", "please enable cookies and reload",
+    "verifying you are human",
 )
+# Challenge interstitials are small; a full content page that merely mentions a
+# captcha script is large, so a size guard avoids false positives.
+_CHALLENGE_MAX_BYTES = 60_000
 
 
 def _looks_blocked(outcome: "FetchOutcome") -> bool:
-    """A block status, or a challenge/CAPTCHA fingerprint in the body."""
+    """A block *status*, or a small page carrying a strong challenge fingerprint."""
     if outcome.status in _BLOCK_STATUSES:
         return True
     body = outcome.body or ""
-    if body:
-        low = body[:20000].lower()
+    if body and len(body) < _CHALLENGE_MAX_BYTES:
+        low = body.lower()
         return any(marker in low for marker in _CHALLENGE_MARKERS)
     return False
 
@@ -264,9 +271,10 @@ class CrawlEngine:
                 and _looks_blocked(outcome)
             ):
                 proxied = await _fetch_via(self._proxy_client, via_proxy=True)
-                if (not _looks_blocked(proxied)) or (
-                    proxied.error is FetchError.NONE and outcome.error is not FetchError.NONE
-                ):
+                # Only adopt the proxied result if it genuinely succeeded and isn't
+                # itself blocked. A proxy transport error (SSL/timeout) must NEVER
+                # replace a good direct result — keep the honest direct outcome.
+                if proxied.error is FetchError.NONE and not _looks_blocked(proxied):
                     outcome = proxied
                     artifact.egress = "proxy"
 
