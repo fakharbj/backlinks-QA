@@ -361,7 +361,12 @@ class CrawlEngine:
             if exp.valid:
                 targets.add(exp.normalized)
         targets.discard("")
-        return [link for link in links if link.normalized_url in targets]
+        return [
+            link
+            for link in links
+            if link.normalized_url in targets
+            or (link.unwrapped_url is not None and link.unwrapped_url in targets)
+        ]
 
     def _looks_js_driven(self, body: str) -> bool:
         if not body:

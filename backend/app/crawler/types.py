@@ -84,6 +84,9 @@ class ParsedLink:
     href: str                         # raw href as written
     resolved_url: str                 # absolute, resolved against base/final url
     normalized_url: str               # normalized form for matching
+    # Destination unwrapped from a redirect/tracker href (e.g. clutch.co/redirect?u=…)
+    # — normalized, used as an additional match candidate. None for plain links.
+    unwrapped_url: str | None = None
     anchor_text: str = ""
     image_alt: str | None = None
     rel: list[str] = field(default_factory=list)

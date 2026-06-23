@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import parse_qs, unquote, urlparse
 
 from lxml import etree, html as lxml_html
 
@@ -39,6 +40,47 @@ _SPAM_KEYWORDS = (
     "viagra", "cialis", "casino", "poker", "porn", "escort", "payday loan",
     "replica watch", "weight loss pill",
 )
+
+# Query params that commonly carry the real destination inside a redirect/tracker
+# link (e.g. directories like Clutch use r.clutch.co/redirect?...&u=<real url>).
+_REDIRECT_PARAMS = (
+    "u", "url", "q", "to", "dest", "destination", "target", "r", "redirect",
+    "redirect_url", "out", "link", "goto", "continue", "next", "uddg", "uri",
+)
+
+
+def _unwrap_redirect(href: str) -> str | None:
+    """If ``href`` is a redirect/tracker URL, return the embedded destination URL.
+
+    Looks for a query param whose value (after URL-decoding) is itself an absolute
+    http(s) URL — first by known param names, then any param. Returns None for a
+    normal direct link.
+    """
+    try:
+        query = urlparse(href).query
+    except ValueError:
+        return None
+    if not query:
+        return None
+    params = parse_qs(query, keep_blank_values=False)
+
+    def _abs_url(values: list[str]) -> str | None:
+        for value in values:
+            candidate = unquote(value).strip()
+            if candidate.lower().startswith(("http://", "https://")):
+                return candidate
+        return None
+
+    for key in _REDIRECT_PARAMS:
+        if key in params:
+            found = _abs_url(params[key])
+            if found:
+                return found
+    for values in params.values():       # fallback: any param holding an http url
+        found = _abs_url(values)
+        if found:
+            return found
+    return None
 
 
 @dataclass(slots=True)
@@ -386,6 +428,16 @@ def _extract_links(
         if not norm.valid:
             continue
 
+        # Unwrap redirect/tracker links so the real destination can be matched.
+        unwrapped_norm: str | None = None
+        unwrapped_raw = _unwrap_redirect(href)
+        if unwrapped_raw:
+            un = normalize_url(
+                unwrapped_raw, base_url=base_href, trailing_slash_policy=trailing_slash_policy
+            )
+            if un.valid:
+                unwrapped_norm = un.normalized
+
         region, in_iframe, sponsored, ugc = _ancestor_region(a)
         rel = [r for r in re.split(r"\s+", (a.get("rel") or "").lower()) if r]
         anchor = re.sub(r"\s+", " ", " ".join(a.itertext())).strip()
@@ -396,6 +448,7 @@ def _extract_links(
             href=href,
             resolved_url=norm.original if norm.normalized else href,
             normalized_url=norm.normalized,
+            unwrapped_url=unwrapped_norm,
             anchor_text=anchor,
             image_alt=image_alt,
             rel=rel,
