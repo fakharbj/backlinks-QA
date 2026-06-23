@@ -76,6 +76,9 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_vendor", "vendor_id"),
         Index("ix_backlink_records_campaign", "campaign_id"),
         Index("ix_backlink_records_tags", "tags", postgresql_using="gin"),
+        Index("ix_backlink_records_source_sheet", "source_sheet_id"),
+        Index("ix_backlink_records_assigned_label", "assigned_user_label"),
+        Index("ix_backlink_records_link_type", "link_type"),
         CheckConstraint("score >= 0 AND score <= 100", name="score_range"),
     )
 
@@ -112,6 +115,17 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expected_status: Mapped[str | None] = mapped_column(String(40), default="live")
     notes: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+
+    # ── Sheet-sourced input fields (Phase 2) ─────────────────────────────────
+    # The sheet is the source of truth for these; QA/result fields are owned by DB.
+    assigned_user_label: Mapped[str | None] = mapped_column(String(200))  # sheet "User"
+    employee_code: Mapped[str | None] = mapped_column(String(60))
+    link_type: Mapped[str | None] = mapped_column(String(60))             # free text
+    source_sheet_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="SET NULL")
+    )
+    sheet_row_ref: Mapped[str | None] = mapped_column(String(40))         # row number for write-back
+    sheet_created_date: Mapped[date | None] = mapped_column(Date)
 
     # ── Normalized forms (matching/indexing) ─────────────────────────────────
     source_url_normalized: Mapped[str] = mapped_column(String(2048), nullable=False)

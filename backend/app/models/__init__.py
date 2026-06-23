@@ -20,6 +20,7 @@ from app.models.imports import Import, ImportRow  # noqa: F401
 from app.models.project import Campaign, Project, ProjectMember, Vendor  # noqa: F401
 from app.models.report import Report  # noqa: F401
 from app.models.settings import Setting  # noqa: F401
+from app.models.sheets import SheetSource  # noqa: F401
 from app.models.user import (  # noqa: F401
     PasswordResetToken,
     RefreshToken,

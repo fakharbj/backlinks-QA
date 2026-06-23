@@ -84,6 +84,28 @@ export type BacklinkRow = {
   extra?: { metrics?: SiteMetrics } | null;
 };
 
+export type SheetSource = {
+  id: string;
+  project_id: string;
+  project_name: string;
+  spreadsheet_id: string;
+  sheet_tab: string | null;
+  source_url: string | null;
+  last_synced_at: string | null;
+  last_sync_status: string | null;
+  last_sync_error: string | null;
+  row_count: number;
+  imported_count: number;
+  updated_count: number;
+  writeback_enabled: boolean;
+};
+
+export type SheetConfig = {
+  enabled: boolean;
+  service_account_email: string | null;
+  main_sheet_id: string | null;
+};
+
 export type SiteMetrics = {
   provider?: string | null;
   global_rank?: number | null;

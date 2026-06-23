@@ -200,6 +200,21 @@ class Settings(BaseSettings):
     MOZ_API_TOKEN: str | None = None
     MOZ_API_ENDPOINT: str = "https://lsapi.seomoz.com/v2/url_metrics"
 
+    # ── Google Sheets (ingest + write-back) ──────────────────────────────────
+    # One global main sheet lists projects (Project Name + Project Sheet URL); each
+    # project sheet is synced into the system. Auth is a Google service account —
+    # share the sheets with the service-account email. Credentials come from env.
+    GOOGLE_SHEETS_ENABLED: bool = False
+    GOOGLE_SA_JSON_BASE64: str | None = None   # base64 of the service-account JSON
+    GOOGLE_SA_JSON_FILE: str | None = None     # or a path to the JSON file
+    GOOGLE_MAIN_SHEET_ID: str | None = None    # spreadsheet ID of the global main sheet
+    GOOGLE_MAIN_SHEET_TAB: str | None = None   # tab name (None → first worksheet)
+    GOOGLE_MAIN_PROJECT_COL: str = "Project Name"     # main-sheet column: project name
+    GOOGLE_MAIN_URL_COL: str = "Project Sheet URL"    # main-sheet column: project sheet link
+    # Spread the per-project syncs so 1,000 sheets don't hammer the Sheets API at once.
+    GOOGLE_SYNC_STAGGER_SECONDS: float = 2.0
+    GOOGLE_SHEETS_TIMEOUT_SECONDS: float = 60.0
+
     # ── Integrations ─────────────────────────────────────────────────────────
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587

@@ -17,6 +17,8 @@ CANONICAL_FIELDS = [
     "source_page_url", "target_url", "expected_target_url", "expected_anchor_text",
     "expected_rel", "campaign", "vendor", "client_name", "cost", "placement_date",
     "expected_status", "notes", "tags",
+    # Sheet-sourced fields (Phase 2)
+    "assigned_user_label", "employee_code", "link_type", "sheet_created_date",
 ]
 
 # Header synonyms → canonical field. Compared after lower/strip/space-collapse.
@@ -29,8 +31,19 @@ _SYNONYMS: dict[str, str] = {
     "expected target": "expected_target_url", "expected target url": "expected_target_url",
     "anchor": "expected_anchor_text", "anchor text": "expected_anchor_text",
     "expected anchor": "expected_anchor_text", "anchor_text": "expected_anchor_text",
-    "rel": "expected_rel", "link type": "expected_rel", "follow type": "expected_rel",
-    "dofollow": "expected_rel", "rel attribute": "expected_rel",
+    "rel": "expected_rel", "follow type": "expected_rel", "follow": "expected_rel",
+    "dofollow": "expected_rel", "rel attribute": "expected_rel", "follow status": "expected_rel",
+    # "Link type" is a FREE-TEXT category in the sheets (guest post, directory, …),
+    # NOT the rel attribute — map it to its own field.
+    "link type": "link_type", "linktype": "link_type", "type": "link_type",
+    "placement type": "link_type",
+    "user": "assigned_user_label", "assigned": "assigned_user_label",
+    "assigned user": "assigned_user_label", "assigned to": "assigned_user_label",
+    "employee": "assigned_user_label", "team member": "assigned_user_label",
+    "employee code": "employee_code", "emp code": "employee_code",
+    "employee id": "employee_code", "emp id": "employee_code", "staff code": "employee_code",
+    "sheet date": "sheet_created_date", "created date": "sheet_created_date",
+    "entry date": "sheet_created_date", "added date": "sheet_created_date",
     "campaign": "campaign", "campaign name": "campaign",
     "vendor": "vendor", "supplier": "vendor", "provider": "vendor", "seller": "vendor",
     "client": "client_name", "client name": "client_name", "customer": "client_name",

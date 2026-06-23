@@ -15,6 +15,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Sheet,
   ShieldAlert,
   Trash2,
   Upload,
@@ -38,12 +39,14 @@ import {
   Project,
   Report,
   Role,
+  SheetConfig,
+  SheetSource,
   SiteMetrics,
   TeamMember,
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "backlinks" | "imports" | "alerts" | "reports" | "team";
+type Tab = "overview" | "backlinks" | "imports" | "sheets" | "alerts" | "reports" | "team";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -136,6 +139,7 @@ export function WorkspaceApp() {
           {tab === "imports" ? (
             <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
+          {tab === "sheets" ? <SheetsDesk token={token} onNotice={setNotice} /> : null}
           {tab === "alerts" ? (
             <AlertsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -233,6 +237,7 @@ function TopBar({
     ["overview", "Overview", Gauge],
     ["backlinks", "Backlinks", Link2],
     ["imports", "Imports", Upload],
+    ["sheets", "Sheets", Sheet],
     ["alerts", "Alerts", Bell],
     ["reports", "Reports", FileSpreadsheet],
     ["team", "Team", Users]
@@ -1147,6 +1152,134 @@ function Severity({ value }: { value: string }) {
 
 function Empty({ label }: { label: string }) {
   return <div className="p-8 text-center text-sm text-muted">{label}</div>;
+}
+
+function SheetsDesk({
+  token,
+  onNotice
+}: {
+  token: string | null;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const config = useQuery({
+    queryKey: ["sheet-config", token],
+    enabled: Boolean(token),
+    queryFn: () => api<SheetConfig>("/sheets/config", { token })
+  });
+  const sheets = useQuery({
+    queryKey: ["sheets", token],
+    enabled: Boolean(token),
+    queryFn: () => api<SheetSource[]>("/sheets", { token })
+  });
+
+  const syncAll = useMutation({
+    mutationFn: () => api<{ message: string }>("/sheets/sync", { method: "POST", token }),
+    onSuccess: (r) => {
+      onNotice(r.message || "Main sheet sync started");
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["sheets"] }), 1500);
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const syncOne = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/sheets/${id}/sync`, { method: "POST", token }),
+    onSuccess: (r) => onNotice(r.message || "Sync started"),
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const cfg = config.data;
+  return (
+    <section className="space-y-4">
+      <div className="rounded-lg border border-line bg-panel p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Google Sheets</h2>
+            <p className="text-sm text-muted">
+              Sync projects and backlinks from your main sheet. One project sheet = one project.
+            </p>
+          </div>
+          <button
+            onClick={() => syncAll.mutate()}
+            disabled={!cfg?.enabled || syncAll.isPending}
+            className="flex items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white transition hover:bg-black disabled:opacity-50"
+          >
+            {syncAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            Sync from main sheet
+          </button>
+        </div>
+        {cfg && !cfg.enabled ? (
+          <div className="mt-3 rounded-md border border-line bg-field p-3 text-sm text-muted">
+            Google Sheets is not configured yet. Set the service account + main sheet ID in the
+            server <code>.env</code>, then share both the main sheet and every project sheet with
+            this service-account email:
+            <div className="mt-1 font-mono text-xs text-ink">
+              {cfg.service_account_email || "(service account not loaded — check GOOGLE_SA_JSON_BASE64)"}
+            </div>
+          </div>
+        ) : null}
+        {cfg?.enabled ? (
+          <div className="mt-3 text-xs text-muted">
+            Share sheets with: <span className="font-mono text-ink">{cfg.service_account_email}</span>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-line bg-panel">
+        <table className="min-w-[760px] w-full text-left text-sm">
+          <thead className="bg-field text-xs uppercase text-muted">
+            <tr>
+              <Th>Project</Th>
+              <Th>Status</Th>
+              <Th>Rows</Th>
+              <Th>New / Updated</Th>
+              <Th>Last synced</Th>
+              <Th>Action</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {(sheets.data || []).map((s) => (
+              <tr key={s.id}>
+                <Td>
+                  <div className="font-medium text-ink">{s.project_name}</div>
+                  <div className="max-w-[280px] truncate text-xs text-muted" title={s.source_url || ""}>
+                    {s.source_url}
+                  </div>
+                </Td>
+                <Td>
+                  <span
+                    className={clsx(
+                      "rounded px-2 py-0.5 text-xs font-medium",
+                      s.last_sync_status === "ok" && "bg-emerald-50 text-emerald-700",
+                      s.last_sync_status === "error" && "bg-red-50 text-danger",
+                      s.last_sync_status === "running" && "bg-amber-50 text-amber-700",
+                      !s.last_sync_status && "bg-field text-muted"
+                    )}
+                    title={s.last_sync_error || ""}
+                  >
+                    {s.last_sync_status || "never"}
+                  </span>
+                </Td>
+                <Td>{s.row_count}</Td>
+                <Td>{s.imported_count} / {s.updated_count}</Td>
+                <Td>{formatDate(s.last_synced_at)}</Td>
+                <Td>
+                  <button
+                    onClick={() => syncOne.mutate(s.id)}
+                    className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> Sync
+                  </button>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!sheets.isLoading && !sheets.data?.length ? (
+          <Empty label="No project sheets yet — run a sync from the main sheet" />
+        ) : null}
+      </div>
+    </section>
+  );
 }
 
 function Th({ children }: { children: React.ReactNode }) {

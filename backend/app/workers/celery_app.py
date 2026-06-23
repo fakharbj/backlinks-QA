@@ -48,6 +48,7 @@ celery_app.conf.task_queues = [
     Queue("qa"),
     Queue("alerts"),
     Queue("reports"),
+    Queue("sheets.sync"),
     Queue("maintenance"),
 ]
 
@@ -56,6 +57,7 @@ celery_app.conf.task_routes = {
     "tasks.imports.process_import": {"queue": "default"},
     "tasks.reports.generate_report": {"queue": "reports"},
     "tasks.alerts.dispatch_notification": {"queue": "alerts"},
+    "tasks.sheets.*": {"queue": "sheets.sync"},
     "tasks.maintenance.*": {"queue": "maintenance"},
     # crawl_batch is routed explicitly per-shard at dispatch time.
 }
@@ -86,6 +88,7 @@ celery_app.autodiscover_tasks(
         "app.workers.tasks.imports",
         "app.workers.tasks.reports",
         "app.workers.tasks.alerts",
+        "app.workers.tasks.sheets",
         "app.workers.tasks.maintenance",
     ],
     force=True,

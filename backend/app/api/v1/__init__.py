@@ -12,6 +12,7 @@ from app.api.v1 import (
     projects,
     reports,
     settings,
+    sheets,
     team,
 )
 
@@ -25,4 +26,5 @@ api_router.include_router(dashboard.router)
 api_router.include_router(reports.router)
 api_router.include_router(alerts.router)
 api_router.include_router(settings.router)
+api_router.include_router(sheets.router)
 api_router.include_router(team.router)
