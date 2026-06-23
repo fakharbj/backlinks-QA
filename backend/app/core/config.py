@@ -133,6 +133,14 @@ class Settings(BaseSettings):
     PROXY_VERIFY_TLS: bool = False
     # The unblocker is slower (it retries/renders server-side) → a longer timeout.
     PROXY_TIMEOUT: float = 90.0
+    # Extra headers added to every proxied request, as JSON in .env. Use this to
+    # turn on the provider's JavaScript rendering for SPA pages whose link is drawn
+    # client-side (e.g. IPRoyal: PROXY_HEADERS={"X-Render":"true"} — confirm the
+    # exact header in their docs). Empty by default.
+    PROXY_HEADERS: dict[str, str] = Field(default_factory=dict)
+    # Re-fetch a page through the proxy when the backlink is absent from the raw
+    # HTML and the page looks JavaScript-driven (the proxy can render JS).
+    PROXY_RENDER_ON_JS_MISSING: bool = True
 
     # ── Render escalation (Playwright) ───────────────────────────────────────
     # Off by default: the headless browser pool (Playwright) is an optional add-on

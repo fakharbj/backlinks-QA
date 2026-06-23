@@ -15,7 +15,7 @@ Dependency injection keeps the library framework-free:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
 
 import httpx
@@ -100,6 +100,8 @@ class CrawlConfig:
     proxy_egress_url: str | None = None
     proxy_verify: bool = False
     proxy_timeout: float = 90.0
+    proxy_headers: dict = field(default_factory=dict)
+    proxy_render_on_js_missing: bool = True
     render_enabled: bool = True
     render_timeout_ms: int = 20_000
     render_wait_until: str = "networkidle"
@@ -128,6 +130,8 @@ class CrawlConfig:
             proxy_egress_url=proxy.proxy_url(),
             proxy_verify=settings.PROXY_VERIFY_TLS,
             proxy_timeout=settings.PROXY_TIMEOUT,
+            proxy_headers=dict(settings.PROXY_HEADERS),
+            proxy_render_on_js_missing=settings.PROXY_RENDER_ON_JS_MISSING,
             render_enabled=settings.RENDER_ENABLED,
             render_timeout_ms=settings.RENDER_TIMEOUT_MS,
             render_wait_until=settings.RENDER_WAIT_UNTIL,
@@ -173,6 +177,8 @@ class CrawlEngine:
                 verify=self.config.proxy_verify,
                 http2=False,
             )
+            if self.config.proxy_headers:
+                self._proxy_client.headers.update(self.config.proxy_headers)
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -304,6 +310,42 @@ class CrawlEngine:
         if matched:
             artifact.matched_links = matched
             artifact.found_in_raw = True
+
+        # ── Proxy-render escalation ─────────────────────────────────────────
+        # The link is absent from raw HTML and the page looks JS-driven (e.g. an
+        # Angular/React SPA that injects the link client-side). Re-fetch through
+        # the IPRoyal proxy — which can render JavaScript — and re-parse/re-match.
+        if (
+            not artifact.found_in_raw
+            and request.allow_render
+            and self.config.proxy_render_on_js_missing
+            and self._proxy_client is not None
+            and artifact.egress != "proxy"
+            and not artifact.detection.captcha
+            and self._looks_js_driven(outcome.body)
+        ):
+            proxied = await _fetch_via(self._proxy_client, via_proxy=True)
+            if proxied.error is FetchError.NONE and proxied.status and proxied.status < 400:
+                outcome = proxied
+                artifact.egress = "proxy"
+                self._apply_fetch(artifact, outcome)
+                if artifact.is_html:
+                    artifact.raw_html = outcome.body
+                    page = parse_html(
+                        outcome.body,
+                        final_url=outcome.final_url or source.original,
+                        mode=CrawlMode.RAW,
+                        trailing_slash_policy=request.trailing_slash_policy,
+                    )
+                    self._apply_page(artifact, page)
+                    artifact.detection = detect_mod.detect(
+                        status=outcome.status, headers=outcome.headers,
+                        body=outcome.body, signals=artifact.signals,
+                    )
+                    matched = self._match_links(page.links, request)
+                    if matched:
+                        artifact.matched_links = matched
+                        artifact.found_in_raw = True
 
         # ── Render escalation (LNK-09) ──────────────────────────────────────
         should_render = (
