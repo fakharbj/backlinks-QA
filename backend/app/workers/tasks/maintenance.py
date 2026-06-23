@@ -16,7 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.db import ddl, init_db
+from app.db import init_db
 from app.db.session import engine, session_scope
 from app.models.audit import AuditLog
 from app.models.backlink import BacklinkRecord
@@ -83,11 +83,6 @@ async def _dispatch_due_rechecks_async(limit: int) -> dict:
     return {"queued": queued, "jobs": len(jobs)}
 
 
-async def _refresh_dashboards_async() -> dict:
-    await init_db.refresh_matviews(engine, concurrently=False)
-    return {"refreshed": len(ddl.MATVIEW_NAMES)}
-
-
 async def _ensure_partitions_async(months_forward: int) -> dict:
     await init_db.ensure_future_partitions(engine, months_forward=months_forward)
     return {"months_forward": months_forward}
@@ -120,18 +115,6 @@ async def _retention_cleanup_async() -> dict:
 )
 def dispatch_due_rechecks(self, limit: int = 5000) -> dict:
     return run_async(_dispatch_due_rechecks_async(limit))
-
-
-@celery_app.task(
-    name="tasks.maintenance.refresh_dashboards",
-    bind=True,
-    acks_late=True,
-    max_retries=3,
-    autoretry_for=(OperationalError,),
-    retry_backoff=True,
-)
-def refresh_dashboards(self) -> dict:
-    return run_async(_refresh_dashboards_async())
 
 
 @celery_app.task(

@@ -115,8 +115,11 @@ def rolling_partitions_sql(months_back: int = 1, months_forward: int = 3) -> lis
     return out
 
 
-# ── Materialized views (Arch §10) ───────────────────────────────────────────────
-# Effective status uses the manual override when present.
+# ── Materialized views (LEGACY) ─────────────────────────────────────────────────
+# DEPRECATED: the dashboard now queries ``backlink_records`` live
+# (app/services/dashboard_service.py), so nothing reads these views. They are kept
+# here ONLY so migration 0001 (create) and 0002 (drop) remain reproducible. Do not
+# add new readers; build dashboard aggregates as live queries or rollup tables.
 MATVIEWS_SQL = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_project_dashboard AS
 SELECT
@@ -178,8 +181,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_mv_domain_failures
 """
 
 MATVIEW_NAMES = ("mv_project_dashboard", "mv_vendor_failure_rates", "mv_domain_failures")
-
-
-def refresh_matviews_sql(concurrently: bool = True) -> list[str]:
-    mode = "CONCURRENTLY " if concurrently else ""
-    return [f"REFRESH MATERIALIZED VIEW {mode}{name};" for name in MATVIEW_NAMES]

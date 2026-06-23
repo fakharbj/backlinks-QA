@@ -67,10 +67,8 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.maintenance.dispatch_due_rechecks",
         "schedule": 300.0,  # every 5 minutes
     },
-    "refresh-matviews": {
-        "task": "tasks.maintenance.refresh_dashboards",
-        "schedule": 120.0,  # every 2 minutes
-    },
+    # NOTE: the dashboard reads backlink_records live (app/services/dashboard_service.py),
+    # so there is no materialized view to refresh anymore — that job was removed.
     "ensure-partitions": {
         "task": "tasks.maintenance.ensure_partitions",
         "schedule": crontab(hour="3", minute="0"),

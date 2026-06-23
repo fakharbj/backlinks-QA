@@ -28,24 +28,17 @@ async def init_models(engine: AsyncEngine) -> None:
             await conn.execute(text(stmt))
         for stmt in ddl.rolling_partitions_sql():
             await conn.execute(text(stmt))
-        for stmt in (s.strip() for s in ddl.MATVIEWS_SQL.split(";")):
-            if stmt:
-                await conn.execute(text(stmt))
+        # No materialized views: the dashboard queries backlink_records live.
 
 
 async def drop_all(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
+        # Drop any legacy matviews that may exist on older databases.
         for name in reversed(ddl.MATVIEW_NAMES):
             await conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
         await conn.run_sync(Base.metadata.drop_all)
         for _, name in reversed(ddl.ENUM_TYPES):
             await conn.execute(text(f"DROP TYPE IF EXISTS {name} CASCADE;"))
-
-
-async def refresh_matviews(engine: AsyncEngine, *, concurrently: bool = True) -> None:
-    async with engine.begin() as conn:
-        for stmt in ddl.refresh_matviews_sql(concurrently=concurrently):
-            await conn.execute(text(stmt))
 
 
 async def ensure_future_partitions(engine: AsyncEngine, months_forward: int = 3) -> None:
