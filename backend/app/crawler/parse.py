@@ -199,7 +199,7 @@ def _ancestor_region(el: object) -> tuple[str, bool, bool, bool]:
     return region, in_iframe, sponsored, ugc
 
 
-def _is_css_hidden(el: object) -> bool:
+def _hidden_self(el: object) -> bool:
     style = (el.get("style") or "").lower()
     if style and _HIDDEN_STYLE_RE.search(style):
         return True
@@ -209,6 +209,28 @@ def _is_css_hidden(el: object) -> bool:
         return True
     classes = (el.get("class") or "").lower()
     return any(h in classes.split() for h in _HIDDEN_CLASS_HINTS)
+
+
+def _is_css_hidden(el: object) -> bool:
+    """Hidden if the element OR any ancestor hides it (e.g. a parent display:none).
+
+    The element itself is checked fully; ancestors are checked only for *strong*
+    hidden signals (display:none / hidden attr / aria-hidden) to avoid false
+    positives from responsive utility classes on outer containers.
+    """
+    if _hidden_self(el):
+        return True
+    node = el.getparent() if hasattr(el, "getparent") else None
+    depth = 0
+    while node is not None and depth < 40:
+        style = (node.get("style") or "").lower()
+        if style and _HIDDEN_STYLE_RE.search(style):
+            return True
+        if node.get("hidden") is not None or node.get("aria-hidden") == "true":
+            return True
+        node = node.getparent()
+        depth += 1
+    return False
 
 
 def _in_noscript(el: object) -> bool:
