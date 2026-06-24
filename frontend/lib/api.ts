@@ -218,12 +218,14 @@ export type BacklinkDetail = BacklinkRow & {
 export type Report = {
   id: string;
   project_id: string | null;
+  project_name?: string | null;
   report_type: string;
   format: string;
   status: string;
   title: string;
   version?: number;
   is_latest?: boolean;
+  filters?: Record<string, unknown>;
   row_count: number | null;
   file_size: number | null;
   error: string | null;

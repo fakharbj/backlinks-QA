@@ -47,7 +47,26 @@ async def create_report(
 
 @router.get("", response_model=list[ReportOut])
 async def list_reports(ctx: AuthCtx, db: ReadSession) -> list[ReportOut]:
-    return [ReportOut.model_validate(r) for r in await report_service.list_reports(db, ctx)]
+    reports = await report_service.list_reports(db, ctx)
+    # Resolve project names so the UI can label reports clearly (not by id).
+    project_ids = {r.project_id for r in reports if r.project_id is not None}
+    names: dict = {}
+    if project_ids:
+        from sqlalchemy import select as _select
+
+        from app.models.project import Project
+
+        rows = (
+            await db.execute(_select(Project.id, Project.name).where(Project.id.in_(project_ids)))
+        ).all()
+        names = {pid: name for pid, name in rows}
+
+    out = []
+    for r in reports:
+        item = ReportOut.model_validate(r)
+        item.project_name = names.get(r.project_id) if r.project_id else "All projects"
+        out.append(item)
+    return out
 
 
 @router.get("/{report_id}", response_model=ReportOut)

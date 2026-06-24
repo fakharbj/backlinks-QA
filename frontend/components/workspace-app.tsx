@@ -6,10 +6,13 @@ import {
   BarChart3,
   Bell,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileSpreadsheet,
   Filter,
   Gauge,
+  History,
   Link2,
   Loader2,
   LogOut,
@@ -1089,9 +1092,37 @@ const REPORT_FACETS: Array<[string, string, string]> = [
   ["status", "status", "QA status"],
   ["index_status", "index_status", "Index"],
   ["duplicate_status", "duplicate_status", "Duplicate"],
-  ["user", "assigned_user_label", "User"],
+  ["user", "assigned_user_label", "Assigned user"],
   ["link_type", "link_type", "Link type"]
 ];
+
+// Plain-language report types (non-technical labels + a one-line description).
+const REPORT_TYPES: Array<{ value: string; label: string; desc: string }> = [
+  { value: "monthly_qa", label: "Full QA report", desc: "Every selected link with its full QA result, score, index and duplicate status." },
+  { value: "failed_links", label: "Problem links only", desc: "Only the links failing QA — the ones that need action." },
+  { value: "change_history", label: "Change history", desc: "What changed over time: links lost, status flips, anchor / rel changes." },
+  { value: "client", label: "Client summary", desc: "A clean, client-facing summary of backlink health." },
+  { value: "vendor", label: "Vendor report", desc: "Results grouped for reviewing a vendor's delivered links." },
+  { value: "campaign", label: "Campaign report", desc: "Results for one outreach campaign." }
+];
+
+const REPORT_FORMATS: Array<{ value: string; label: string; hint: string }> = [
+  { value: "xlsx", label: "Excel (.xlsx)", hint: "Best for filtering & sharing" },
+  { value: "csv", label: "CSV", hint: "Plain data for import" },
+  { value: "pdf", label: "PDF", hint: "Print / send to clients" }
+];
+
+const FILTER_LABELS: Record<string, string> = {
+  status: "QA status",
+  index_status: "Index",
+  duplicate_status: "Duplicate",
+  assigned_user_label: "User",
+  link_type: "Link type"
+};
+
+function typeLabel(t: string) {
+  return REPORT_TYPES.find((x) => x.value === t)?.label || t.replace(/_/g, " ");
+}
 
 function ReportsDesk({
   token,
@@ -1116,13 +1147,16 @@ function ReportsDesk({
 
   // Reuse the analytics engine to drive the report filter dropdowns + a live count.
   const facets = useQuery({
-    queryKey: ["report-facets", token, filters],
+    queryKey: ["report-facets", token, projectId, filters],
     enabled: Boolean(token),
     queryFn: () =>
       api<AnalyticsResponse>("/analytics/query", {
         token,
         method: "POST",
-        body: JSON.stringify({ filters, facets: REPORT_FACETS.map(([d]) => d) })
+        body: JSON.stringify({
+          filters: projectId ? { ...filters, project_id: projectId } : filters,
+          facets: REPORT_FACETS.map(([d]) => d)
+        })
       })
   });
   const matchCount = Number(facets.data?.summary?.total ?? 0);
@@ -1132,22 +1166,47 @@ function ReportsDesk({
     enabled: Boolean(token),
     queryFn: () => api<Report[]>("/reports", { token })
   });
+
+  // Group reports into version stacks by (type + project) — the same scope the
+  // backend uses for is_latest — so each card shows "Latest" + its older versions.
+  const groups = useMemo(() => {
+    const map = new Map<string, Report[]>();
+    for (const r of reports.data || []) {
+      const key = `${r.report_type}__${r.project_id || "all"}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(r);
+    }
+    const arr = [...map.values()].map((rs) =>
+      rs.slice().sort((a, b) => (b.version ?? 1) - (a.version ?? 1))
+    );
+    arr.sort(
+      (a, b) => new Date(b[0].created_at).getTime() - new Date(a[0].created_at).getTime()
+    );
+    return arr;
+  }, [reports.data]);
+
   const create = useMutation({
-    mutationFn: () =>
-      api<Report>("/reports", {
+    mutationFn: () => {
+      const filterWords = Object.entries(filters)
+        .map(([k, v]) => `${FILTER_LABELS[k] || k} ${v}`)
+        .join(", ");
+      const title = `${typeLabel(type)}${filterWords ? ` — ${filterWords}` : ""}`;
+      return api<Report>("/reports", {
         token,
         method: "POST",
         body: JSON.stringify({
           project_id: projectId || null,
           report_type: type,
           format,
-          title: `${type.replace(/_/g, " ")} report`,
+          title,
           filters: { ...filters, limit: 50000 }
         })
-      }),
+      });
+    },
     onSuccess: () => {
-      onNotice("Report queued — a new frozen version is generating");
+      onNotice("Report is generating — it will appear below as a new version.");
       queryClient.invalidateQueries({ queryKey: ["reports"] });
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["reports"] }), 2500);
     },
     onError: (err: Error) => onNotice(err.message)
   });
@@ -1162,7 +1221,7 @@ function ReportsDesk({
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${report.title || "report"}.${report.format}`.replace(/\s+/g, "_");
+      link.download = `${report.title || "report"}_v${report.version ?? 1}.${report.format}`.replace(/\s+/g, "_");
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1172,94 +1231,242 @@ function ReportsDesk({
     }
   }
 
+  const activeType = REPORT_TYPES.find((t) => t.value === type);
+
   return (
-    <section className="rounded-lg border border-line bg-panel">
-      <div className="flex flex-col gap-3 border-b border-line p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <section className="space-y-4">
+      {/* ── Builder ─────────────────────────────────────────────── */}
+      <div className="rounded-lg border border-line bg-panel">
+        <div className="border-b border-line p-4">
+          <h2 className="text-base font-semibold text-ink">Build a report</h2>
+          <p className="text-sm text-muted">
+            Pick what to include, choose a file type, and generate. Each time you generate the
+            same report, it&apos;s saved as a new <span className="font-medium text-ink">version</span>{" "}
+            — older ones are kept so you always have history.
+          </p>
+        </div>
+
+        <div className="space-y-4 p-4">
+          {/* Step 1 — type */}
           <div>
-            <h2 className="text-base font-semibold text-ink">Reports</h2>
-            <p className="text-sm text-muted">
-              Filtered, versioned exports (CSV / XLSX / PDF) — {matchCount.toLocaleString()} links match
-            </p>
+            <div className="mb-1.5 text-xs font-semibold uppercase text-muted">1 · What to report</div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {REPORT_TYPES.map((t) => (
+                <button
+                  key={t.value}
+                  onClick={() => setType(t.value)}
+                  className={clsx(
+                    "rounded-md border p-3 text-left transition",
+                    type === t.value
+                      ? "border-ocean bg-teal-50 ring-1 ring-ocean/30"
+                      : "border-line bg-white hover:border-ocean/40"
+                  )}
+                >
+                  <div className="text-sm font-semibold text-ink">{t.label}</div>
+                  <div className="mt-0.5 text-xs leading-snug text-muted">{t.desc}</div>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <select className="h-9 rounded-md border border-line bg-white px-3 text-sm" value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="monthly_qa">Monthly QA</option>
-              <option value="failed_links">Failed links</option>
-              <option value="client">Client</option>
-              <option value="campaign">Campaign</option>
-              <option value="vendor">Vendor</option>
-              <option value="change_history">Change history</option>
-            </select>
-            <select className="h-9 rounded-md border border-line bg-white px-3 text-sm" value={format} onChange={(e) => setFormat(e.target.value)}>
-              <option value="xlsx">XLSX</option>
-              <option value="csv">CSV</option>
-              <option value="pdf">PDF</option>
-            </select>
-            <button onClick={() => create.mutate()} className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white">
-              {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
-              Generate
-            </button>
-          </div>
-        </div>
-        {/* Connected filter bar — report only the matching rows */}
-        <div className="flex flex-wrap gap-2">
-          {REPORT_FACETS.map(([dim, key, label]) => {
-            const opts = facets.data?.facets?.[dim] || [];
-            return (
-              <select
-                key={dim}
-                className="h-8 rounded-md border border-line bg-white px-2 text-xs"
-                value={filters[key] || ""}
-                onChange={(e) => setFilter(key, e.target.value)}
-              >
-                <option value="">{label}: all</option>
-                {opts.map((o) => (
-                  <option key={String(o.value)} value={String(o.value)}>
-                    {String(o.label || o.value)} ({o.count})
-                  </option>
-                ))}
-              </select>
-            );
-          })}
-          {Object.keys(filters).length ? (
-            <button onClick={() => setFilters({})} className="text-xs font-medium text-ocean hover:underline">
-              Clear
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <div className="divide-y divide-line">
-        {(reports.data || []).map((report) => (
-          <div key={report.id} className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-ink">{report.title}</span>
-                <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-semibold text-muted">v{report.version ?? 1}</span>
-                {report.is_latest ? (
-                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">latest</span>
+
+          {/* Step 2 — which links (scope + filters + live count) */}
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase text-muted">2 · Which links</div>
+            <div className="rounded-md border border-line bg-white p-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+                <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-ink">
+                  Scope: {projectId ? "selected project" : "🏢 all projects"}
+                </span>
+                <span className="text-muted">
+                  This report will include{" "}
+                  <span className="font-semibold text-ink">{matchCount.toLocaleString()}</span> links.
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {REPORT_FACETS.map(([dim, key, label]) => {
+                  const opts = facets.data?.facets?.[dim] || [];
+                  return (
+                    <select
+                      key={dim}
+                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      value={filters[key] || ""}
+                      onChange={(e) => setFilter(key, e.target.value)}
+                    >
+                      <option value="">{label}: all</option>
+                      {opts.map((o) => (
+                        <option key={String(o.value)} value={String(o.value)}>
+                          {String(o.label || o.value)} ({o.count})
+                        </option>
+                      ))}
+                    </select>
+                  );
+                })}
+                {Object.keys(filters).length ? (
+                  <button
+                    onClick={() => setFilters({})}
+                    className="text-xs font-medium text-ocean hover:underline"
+                  >
+                    Clear filters
+                  </button>
                 ) : null}
               </div>
-              <div className="mt-1 text-xs text-muted">
-                {report.report_type} / {report.format} / {report.row_count ?? "-"} rows / {formatDate(report.created_at)}
-              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Status value={report.status.toUpperCase()} />
+          </div>
+
+          {/* Step 3 — format + generate */}
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase text-muted">3 · File type</div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap gap-2">
+                {REPORT_FORMATS.map((f) => (
+                  <button
+                    key={f.value}
+                    onClick={() => setFormat(f.value)}
+                    title={f.hint}
+                    className={clsx(
+                      "rounded-md border px-3 py-2 text-sm transition",
+                      format === f.value
+                        ? "border-ink bg-ink text-white"
+                        : "border-line bg-white text-ink hover:border-ink/40"
+                    )}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
               <button
-                disabled={report.status !== "completed"}
-                onClick={() => download(report)}
-                className="flex h-9 items-center gap-2 rounded-md border border-line px-3 text-sm font-medium text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => create.mutate()}
+                disabled={create.isPending}
+                className="flex h-11 items-center justify-center gap-2 rounded-md bg-ocean px-5 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:opacity-50"
               >
-                <Download className="h-4 w-4" />
-                Download
+                {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+                Generate {activeType?.label || "report"}
               </button>
             </div>
           </div>
-        ))}
-        {!reports.isLoading && !reports.data?.length ? <Empty label="No reports yet" /> : null}
+        </div>
+      </div>
+
+      {/* ── Saved reports (grouped by version) ──────────────────── */}
+      <div>
+        <div className="mb-2 flex items-center gap-2">
+          <History className="h-4 w-4 text-muted" />
+          <h3 className="text-sm font-semibold text-ink">Your reports</h3>
+          <span className="text-xs text-muted">— newest version on top, older versions tucked underneath</span>
+        </div>
+        <div className="space-y-3">
+          {groups.map((versions) => (
+            <ReportGroup key={versions[0].id} versions={versions} onDownload={download} />
+          ))}
+          {reports.isLoading ? <Empty label="Loading reports…" /> : null}
+          {!reports.isLoading && !groups.length ? (
+            <Empty label="No reports yet — build one above" />
+          ) : null}
+        </div>
       </div>
     </section>
+  );
+}
+
+function FilterSummary({ filters }: { filters?: Record<string, unknown> }) {
+  const entries = Object.entries(filters || {}).filter(([k]) => k !== "limit");
+  if (!entries.length) {
+    return <div className="mt-1 text-[11px] text-muted">All links (no filter)</div>;
+  }
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {entries.map(([k, v]) => (
+        <span key={k} className="rounded bg-field px-1.5 py-0.5 text-[10px] font-medium text-muted">
+          {FILTER_LABELS[k] || k}: {String(v)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ReportGroup({
+  versions,
+  onDownload
+}: {
+  versions: Report[];
+  onDownload: (r: Report) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const latest = versions[0];
+  const older = versions.slice(1);
+
+  return (
+    <div className="rounded-lg border border-line bg-panel">
+      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <FileSpreadsheet className="h-4 w-4 shrink-0 text-ocean" />
+            <span className="font-semibold text-ink">{typeLabel(latest.report_type)}</span>
+            <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-ink">
+              {latest.project_name || "All projects"}
+            </span>
+            {latest.is_latest !== false ? (
+              <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+                Latest · v{latest.version ?? 1}
+              </span>
+            ) : (
+              <span className="rounded bg-field px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                v{latest.version ?? 1}
+              </span>
+            )}
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            {latest.row_count ?? "—"} links · {(latest.format || "").toUpperCase()} ·{" "}
+            {formatDate(latest.created_at)}
+          </div>
+          <FilterSummary filters={latest.filters} />
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Status value={latest.status.toUpperCase()} />
+          <button
+            disabled={latest.status !== "completed"}
+            onClick={() => onDownload(latest)}
+            className="flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" />
+            Download
+          </button>
+        </div>
+      </div>
+
+      {older.length ? (
+        <div className="border-t border-line">
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="flex w-full items-center gap-1.5 px-4 py-2 text-xs font-medium text-muted transition hover:bg-field"
+          >
+            {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {open ? "Hide" : "Show"} {older.length} older version{older.length > 1 ? "s" : ""}
+          </button>
+          {open ? (
+            <div className="divide-y divide-line border-t border-line">
+              {older.map((r) => (
+                <div key={r.id} className="flex items-center justify-between gap-3 px-4 py-2">
+                  <div className="flex items-center gap-2 text-xs text-muted">
+                    <span className="rounded bg-field px-1.5 py-0.5 font-semibold">v{r.version ?? 1}</span>
+                    <span>
+                      {r.row_count ?? "—"} links · {(r.format || "").toUpperCase()} · {formatDate(r.created_at)}
+                    </span>
+                  </div>
+                  <button
+                    disabled={r.status !== "completed"}
+                    onClick={() => onDownload(r)}
+                    className="flex items-center gap-1 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Download
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

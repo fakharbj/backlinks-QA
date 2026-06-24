@@ -23,12 +23,14 @@ class ReportCreate(BaseModel):
 class ReportOut(ORMModel):
     id: uuid.UUID
     project_id: uuid.UUID | None
+    project_name: str | None = None
     report_type: ReportType
     format: ReportFormat
     status: ReportStatus
     title: str
     version: int = 1
     is_latest: bool = True
+    filters: dict = {}
     row_count: int | None
     file_size: int | None
     error: str | None
