@@ -226,11 +226,15 @@ class Settings(BaseSettings):
     INDEX_BATCH_LIMIT: int = 500           # max source URLs per dispatch
     INDEX_TIMEOUT_SECONDS: float = 45.0
     # Provider:
-    #  • "google_cse"   — official Google Custom Search JSON API (reliable JSON,
-    #    free 100 queries/day). RECOMMENDED. Needs GOOGLE_CSE_API_KEY + _CX.
+    #  • "serper"       — serper.dev Google Search API (reliable JSON, free 2,500
+    #    queries). RECOMMENDED. Needs SERPER_API_KEY.
+    #  • "google_cse"   — Google Custom Search JSON API. Note: Google deprecated
+    #    "Search the entire web" for new engines, so this only works for engines that
+    #    had it enabled previously. Needs GOOGLE_CSE_API_KEY + _CX.
     #  • "proxy_scrape" — scrape google.com/search via the proxy (unreliable; Google
     #    now serves a JS-only shell, so most results come back UNCERTAIN).
-    SERP_PROVIDER: Literal["google_cse", "proxy_scrape"] = "proxy_scrape"
+    SERP_PROVIDER: Literal["serper", "google_cse", "proxy_scrape"] = "proxy_scrape"
+    SERPER_API_KEY: str | None = None
     GOOGLE_CSE_API_KEY: str | None = None
     GOOGLE_CSE_CX: str | None = None       # Programmable Search Engine ID
     INDEX_GOOGLE_ENDPOINT: str = "https://www.google.com/search"  # proxy_scrape only

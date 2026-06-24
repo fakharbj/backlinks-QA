@@ -72,6 +72,8 @@ def classify_serp_html(status_code: int, html: str) -> tuple[str, int | None, st
 
 async def check_indexed(source_page_url: str) -> dict:
     """Run a `site:` check for one source URL. Always returns a dict; never raises."""
+    if settings.SERP_PROVIDER == "serper" and settings.SERPER_API_KEY:
+        return await _check_serper(source_page_url)
     if (
         settings.SERP_PROVIDER == "google_cse"
         and settings.GOOGLE_CSE_API_KEY
@@ -79,6 +81,31 @@ async def check_indexed(source_page_url: str) -> dict:
     ):
         return await _check_google_cse(source_page_url)
     return await _check_proxy_scrape(source_page_url)
+
+
+async def _check_serper(source_page_url: str) -> dict:
+    """serper.dev Google Search API — reliable JSON; indexed if it returns results."""
+    headers = {"X-API-KEY": settings.SERPER_API_KEY or "", "Content-Type": "application/json"}
+    body = {"q": f"site:{source_page_url}", "num": 10}
+    try:
+        async with httpx.AsyncClient(timeout=settings.INDEX_TIMEOUT_SECONDS) as client:
+            resp = await client.post("https://google.serper.dev/search", headers=headers, json=body)
+        if resp.status_code in (401, 403, 429):
+            return {"verdict": UNCERTAIN, "result_count": None,
+                    "evidence": {"reason": f"serper_http_{resp.status_code}"}}
+        if resp.status_code != 200:
+            return {"verdict": UNCERTAIN, "result_count": None,
+                    "evidence": {"reason": f"serper_http_{resp.status_code}", "body": resp.text[:200]}}
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("serper_check_failed", url=source_page_url, error=repr(exc))
+        return {"verdict": UNCERTAIN, "result_count": None,
+                "evidence": {"reason": "serper_error", "error": repr(exc)[:200]}}
+    organic = data.get("organic") or []
+    count = len(organic)
+    verdict = INDEXED if count > 0 else NOT_INDEXED
+    return {"verdict": verdict, "result_count": count,
+            "evidence": {"reason": "serper", "provider": "serper"}}
 
 
 async def _check_google_cse(source_page_url: str) -> dict:
