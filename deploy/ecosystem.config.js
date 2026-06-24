@@ -12,7 +12,7 @@ const FRONTEND = `${BASE}/frontend`;
 
 const CRAWL_QUEUES =
   "default,crawl.http.0,crawl.http.1,crawl.http.2,crawl.http.3," +
-  "crawl.render,qa,alerts,reports,sheets.sync,maintenance";
+  "crawl.render,qa,alerts,reports,sheets.sync,index.check,maintenance";
 
 module.exports = {
   apps: [

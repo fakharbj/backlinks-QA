@@ -81,6 +81,8 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_link_type", "link_type"),
         Index("ix_backlink_records_identity", "link_identity_id"),
         Index("ix_backlink_records_duplicate", "workspace_id", "duplicate_status"),
+        Index("ix_backlink_records_index_status", "workspace_id", "index_status"),
+        Index("ix_backlink_records_index_due", "index_checked_at"),
         CheckConstraint("score >= 0 AND score <= 100", name="score_range"),
     )
 
@@ -135,6 +137,11 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_duplicate: Mapped[bool] = mapped_column(default=False, nullable=False)
     # unique | dup_cross_project | dup_cross_user | dup_same_project
     duplicate_status: Mapped[str | None] = mapped_column(String(40))
+
+    # ── Index status (Phase 4) — denormalised from the latest source-URL check ─
+    index_status: Mapped[str | None] = mapped_column(String(20))  # indexed|not_indexed|uncertain
+    index_result_count: Mapped[int | None] = mapped_column(Integer)
+    index_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── Normalized forms (matching/indexing) ─────────────────────────────────
     source_url_normalized: Mapped[str] = mapped_column(String(2048), nullable=False)

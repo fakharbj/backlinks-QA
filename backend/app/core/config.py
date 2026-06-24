@@ -215,6 +215,18 @@ class Settings(BaseSettings):
     GOOGLE_SYNC_STAGGER_SECONDS: float = 2.0
     GOOGLE_SHEETS_TIMEOUT_SECONDS: float = 60.0
 
+    # ── Index checking (Google site: via the proxy) ──────────────────────────
+    # Checks whether the EXACT source URL is indexed by Google (site:<url>). Routed
+    # through the IPRoyal proxy (Google blocks datacenter IPs). Deduped by source
+    # URL and re-checked at most every INDEX_RECHECK_DAYS. Failures → UNCERTAIN,
+    # never a false "not indexed".
+    INDEX_CHECK_ENABLED: bool = True
+    INDEX_RECHECK_DAYS: int = 7
+    INDEX_GOOGLE_ENDPOINT: str = "https://www.google.com/search"
+    INDEX_STAGGER_SECONDS: float = 6.0     # delay between checks (anti-block)
+    INDEX_BATCH_LIMIT: int = 500           # max source URLs per dispatch
+    INDEX_TIMEOUT_SECONDS: float = 45.0
+
     # ── Integrations ─────────────────────────────────────────────────────────
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587

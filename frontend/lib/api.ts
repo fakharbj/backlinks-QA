@@ -85,6 +85,7 @@ export type BacklinkRow = {
   link_type?: string | null;
   is_duplicate?: boolean;
   duplicate_status?: string | null;
+  index_status?: string | null;
   tags: string[];
   extra?: { metrics?: SiteMetrics } | null;
 };

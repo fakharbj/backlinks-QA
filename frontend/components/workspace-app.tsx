@@ -421,13 +421,15 @@ function Backlinks({
   const queryClient = useQueryClient();
   const [status, setStatus] = useState("");
   const [dupFilter, setDupFilter] = useState("");
+  const [indexFilter, setIndexFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const query = useMemo(() => {
     const params = new URLSearchParams({ project_id: projectId, limit: "50", with_total: "true" });
     if (status) params.set("status", status);
     if (dupFilter) params.set("duplicate_status", dupFilter);
+    if (indexFilter) params.set("index_status", indexFilter);
     return params.toString();
-  }, [projectId, status, dupFilter]);
+  }, [projectId, status, dupFilter, indexFilter]);
   const backlinks = useQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token && projectId),
@@ -444,6 +446,16 @@ function Backlinks({
       onNotice(`Queued ${data.queued} backlinks`);
       queryClient.invalidateQueries({ queryKey: ["backlinks"] });
     },
+    onError: (err: Error) => onNotice(err.message)
+  });
+  const indexCheck = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/index/check", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ project_id: projectId })
+      }),
+    onSuccess: (r) => onNotice(r.message || "Index check started"),
     onError: (err: Error) => onNotice(err.message)
   });
 
@@ -480,6 +492,25 @@ function Backlinks({
             <option value="dup_same_project">Same-project dup</option>
             <option value="unique">Unique only</option>
           </select>
+          <select
+            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            value={indexFilter}
+            onChange={(event) => setIndexFilter(event.target.value)}
+          >
+            <option value="">Any index</option>
+            <option value="indexed">Indexed</option>
+            <option value="not_indexed">Not indexed</option>
+            <option value="uncertain">Index uncertain</option>
+            <option value="unchecked">Index unchecked</option>
+          </select>
+          <button
+            onClick={() => indexCheck.mutate()}
+            className="flex h-9 items-center gap-2 rounded-md border border-line px-3 text-sm font-semibold text-ink hover:bg-field"
+            title="Check whether source pages are indexed by Google (via proxy)"
+          >
+            {indexCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
+            Check index
+          </button>
           <button
             onClick={() => recheck.mutate()}
             className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white hover:bg-black"
@@ -517,12 +548,13 @@ function Backlinks({
                   <Url value={row.source_page_url} />
                   {row.is_duplicate ? (
                     <span
-                      className="mt-0.5 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700"
+                      className="mt-0.5 mr-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700"
                       title={row.duplicate_status || "duplicate"}
                     >
                       {(row.duplicate_status || "duplicate").replace("dup_", "").replace(/_/g, " ")}
                     </span>
                   ) : null}
+                  {row.index_status ? <IndexBadge value={row.index_status} /> : null}
                   {row.assigned_user_label ? (
                     <span className="mt-0.5 block text-[11px] text-muted">👤 {row.assigned_user_label}</span>
                   ) : null}
@@ -670,6 +702,10 @@ function BacklinkDetailDrawer({
               <FactRow
                 k="Duplicate status"
                 v={data.is_duplicate ? (data.duplicate_status || "duplicate").replace(/_/g, " ") : "unique"}
+              />
+              <FactRow
+                k="Google index"
+                v={data.index_status ? data.index_status.replace(/_/g, " ") : "not checked yet"}
               />
             </DetailBlock>
 
@@ -1351,6 +1387,24 @@ function SheetsDesk({
         ) : null}
       </div>
     </section>
+  );
+}
+
+function IndexBadge({ value }: { value: string }) {
+  const map: Record<string, string> = {
+    indexed: "bg-emerald-100 text-emerald-700",
+    not_indexed: "bg-red-100 text-danger",
+    uncertain: "bg-amber-100 text-amber-700"
+  };
+  const label: Record<string, string> = {
+    indexed: "indexed",
+    not_indexed: "not indexed",
+    uncertain: "idx ?"
+  };
+  return (
+    <span className={clsx("mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", map[value] || "bg-field text-muted")}>
+      {label[value] || value}
+    </span>
   );
 }
 

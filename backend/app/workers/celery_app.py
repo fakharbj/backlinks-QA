@@ -49,6 +49,7 @@ celery_app.conf.task_queues = [
     Queue("alerts"),
     Queue("reports"),
     Queue("sheets.sync"),
+    Queue("index.check"),
     Queue("maintenance"),
 ]
 
@@ -58,6 +59,7 @@ celery_app.conf.task_routes = {
     "tasks.reports.generate_report": {"queue": "reports"},
     "tasks.alerts.dispatch_notification": {"queue": "alerts"},
     "tasks.sheets.*": {"queue": "sheets.sync"},
+    "tasks.index.*": {"queue": "index.check"},
     "tasks.maintenance.*": {"queue": "maintenance"},
     # crawl_batch is routed explicitly per-shard at dispatch time.
 }
@@ -75,6 +77,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.maintenance.ensure_partitions",
         "schedule": crontab(hour="3", minute="0"),
     },
+    "weekly-index-sweep": {
+        "task": "tasks.index.weekly_index_sweep",
+        "schedule": crontab(day_of_week="1", hour="5", minute="0"),  # Mondays 05:00 UTC
+    },
     "retention-cleanup": {
         "task": "tasks.maintenance.retention_cleanup",
         "schedule": crontab(hour="4", minute="0"),
@@ -89,6 +95,7 @@ celery_app.autodiscover_tasks(
         "app.workers.tasks.reports",
         "app.workers.tasks.alerts",
         "app.workers.tasks.sheets",
+        "app.workers.tasks.index",
         "app.workers.tasks.maintenance",
     ],
     force=True,

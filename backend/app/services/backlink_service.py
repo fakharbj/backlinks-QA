@@ -66,6 +66,11 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
             stmt = stmt.where(BacklinkRecord.is_duplicate.is_(True))
         else:
             stmt = stmt.where(BacklinkRecord.duplicate_status == f.duplicate_status)
+    if f.index_status:
+        if f.index_status == "unchecked":
+            stmt = stmt.where(BacklinkRecord.index_status.is_(None))
+        else:
+            stmt = stmt.where(BacklinkRecord.index_status == f.index_status)
     if f.source_domain:
         stmt = stmt.where(BacklinkRecord.source_domain == f.source_domain.lower())
     if f.tag:

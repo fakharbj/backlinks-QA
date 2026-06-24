@@ -50,6 +50,7 @@ async def list_backlinks(
     assigned_user_label: str | None = None,
     link_type: str | None = None,
     duplicate_status: str | None = None,
+    index_status: str | None = None,
     search: str | None = None,
     sort: str = Query(default="score", pattern="^(score|last_checked_at|created_at)$"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -62,7 +63,8 @@ async def list_backlinks(
         robots_status=robots_status, canonical_status=canonical_status, vendor_id=vendor_id,
         campaign_id=campaign_id, tag=tag, source_domain=source_domain,
         assigned_user_id=assigned_user_id, assigned_user_label=assigned_user_label,
-        link_type=link_type, duplicate_status=duplicate_status, search=search,
+        link_type=link_type, duplicate_status=duplicate_status, index_status=index_status,
+        search=search,
     )
     rows, next_cursor, has_more = await backlink_service.list_backlinks(
         db, ctx, filters, sort=sort, limit=limit, cursor=cursor

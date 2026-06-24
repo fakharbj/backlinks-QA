@@ -17,6 +17,7 @@ from app.models.enums import (  # noqa: F401
     ReportType,
 )
 from app.models.imports import Import, ImportRow  # noqa: F401
+from app.models.index_check import IndexCheck  # noqa: F401
 from app.models.link_identity import AssignmentHistory, LinkIdentity  # noqa: F401
 from app.models.project import Campaign, Project, ProjectMember, Vendor  # noqa: F401
 from app.models.report import Report  # noqa: F401

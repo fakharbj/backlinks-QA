@@ -69,6 +69,7 @@ class BacklinkRow(ORMModel):
     link_type: str | None = None
     is_duplicate: bool = False
     duplicate_status: str | None = None
+    index_status: str | None = None
     tags: list[str]
     extra: dict[str, Any] = Field(default_factory=dict)  # carries extra["metrics"]
 
@@ -154,6 +155,7 @@ class BacklinkFilters(BaseModel):
     assigned_user_label: str | None = None
     link_type: str | None = None
     duplicate_status: str | None = None  # "duplicate" (any) | a specific status
+    index_status: str | None = None      # indexed | not_indexed | uncertain | unchecked
     search: str | None = None
 
 
