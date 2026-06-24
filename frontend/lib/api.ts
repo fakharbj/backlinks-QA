@@ -340,7 +340,7 @@ export async function api<T>(
   const { token, headers, ...rest } = options;
   // Always use the managed access token (kept fresh by refresh); the passed token
   // is only a fallback before tokens are loaded.
-  const authHeader = () => {
+  const authHeader = (): Record<string, string> => {
     const tok = _access ?? token ?? null;
     return tok ? { Authorization: `Bearer ${tok}` } : {};
   };
