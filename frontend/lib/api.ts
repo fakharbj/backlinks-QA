@@ -97,6 +97,13 @@ export type AssignmentEvent = {
   changed_at: string;
 };
 
+export type AnalyticsResponse = {
+  summary: Record<string, number>;
+  facets: Record<string, Array<{ value: string; label?: string; count: number }>>;
+  groups: Array<Record<string, number | string>>;
+  dimensions: string[];
+};
+
 export type SheetSource = {
   id: string;
   project_id: string;

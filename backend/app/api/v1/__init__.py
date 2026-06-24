@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     alerts,
+    analytics,
     auth,
     backlinks,
     crawl,
@@ -24,6 +25,7 @@ api_router.include_router(backlinks.router)
 api_router.include_router(imports.router)
 api_router.include_router(crawl.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(analytics.router)
 api_router.include_router(index.router)
 api_router.include_router(reports.router)
 api_router.include_router(alerts.router)

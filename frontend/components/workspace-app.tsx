@@ -3,6 +3,7 @@
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Bell,
   CheckCircle2,
   Download,
@@ -29,6 +30,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
   AlertRule,
+  AnalyticsResponse,
   api,
   API_BASE,
   ApiError,
@@ -47,7 +49,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "backlinks" | "imports" | "sheets" | "alerts" | "reports" | "team";
+type Tab = "overview" | "analytics" | "backlinks" | "imports" | "sheets" | "alerts" | "reports" | "team";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -134,6 +136,7 @@ export function WorkspaceApp() {
           {tab === "overview" ? (
             <Overview token={token} projectId={activeProjectId} />
           ) : null}
+          {tab === "analytics" ? <AnalyticsDesk token={token} /> : null}
           {tab === "backlinks" ? (
             <Backlinks token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -236,6 +239,7 @@ function TopBar({
 }) {
   const tabs: Array<[Tab, string, typeof Gauge]> = [
     ["overview", "Overview", Gauge],
+    ["analytics", "Analytics", BarChart3],
     ["backlinks", "Backlinks", Link2],
     ["imports", "Imports", Upload],
     ["sheets", "Sheets", Sheet],
@@ -1385,6 +1389,163 @@ function SheetsDesk({
         {!sheets.isLoading && !sheets.data?.length ? (
           <Empty label="No project sheets yet — run a sync from the main sheet" />
         ) : null}
+      </div>
+    </section>
+  );
+}
+
+// Maps a facet dimension → the filter key it sets + a human label.
+const ANALYTICS_FACETS: Array<[string, string, string]> = [
+  ["project", "project_id", "Project"],
+  ["user", "assigned_user_label", "User"],
+  ["link_type", "link_type", "Link type"],
+  ["status", "status", "QA status"],
+  ["index_status", "index_status", "Index"],
+  ["duplicate_status", "duplicate_status", "Duplicate"],
+  ["rel", "rel", "Rel"]
+];
+
+const GROUP_OPTIONS: Array<[string, string]> = [
+  ["user", "User"],
+  ["project", "Project"],
+  ["link_type", "Link type"],
+  ["status", "QA status"],
+  ["index_status", "Index status"],
+  ["duplicate_status", "Duplicate status"],
+  ["rel", "Rel"],
+  ["vendor", "Vendor"],
+  ["source_domain", "Source domain"]
+];
+
+function pct(n: number, total: number) {
+  if (!total) return "0%";
+  return `${Math.round((n / total) * 100)}%`;
+}
+
+function AnalyticsDesk({ token }: { token: string | null }) {
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [groupBy, setGroupBy] = useState("user");
+
+  const q = useQuery({
+    queryKey: ["analytics", token, filters, groupBy],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<AnalyticsResponse>("/analytics/query", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          filters,
+          group_by: groupBy,
+          facets: ANALYTICS_FACETS.map(([dim]) => dim)
+        })
+      })
+  });
+
+  const s = q.data?.summary || {};
+  const total = Number(s.total || 0);
+  const setFilter = (key: string, value: string) =>
+    setFilters((f) => {
+      const next = { ...f };
+      if (value) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+
+  return (
+    <section className="space-y-4">
+      {/* Filter bar (connected facets with live counts) */}
+      <div className="rounded-lg border border-line bg-panel p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-ink">Analytics</h2>
+          {Object.keys(filters).length ? (
+            <button onClick={() => setFilters({})} className="text-xs font-medium text-ocean hover:underline">
+              Clear filters
+            </button>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {ANALYTICS_FACETS.map(([dim, key, label]) => {
+            const opts = q.data?.facets?.[dim] || [];
+            return (
+              <select
+                key={dim}
+                className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                value={filters[key] || ""}
+                onChange={(e) => setFilter(key, e.target.value)}
+              >
+                <option value="">{label}: all</option>
+                {opts.map((o) => (
+                  <option key={String(o.value)} value={String(o.value)}>
+                    {String(o.label || o.value)} ({o.count})
+                  </option>
+                ))}
+              </select>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <Metric label="Total" value={total} icon={Link2} tone="ink" />
+        <Metric label="Indexed" value={`${Number(s.indexed || 0)} · ${pct(Number(s.indexed || 0), total)}`} icon={CheckCircle2} tone="ocean" />
+        <Metric label="Not indexed" value={Number(s.not_indexed || 0)} icon={XCircle} tone="danger" />
+        <Metric label="Failing" value={`${Number(s.fail || 0)} · ${pct(Number(s.fail || 0), total)}`} icon={XCircle} tone="danger" />
+        <Metric label="Nofollow" value={`${Number(s.nofollow || 0)} · ${pct(Number(s.nofollow || 0), total)}`} icon={AlertTriangle} tone="ember" />
+        <Metric label="Duplicates" value={Number(s.duplicates || 0)} icon={Filter} tone="plum" />
+      </div>
+
+      {/* Group-by pivot */}
+      <div className="rounded-lg border border-line bg-panel">
+        <div className="flex items-center justify-between border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">Breakdown</h3>
+          <select
+            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value)}
+          >
+            {GROUP_OPTIONS.map(([v, l]) => (
+              <option key={v} value={v}>Group by {l}</option>
+            ))}
+          </select>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-[900px] w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr>
+                <Th>{GROUP_OPTIONS.find(([v]) => v === groupBy)?.[1] || "Group"}</Th>
+                <Th>Total</Th>
+                <Th>Avg score</Th>
+                <Th>Pass / Warn / Fail</Th>
+                <Th>Indexed %</Th>
+                <Th>Nofollow %</Th>
+                <Th>Dups</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(q.data?.groups || []).map((g, i) => {
+                const t = Number(g.total || 0);
+                const name = (g.label && String(g.label)) || String(g.key);
+                return (
+                  <tr key={i} className="hover:bg-field/60">
+                    <Td><span className="font-medium text-ink">{name || "—"}</span></Td>
+                    <Td>{t}</Td>
+                    <Td>{g.avg_score ?? "-"}</Td>
+                    <Td>
+                      <span className="text-ocean">{Number(g.pass || 0)}</span> /{" "}
+                      <span className="text-ember">{Number(g.warning || 0)}</span> /{" "}
+                      <span className="text-danger">{Number(g.fail || 0)}</span>
+                    </Td>
+                    <Td>{pct(Number(g.indexed || 0), t)}</Td>
+                    <Td>{pct(Number(g.nofollow || 0), t)}</Td>
+                    <Td>{Number(g.duplicates || 0)}</Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!q.isLoading && !(q.data?.groups || []).length ? <Empty label="No data for these filters" /> : null}
+        </div>
       </div>
     </section>
   );
