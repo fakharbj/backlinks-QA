@@ -79,6 +79,8 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_source_sheet", "source_sheet_id"),
         Index("ix_backlink_records_assigned_label", "assigned_user_label"),
         Index("ix_backlink_records_link_type", "link_type"),
+        Index("ix_backlink_records_identity", "link_identity_id"),
+        Index("ix_backlink_records_duplicate", "workspace_id", "duplicate_status"),
         CheckConstraint("score >= 0 AND score <= 100", name="score_range"),
     )
 
@@ -126,6 +128,13 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     sheet_row_ref: Mapped[str | None] = mapped_column(String(40))         # row number for write-back
     sheet_created_date: Mapped[date | None] = mapped_column(Date)
+
+    # ── Duplicate detection (Phase 3) ────────────────────────────────────────
+    # Identity = (source_url_normalized, target_domain) per workspace.
+    link_identity_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    is_duplicate: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # unique | dup_cross_project | dup_cross_user | dup_same_project
+    duplicate_status: Mapped[str | None] = mapped_column(String(40))
 
     # ── Normalized forms (matching/indexing) ─────────────────────────────────
     source_url_normalized: Mapped[str] = mapped_column(String(2048), nullable=False)

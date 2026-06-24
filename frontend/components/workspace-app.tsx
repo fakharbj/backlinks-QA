@@ -32,6 +32,7 @@ import {
   api,
   API_BASE,
   ApiError,
+  AssignmentEvent,
   BacklinkDetail,
   BacklinkRow,
   Dashboard,
@@ -419,12 +420,14 @@ function Backlinks({
 }) {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState("");
+  const [dupFilter, setDupFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const query = useMemo(() => {
     const params = new URLSearchParams({ project_id: projectId, limit: "50", with_total: "true" });
     if (status) params.set("status", status);
+    if (dupFilter) params.set("duplicate_status", dupFilter);
     return params.toString();
-  }, [projectId, status]);
+  }, [projectId, status, dupFilter]);
   const backlinks = useQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token && projectId),
@@ -465,6 +468,18 @@ function Backlinks({
             <option value="NEEDS_MANUAL_REVIEW">Review</option>
             <option value="PENDING">Pending</option>
           </select>
+          <select
+            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            value={dupFilter}
+            onChange={(event) => setDupFilter(event.target.value)}
+          >
+            <option value="">All links</option>
+            <option value="duplicate">Duplicates only</option>
+            <option value="dup_cross_project">Cross-project dup</option>
+            <option value="dup_cross_user">Cross-user dup</option>
+            <option value="dup_same_project">Same-project dup</option>
+            <option value="unique">Unique only</option>
+          </select>
           <button
             onClick={() => recheck.mutate()}
             className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white hover:bg-black"
@@ -498,7 +513,20 @@ function Backlinks({
               >
                 <Td><Status value={row.override_status || row.status} /></Td>
                 <Td><span className="font-semibold">{row.score ?? "-"}</span></Td>
-                <Td><Url value={row.source_page_url} /></Td>
+                <Td>
+                  <Url value={row.source_page_url} />
+                  {row.is_duplicate ? (
+                    <span
+                      className="mt-0.5 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700"
+                      title={row.duplicate_status || "duplicate"}
+                    >
+                      {(row.duplicate_status || "duplicate").replace("dup_", "").replace(/_/g, " ")}
+                    </span>
+                  ) : null}
+                  {row.assigned_user_label ? (
+                    <span className="mt-0.5 block text-[11px] text-muted">👤 {row.assigned_user_label}</span>
+                  ) : null}
+                </Td>
                 <Td><Url value={row.target_url} /></Td>
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
@@ -539,6 +567,16 @@ function BacklinkDetailDrawer({
     queryKey: ["backlink", token, backlinkId],
     enabled: Boolean(token),
     queryFn: () => api<BacklinkDetail>(`/backlinks/${backlinkId}`, { token })
+  });
+  const duplicates = useQuery({
+    queryKey: ["backlink-dupes", token, backlinkId],
+    enabled: Boolean(token),
+    queryFn: () => api<BacklinkRow[]>(`/backlinks/${backlinkId}/duplicates`, { token })
+  });
+  const assignments = useQuery({
+    queryKey: ["backlink-assign", token, backlinkId],
+    enabled: Boolean(token),
+    queryFn: () => api<AssignmentEvent[]>(`/backlinks/${backlinkId}/assignment-history`, { token })
   });
 
   const recheck = useMutation({
@@ -627,7 +665,41 @@ function BacklinkDetailDrawer({
                     : "Not fetched (metrics API not configured)"
                 }
               />
+              <FactRow k="Assigned user / employee" v={`${data.assigned_user_label ?? "-"}${data.employee_code ? ` (${data.employee_code})` : ""}`} />
+              <FactRow k="Link type" v={data.link_type || "-"} />
+              <FactRow
+                k="Duplicate status"
+                v={data.is_duplicate ? (data.duplicate_status || "duplicate").replace(/_/g, " ") : "unique"}
+              />
             </DetailBlock>
+
+            {duplicates.data && duplicates.data.length > 0 ? (
+              <DetailBlock title={`Duplicate occurrences (${duplicates.data.length})`}>
+                <div className="space-y-1.5">
+                  {duplicates.data.map((d) => (
+                    <div key={d.id} className="rounded-md border border-line p-2 text-xs">
+                      <div className="truncate font-medium text-ink" title={d.source_page_url}>{d.source_page_url}</div>
+                      <div className="text-muted">
+                        → {d.target_url} · {d.assigned_user_label || "no user"} · {(d.duplicate_status || "").replace(/_/g, " ")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </DetailBlock>
+            ) : null}
+
+            {assignments.data && assignments.data.length > 0 ? (
+              <DetailBlock title="Assignment history">
+                <div className="space-y-1.5">
+                  {assignments.data.map((a, i) => (
+                    <div key={i} className="flex items-center justify-between text-sm">
+                      <span className="text-ink">{a.old_user_label || "—"} → {a.new_user_label || "—"}</span>
+                      <span className="text-xs text-muted">{formatDate(a.changed_at)} · {a.source}</span>
+                    </div>
+                  ))}
+                </div>
+              </DetailBlock>
+            ) : null}
 
             {data.score_breakdown.length ? (
               <DetailBlock title="Score breakdown">

@@ -64,8 +64,13 @@ class BacklinkRow(ORMModel):
     last_checked_at: datetime | None
     next_check_at: datetime | None
     assigned_user_id: uuid.UUID | None
+    assigned_user_label: str | None = None
+    employee_code: str | None = None
+    link_type: str | None = None
+    is_duplicate: bool = False
+    duplicate_status: str | None = None
     tags: list[str]
-    extra: dict[str, Any] = Field(default_factory=dict)  # carries extra["moz"] = {da,pa,spam_score}
+    extra: dict[str, Any] = Field(default_factory=dict)  # carries extra["metrics"]
 
 
 class IssueOut(BaseModel):
@@ -146,7 +151,17 @@ class BacklinkFilters(BaseModel):
     tag: str | None = None
     source_domain: str | None = None
     assigned_user_id: uuid.UUID | None = None
+    assigned_user_label: str | None = None
+    link_type: str | None = None
+    duplicate_status: str | None = None  # "duplicate" (any) | a specific status
     search: str | None = None
+
+
+class AssignmentEventOut(BaseModel):
+    old_user_label: str | None
+    new_user_label: str | None
+    source: str
+    changed_at: datetime
 
 
 class RecheckRequest(BaseModel):

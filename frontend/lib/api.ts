@@ -80,8 +80,20 @@ export type BacklinkRow = {
   last_checked_at: string | null;
   next_check_at: string | null;
   assigned_user_id: string | null;
+  assigned_user_label?: string | null;
+  employee_code?: string | null;
+  link_type?: string | null;
+  is_duplicate?: boolean;
+  duplicate_status?: string | null;
   tags: string[];
   extra?: { metrics?: SiteMetrics } | null;
+};
+
+export type AssignmentEvent = {
+  old_user_label: string | null;
+  new_user_label: string | null;
+  source: string;
+  changed_at: string;
 };
 
 export type SheetSource = {

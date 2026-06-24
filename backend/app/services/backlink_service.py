@@ -57,6 +57,15 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
         stmt = stmt.where(BacklinkRecord.campaign_id == f.campaign_id)
     if f.assigned_user_id:
         stmt = stmt.where(BacklinkRecord.assigned_user_id == f.assigned_user_id)
+    if f.assigned_user_label:
+        stmt = stmt.where(BacklinkRecord.assigned_user_label == f.assigned_user_label)
+    if f.link_type:
+        stmt = stmt.where(BacklinkRecord.link_type == f.link_type)
+    if f.duplicate_status:
+        if f.duplicate_status == "duplicate":  # any duplicate
+            stmt = stmt.where(BacklinkRecord.is_duplicate.is_(True))
+        else:
+            stmt = stmt.where(BacklinkRecord.duplicate_status == f.duplicate_status)
     if f.source_domain:
         stmt = stmt.where(BacklinkRecord.source_domain == f.source_domain.lower())
     if f.tag:
@@ -183,6 +192,42 @@ async def get_detail(db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID)
         ).scalars().all()
     )
     return bl, issues, latest, history
+
+
+async def list_duplicate_occurrences(
+    db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID
+) -> list[BacklinkRecord]:
+    """Other backlinks that share this one's identity (same source + target domain)."""
+    bl = await get_backlink(db, ctx, backlink_id)
+    if bl.link_identity_id is None:
+        return []
+    stmt = _scope(
+        select(BacklinkRecord).where(
+            BacklinkRecord.link_identity_id == bl.link_identity_id,
+            BacklinkRecord.id != bl.id,
+        ),
+        ctx,
+    ).order_by(BacklinkRecord.project_id.asc(), BacklinkRecord.id.asc()).limit(200)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_assignment_history(
+    db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID
+):
+    """Assignment-change timeline for a backlink (newest first)."""
+    from app.models.link_identity import AssignmentHistory
+
+    await get_backlink(db, ctx, backlink_id)  # scope check
+    return list(
+        (
+            await db.execute(
+                select(AssignmentHistory)
+                .where(AssignmentHistory.backlink_id == backlink_id)
+                .order_by(AssignmentHistory.changed_at.desc())
+                .limit(100)
+            )
+        ).scalars().all()
+    )
 
 
 async def update_backlink(

@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import AuthContext
 from app.crawler.normalize import normalize_url
 from app.models.backlink import BacklinkRecord
+from app.models.link_identity import AssignmentHistory
 from app.models.user import User, WorkspaceMember
+from app.services import duplicate_service
 from app.services.catalog_helpers import resolve_campaign, resolve_vendor
 from app.models.enums import (
     ImportRowStatus,
@@ -91,6 +93,8 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
 
     new_ids: list[uuid.UUID] = []
     seen_in_batch: set[tuple[str, str]] = set()
+    dirty_identities: set[uuid.UUID] = set()
+    identity_cache: dict[str, uuid.UUID] = {}
     processed = 0
 
     # Resolve the sheet "User" label to an app user when it matches an account
@@ -107,7 +111,9 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
 
     for row in rows:
         try:
-            created_id = await _process_row(db, imp, row, seen_in_batch, user_map)
+            created_id = await _process_row(
+                db, imp, row, seen_in_batch, user_map, dirty_identities, identity_cache
+            )
             if created_id is not None:
                 new_ids.append(created_id)
         except Exception as exc:  # noqa: BLE001 - per-row isolation; never abort the import
@@ -118,6 +124,9 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
         imp.processed_rows = processed
         if processed % commit_every == 0:
             await db.commit()
+
+    # Recompute duplicate status for every identity this import touched.
+    await duplicate_service.recompute(db, dirty_identities)
 
     imp.status = (
         ImportStatus.COMPLETED if imp.error_rows == 0 else ImportStatus.PARTIAL
@@ -132,6 +141,8 @@ async def _process_row(
     row: ImportRow,
     seen: set[tuple[str, str]],
     user_map: dict[str, uuid.UUID],
+    dirty_identities: set[uuid.UUID],
+    identity_cache: dict[str, uuid.UUID],
 ) -> uuid.UUID | None:
     data = row.mapped or {}
     source = (data.get("source_page_url") or "").strip()
@@ -187,7 +198,22 @@ async def _process_row(
         # (QA/result fields are untouched). A CSV/manual import keeps the old
         # behaviour of treating an existing row as a duplicate.
         if from_sheet:
+            old_label = existing.assigned_user_label
             _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id)
+            identity_id = await duplicate_service.resolve_identity(
+                db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
+            )
+            existing.link_identity_id = identity_id
+            dirty_identities.add(identity_id)
+            new_label = existing.assigned_user_label
+            if old_label and new_label and old_label != new_label:
+                db.add(
+                    AssignmentHistory(
+                        workspace_id=imp.workspace_id, project_id=imp.project_id,
+                        backlink_id=existing.id, link_identity_id=identity_id,
+                        old_user_label=old_label, new_user_label=new_label, source="sheet",
+                    )
+                )
             row.status = ImportRowStatus.IMPORTED
             row.backlink_id = existing.id
             imp.imported_rows += 1
@@ -211,6 +237,11 @@ async def _process_row(
         next_check_at=datetime.now(timezone.utc),
     )
     _apply_input_fields(backlink, data, imp, row, user_map, vendor_id, campaign_id)
+    identity_id = await duplicate_service.resolve_identity(
+        db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
+    )
+    backlink.link_identity_id = identity_id
+    dirty_identities.add(identity_id)
     db.add(backlink)
     await db.flush()
     row.status = ImportRowStatus.IMPORTED

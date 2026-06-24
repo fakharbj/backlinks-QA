@@ -10,6 +10,7 @@ from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
 from app.models.enums import AuditAction, Indexability, JobType, OverallStatus, RelType
 from app.schemas.backlink import (
+    AssignmentEventOut,
     BacklinkCreate,
     BacklinkDetail,
     BacklinkFilters,
@@ -46,6 +47,9 @@ async def list_backlinks(
     tag: str | None = None,
     source_domain: str | None = None,
     assigned_user_id: uuid.UUID | None = None,
+    assigned_user_label: str | None = None,
+    link_type: str | None = None,
+    duplicate_status: str | None = None,
     search: str | None = None,
     sort: str = Query(default="score", pattern="^(score|last_checked_at|created_at)$"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -57,7 +61,8 @@ async def list_backlinks(
         score_min=score_min, score_max=score_max, rel=rel, indexability=indexability,
         robots_status=robots_status, canonical_status=canonical_status, vendor_id=vendor_id,
         campaign_id=campaign_id, tag=tag, source_domain=source_domain,
-        assigned_user_id=assigned_user_id, search=search,
+        assigned_user_id=assigned_user_id, assigned_user_label=assigned_user_label,
+        link_type=link_type, duplicate_status=duplicate_status, search=search,
     )
     rows, next_cursor, has_more = await backlink_service.list_backlinks(
         db, ctx, filters, sort=sort, limit=limit, cursor=cursor
@@ -117,6 +122,28 @@ async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
         for h in history
     ]
     return detail
+
+
+@router.get("/{backlink_id}/duplicates", response_model=list[BacklinkRow])
+async def backlink_duplicates(
+    backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
+) -> list[BacklinkRow]:
+    rows = await backlink_service.list_duplicate_occurrences(db, ctx, backlink_id)
+    return [BacklinkRow.model_validate(r) for r in rows]
+
+
+@router.get("/{backlink_id}/assignment-history", response_model=list[AssignmentEventOut])
+async def backlink_assignment_history(
+    backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
+) -> list[AssignmentEventOut]:
+    events = await backlink_service.list_assignment_history(db, ctx, backlink_id)
+    return [
+        AssignmentEventOut(
+            old_user_label=e.old_user_label, new_user_label=e.new_user_label,
+            source=e.source, changed_at=e.changed_at,
+        )
+        for e in events
+    ]
 
 
 @router.patch("/{backlink_id}", response_model=BacklinkRow)
