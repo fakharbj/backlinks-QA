@@ -274,19 +274,99 @@ export class ApiError extends Error {
   }
 }
 
+// ── Durable session: token manager + transparent refresh ───────────────────
+let _access: string | null = null;
+let _refresh: string | null = null;
+let _refreshing: Promise<boolean> | null = null;
+
+export function loadTokens(): string | null {
+  if (typeof window !== "undefined") {
+    _access = localStorage.getItem("ls_access");
+    _refresh = localStorage.getItem("ls_refresh");
+  }
+  return _access;
+}
+
+export function setTokens(t: TokenPair) {
+  _access = t.access_token;
+  _refresh = t.refresh_token;
+  if (typeof window !== "undefined") {
+    localStorage.setItem("ls_access", t.access_token);
+    localStorage.setItem("ls_refresh", t.refresh_token);
+  }
+}
+
+export function clearTokens() {
+  _access = null;
+  _refresh = null;
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("ls_access");
+    localStorage.removeItem("ls_refresh");
+  }
+}
+
+export function getAccessToken(): string | null {
+  return _access;
+}
+
+/** Exchange the refresh token for a fresh pair (single-flight). */
+export async function refreshAccess(): Promise<boolean> {
+  if (!_refresh) return false;
+  if (!_refreshing) {
+    _refreshing = (async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: _refresh })
+        });
+        if (!resp.ok) return false;
+        setTokens((await resp.json()) as TokenPair);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        _refreshing = null;
+      }
+    })();
+  }
+  return _refreshing;
+}
+
 export async function api<T>(
   path: string,
   options: RequestInit & { token?: string | null } = {}
 ): Promise<T> {
   const { token, headers, ...rest } = options;
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...rest,
-    headers: {
-      ...(rest.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...headers
+  // Always use the managed access token (kept fresh by refresh); the passed token
+  // is only a fallback before tokens are loaded.
+  const authHeader = () => {
+    const tok = _access ?? token ?? null;
+    return tok ? { Authorization: `Bearer ${tok}` } : {};
+  };
+  const doFetch = () =>
+    fetch(`${API_BASE}${path}`, {
+      ...rest,
+      headers: {
+        ...(rest.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...authHeader(),
+        ...headers
+      }
+    });
+
+  let response = await doFetch();
+
+  // Access token expired → refresh once and retry transparently.
+  if (response.status === 401 && _refresh && !path.startsWith("/auth/")) {
+    if (await refreshAccess()) {
+      response = await doFetch();
+    } else {
+      clearTokens();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("ls-auth-expired"));
+      }
     }
-  });
+  }
 
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;

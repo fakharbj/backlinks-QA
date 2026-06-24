@@ -34,6 +34,11 @@ import {
   api,
   API_BASE,
   ApiError,
+  clearTokens,
+  getAccessToken,
+  loadTokens,
+  refreshAccess,
+  setTokens,
   AssignmentEvent,
   BacklinkDetail,
   BacklinkRow,
@@ -64,9 +69,35 @@ export function WorkspaceApp() {
   const [notice, setNotice] = useState<string>("");
 
   useEffect(() => {
-    setToken(localStorage.getItem("ls_access"));
+    loadTokens();
+    setToken(getAccessToken());
     setRefreshToken(localStorage.getItem("ls_refresh"));
-  }, []);
+
+    // The token manager fires this when the refresh token is dead → real logout.
+    const onExpired = () => {
+      setToken(null);
+      setRefreshToken(null);
+      setActiveProjectId("");
+      queryClient.clear();
+      setNotice("Session expired — please sign in again.");
+    };
+    window.addEventListener("ls-auth-expired", onExpired);
+
+    // Proactively refresh the access token well before its 15-min expiry so the
+    // session stays alive for the refresh token's full 7-day life (no surprise logout).
+    const timer = setInterval(() => {
+      if (localStorage.getItem("ls_refresh")) {
+        refreshAccess().then((ok) => {
+          if (ok) setToken(getAccessToken());
+        });
+      }
+    }, 10 * 60 * 1000);
+
+    return () => {
+      window.removeEventListener("ls-auth-expired", onExpired);
+      clearInterval(timer);
+    };
+  }, [queryClient]);
 
   const authed = Boolean(token);
   const projects = useQuery({
@@ -75,22 +106,17 @@ export function WorkspaceApp() {
     queryFn: () => api<Project[]>("/projects", { token })
   });
 
-  useEffect(() => {
-    if (!activeProjectId && projects.data?.length) {
-      setActiveProjectId(projects.data[0].id);
-    }
-  }, [activeProjectId, projects.data]);
+  // Default scope is "All projects" (company dashboard); the user picks a project to
+  // drill into a project dashboard. (No auto-select of the first project.)
 
   function saveTokens(tokens: TokenPair) {
-    localStorage.setItem("ls_access", tokens.access_token);
-    localStorage.setItem("ls_refresh", tokens.refresh_token);
+    setTokens(tokens);
     setToken(tokens.access_token);
     setRefreshToken(tokens.refresh_token);
   }
 
   function logout() {
-    localStorage.removeItem("ls_access");
-    localStorage.removeItem("ls_refresh");
+    clearTokens();
     setToken(null);
     setRefreshToken(null);
     setActiveProjectId("");
@@ -335,7 +361,7 @@ function ProjectPanel({
         value={activeProjectId}
         onChange={(event) => onSelect(event.target.value)}
       >
-        {projects.length === 0 ? <option value="">No projects</option> : null}
+        <option value="">🏢 All projects (company)</option>
         {projects.map((project) => (
           <option key={project.id} value={project.id}>
             {project.name}
@@ -362,15 +388,27 @@ function ProjectPanel({
 }
 
 function Overview({ token, projectId }: { token: string | null; projectId: string }) {
+  // No project selected → company-wide main dashboard; a project → project dashboard.
   const dashboard = useQuery({
     queryKey: ["dashboard", token, projectId],
-    enabled: Boolean(token && projectId),
-    queryFn: () => api<Dashboard>(`/dashboard?project_id=${projectId}`, { token })
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<Dashboard>(projectId ? `/dashboard?project_id=${projectId}` : "/dashboard", { token })
   });
 
   const stats = dashboard.data;
   return (
     <section className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-ink">
+            {projectId ? "Project dashboard" : "Company dashboard"}
+          </h2>
+          <p className="text-sm text-muted">
+            {projectId ? "This project's backlinks" : "All projects across the workspace"}
+          </p>
+        </div>
+      </div>
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink" />
         <Metric label="Pass" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean" />
@@ -428,7 +466,8 @@ function Backlinks({
   const [indexFilter, setIndexFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const query = useMemo(() => {
-    const params = new URLSearchParams({ project_id: projectId, limit: "50", with_total: "true" });
+    const params = new URLSearchParams({ limit: "50", with_total: "true" });
+    if (projectId) params.set("project_id", projectId);  // omit → all projects
     if (status) params.set("status", status);
     if (dupFilter) params.set("duplicate_status", dupFilter);
     if (indexFilter) params.set("index_status", indexFilter);
@@ -436,7 +475,7 @@ function Backlinks({
   }, [projectId, status, dupFilter, indexFilter]);
   const backlinks = useQuery({
     queryKey: ["backlinks", token, query],
-    enabled: Boolean(token && projectId),
+    enabled: Boolean(token),
     queryFn: () => api<Page<BacklinkRow>>(`/backlinks?${query}`, { token })
   });
   const recheck = useMutation({
@@ -444,7 +483,7 @@ function Backlinks({
       api<{ job_id: string; queued: number }>("/backlinks/recheck", {
         token,
         method: "POST",
-        body: JSON.stringify({ project_id: projectId, priority: true })
+        body: JSON.stringify({ project_id: projectId || null, priority: true })
       }),
     onSuccess: (data) => {
       onNotice(`Queued ${data.queued} backlinks`);
@@ -457,7 +496,7 @@ function Backlinks({
       api<{ message: string }>("/index/check", {
         token,
         method: "POST",
-        body: JSON.stringify({ project_id: projectId })
+        body: JSON.stringify({ project_id: projectId || null })
       }),
     onSuccess: (r) => onNotice(r.message || "Index check started"),
     onError: (err: Error) => onNotice(err.message)
@@ -926,6 +965,14 @@ function ImportDesk({
     onError: (err: Error) => onNotice(err.message)
   });
 
+  if (!projectId) {
+    return (
+      <section className="rounded-lg border border-line bg-panel p-8 text-center text-sm text-muted">
+        Select a project (top-left) to import links into it.
+      </section>
+    );
+  }
+
   return (
     <section className="rounded-lg border border-line bg-panel">
       <SectionTitle title="Paste Import" />
@@ -1091,7 +1138,7 @@ function ReportsDesk({
         token,
         method: "POST",
         body: JSON.stringify({
-          project_id: projectId,
+          project_id: projectId || null,
           report_type: type,
           format,
           title: `${type.replace(/_/g, " ")} report`,
