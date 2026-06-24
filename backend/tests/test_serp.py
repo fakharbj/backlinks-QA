@@ -40,7 +40,9 @@ def test_zero_results_is_not_indexed():
 def test_results_present_is_indexed():
     html = (
         '<html><body><div id="search"><div class="result-stats">About 12 results</div>'
-        '<h3>A page</h3><a href="/url?q=https://example.com/post">link</a></div></body></html>'
+        '<h3>A page</h3><a href="/url?q=https://example.com/post">link</a>'
+        + ("<div>filler result snippet</div>" * 10)  # real SERP pages are large
+        + "</div></body></html>"
     )
     v, c, _ = serp.classify_serp_html(200, html)
     assert v == INDEXED

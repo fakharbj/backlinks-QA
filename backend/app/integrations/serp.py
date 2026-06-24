@@ -28,13 +28,20 @@ _ZERO_RESULT_MARKERS = (
     " - did not match",
     "no results found for",
 )
-# Markers that mean "we were blocked / asked to verify" → uncertain, not negative.
+# STRONG block/consent signals only. Weak words ("captcha"/"recaptcha"/"enablejs")
+# appear in EVERY normal Google page's scripts, so matching them caused valid pages
+# to be judged "blocked" — they are deliberately excluded.
 _BLOCK_MARKERS = (
-    "unusual traffic", "/sorry/", "recaptcha", "g-recaptcha", "captcha",
-    "before you continue", "consent.google", "enablejs", "our systems have detected",
-    "why did this happen",
+    "our systems have detected unusual traffic",
+    "/sorry/index", "/sorry/?", "captcha-form",
+    "before you continue to google", "consent.google.com",
+    "to continue, please type the characters",
 )
+# Markers that a parseable results page was returned (basic gbv=1 HTML).
+_RESULT_MARKERS = ("/url?q=", "result-stats", 'id="search"', 'id="rso"', 'class="g"')
 _RESULT_COUNT_RE = re.compile(r"[Aa]bout ([\d,\.\s]+) results")
+# Consent-bypass cookie so EU proxy exits don't hit the "before you continue" wall.
+_CONSENT_COOKIE = "CONSENT=YES+cb.20210720-07-p0.en+FX+410; SOCS=CAISEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg"
 
 
 def parse_result_count(html: str) -> int | None:
@@ -58,20 +65,64 @@ def classify_serp_html(status_code: int, html: str) -> tuple[str, int | None, st
     if any(marker in low for marker in _ZERO_RESULT_MARKERS):
         return NOT_INDEXED, 0, "zero_results_phrase"
     # A normal results page for a site: query → the URL is indexed.
-    if 'id="search"' in low or "result-stats" in low or "/url?q=" in low or "<h3" in low:
+    if any(marker in low for marker in _RESULT_MARKERS) or _RESULT_COUNT_RE.search(html):
         return INDEXED, parse_result_count(html), "results_present"
     return UNCERTAIN, None, "unrecognised_page"
 
 
 async def check_indexed(source_page_url: str) -> dict:
     """Run a `site:` check for one source URL. Always returns a dict; never raises."""
+    if (
+        settings.SERP_PROVIDER == "google_cse"
+        and settings.GOOGLE_CSE_API_KEY
+        and settings.GOOGLE_CSE_CX
+    ):
+        return await _check_google_cse(source_page_url)
+    return await _check_proxy_scrape(source_page_url)
+
+
+async def _check_google_cse(source_page_url: str) -> dict:
+    """Official Google Custom Search JSON API — reliable result counts."""
+    params = {
+        "key": settings.GOOGLE_CSE_API_KEY,
+        "cx": settings.GOOGLE_CSE_CX,
+        "q": f"site:{source_page_url}",
+        "num": 1,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.INDEX_TIMEOUT_SECONDS) as client:
+            resp = await client.get("https://www.googleapis.com/customsearch/v1", params=params)
+        if resp.status_code in (403, 429):  # quota / rate limit → don't guess
+            return {"verdict": UNCERTAIN, "result_count": None,
+                    "evidence": {"reason": f"cse_http_{resp.status_code}"}}
+        if resp.status_code != 200:
+            return {"verdict": UNCERTAIN, "result_count": None,
+                    "evidence": {"reason": f"cse_http_{resp.status_code}", "body": resp.text[:200]}}
+        data = resp.json()
+        total = int(str(data.get("searchInformation", {}).get("totalResults", "0")) or "0")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cse_check_failed", url=source_page_url, error=repr(exc))
+        return {"verdict": UNCERTAIN, "result_count": None,
+                "evidence": {"reason": "cse_error", "error": repr(exc)[:200]}}
+    verdict = INDEXED if total > 0 else NOT_INDEXED
+    return {"verdict": verdict, "result_count": total,
+            "evidence": {"reason": "cse", "provider": "google_cse"}}
+
+
+async def _check_proxy_scrape(source_page_url: str) -> dict:
     query = f"site:{source_page_url}"
-    url = f"{settings.INDEX_GOOGLE_ENDPOINT}?q={quote_plus(query)}&num=10&hl=en&gl=us&pws=0"
+    # gbv=1 → Google's basic no-JavaScript HTML SERP, which is parseable server-side
+    # (the modern SERP renders results via JS and is not).
+    url = (
+        f"{settings.INDEX_GOOGLE_ENDPOINT}?q={quote_plus(query)}"
+        "&num=10&hl=en&gl=us&pws=0&gbv=1"
+    )
     proxy_url = proxy.proxy_url()
     headers = {
         "User-Agent": settings.CRAWL_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Cookie": _CONSENT_COOKIE,
     }
     try:
         async with httpx.AsyncClient(

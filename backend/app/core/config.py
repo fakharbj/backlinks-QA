@@ -222,10 +222,18 @@ class Settings(BaseSettings):
     # never a false "not indexed".
     INDEX_CHECK_ENABLED: bool = True
     INDEX_RECHECK_DAYS: int = 7
-    INDEX_GOOGLE_ENDPOINT: str = "https://www.google.com/search"
     INDEX_STAGGER_SECONDS: float = 6.0     # delay between checks (anti-block)
     INDEX_BATCH_LIMIT: int = 500           # max source URLs per dispatch
     INDEX_TIMEOUT_SECONDS: float = 45.0
+    # Provider:
+    #  • "google_cse"   — official Google Custom Search JSON API (reliable JSON,
+    #    free 100 queries/day). RECOMMENDED. Needs GOOGLE_CSE_API_KEY + _CX.
+    #  • "proxy_scrape" — scrape google.com/search via the proxy (unreliable; Google
+    #    now serves a JS-only shell, so most results come back UNCERTAIN).
+    SERP_PROVIDER: Literal["google_cse", "proxy_scrape"] = "proxy_scrape"
+    GOOGLE_CSE_API_KEY: str | None = None
+    GOOGLE_CSE_CX: str | None = None       # Programmable Search Engine ID
+    INDEX_GOOGLE_ENDPOINT: str = "https://www.google.com/search"  # proxy_scrape only
 
     # ── Integrations ─────────────────────────────────────────────────────────
     SMTP_HOST: str | None = None
