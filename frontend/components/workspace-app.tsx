@@ -1037,6 +1037,15 @@ function AlertsDesk({
   );
 }
 
+// Report filter dropdowns (dim → filter key → label), driven by analytics facets.
+const REPORT_FACETS: Array<[string, string, string]> = [
+  ["status", "status", "QA status"],
+  ["index_status", "index_status", "Index"],
+  ["duplicate_status", "duplicate_status", "Duplicate"],
+  ["user", "assigned_user_label", "User"],
+  ["link_type", "link_type", "Link type"]
+];
+
 function ReportsDesk({
   token,
   projectId,
@@ -1047,8 +1056,30 @@ function ReportsDesk({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [format, setFormat] = useState("pdf");
+  const [format, setFormat] = useState("xlsx");
   const [type, setType] = useState("monthly_qa");
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const setFilter = (k: string, v: string) =>
+    setFilters((f) => {
+      const n = { ...f };
+      if (v) n[k] = v;
+      else delete n[k];
+      return n;
+    });
+
+  // Reuse the analytics engine to drive the report filter dropdowns + a live count.
+  const facets = useQuery({
+    queryKey: ["report-facets", token, filters],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<AnalyticsResponse>("/analytics/query", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ filters, facets: REPORT_FACETS.map(([d]) => d) })
+      })
+  });
+  const matchCount = Number(facets.data?.summary?.total ?? 0);
+
   const reports = useQuery({
     queryKey: ["reports", token],
     enabled: Boolean(token),
@@ -1063,12 +1094,12 @@ function ReportsDesk({
           project_id: projectId,
           report_type: type,
           format,
-          title: `${type.replace("_", " ")} report`,
-          filters: { limit: 50000 }
+          title: `${type.replace(/_/g, " ")} report`,
+          filters: { ...filters, limit: 50000 }
         })
       }),
     onSuccess: () => {
-      onNotice("Report queued");
+      onNotice("Report queued — a new frozen version is generating");
       queryClient.invalidateQueries({ queryKey: ["reports"] });
     },
     onError: (err: Error) => onNotice(err.message)
@@ -1096,38 +1127,74 @@ function ReportsDesk({
 
   return (
     <section className="rounded-lg border border-line bg-panel">
-      <div className="flex flex-col gap-3 border-b border-line p-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-ink">Reports</h2>
-          <p className="text-sm text-muted">CSV, XLSX, and PDF exports</p>
+      <div className="flex flex-col gap-3 border-b border-line p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Reports</h2>
+            <p className="text-sm text-muted">
+              Filtered, versioned exports (CSV / XLSX / PDF) — {matchCount.toLocaleString()} links match
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <select className="h-9 rounded-md border border-line bg-white px-3 text-sm" value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="monthly_qa">Monthly QA</option>
+              <option value="failed_links">Failed links</option>
+              <option value="client">Client</option>
+              <option value="campaign">Campaign</option>
+              <option value="vendor">Vendor</option>
+              <option value="change_history">Change history</option>
+            </select>
+            <select className="h-9 rounded-md border border-line bg-white px-3 text-sm" value={format} onChange={(e) => setFormat(e.target.value)}>
+              <option value="xlsx">XLSX</option>
+              <option value="csv">CSV</option>
+              <option value="pdf">PDF</option>
+            </select>
+            <button onClick={() => create.mutate()} className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white">
+              {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+              Generate
+            </button>
+          </div>
         </div>
+        {/* Connected filter bar — report only the matching rows */}
         <div className="flex flex-wrap gap-2">
-          <select className="h-9 rounded-md border border-line bg-white px-3 text-sm" value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="monthly_qa">Monthly QA</option>
-            <option value="failed_links">Failed links</option>
-            <option value="client">Client</option>
-            <option value="campaign">Campaign</option>
-            <option value="vendor">Vendor</option>
-            <option value="change_history">Change history</option>
-          </select>
-          <select className="h-9 rounded-md border border-line bg-white px-3 text-sm" value={format} onChange={(e) => setFormat(e.target.value)}>
-            <option value="pdf">PDF</option>
-            <option value="xlsx">XLSX</option>
-            <option value="csv">CSV</option>
-          </select>
-          <button onClick={() => create.mutate()} className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white">
-            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
-            Generate
-          </button>
+          {REPORT_FACETS.map(([dim, key, label]) => {
+            const opts = facets.data?.facets?.[dim] || [];
+            return (
+              <select
+                key={dim}
+                className="h-8 rounded-md border border-line bg-white px-2 text-xs"
+                value={filters[key] || ""}
+                onChange={(e) => setFilter(key, e.target.value)}
+              >
+                <option value="">{label}: all</option>
+                {opts.map((o) => (
+                  <option key={String(o.value)} value={String(o.value)}>
+                    {String(o.label || o.value)} ({o.count})
+                  </option>
+                ))}
+              </select>
+            );
+          })}
+          {Object.keys(filters).length ? (
+            <button onClick={() => setFilters({})} className="text-xs font-medium text-ocean hover:underline">
+              Clear
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="divide-y divide-line">
         {(reports.data || []).map((report) => (
           <div key={report.id} className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="font-medium text-ink">{report.title}</div>
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-ink">{report.title}</span>
+                <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-semibold text-muted">v{report.version ?? 1}</span>
+                {report.is_latest ? (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">latest</span>
+                ) : null}
+              </div>
               <div className="mt-1 text-xs text-muted">
-                {report.report_type} / {report.format} / {report.row_count ?? "-"} rows
+                {report.report_type} / {report.format} / {report.row_count ?? "-"} rows / {formatDate(report.created_at)}
               </div>
             </div>
             <div className="flex items-center gap-2">
