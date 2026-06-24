@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import AuthContext
@@ -19,6 +19,20 @@ async def create_report(db: AsyncSession, ctx: AuthContext, payload: ReportCreat
     elif ctx.allowed_project_ids is not None:
         raise PermissionDeniedError("Project-scoped users must select a project for reports")
 
+    # Versioning: each generation is a frozen snapshot. The newest version for a
+    # (workspace, type, project) scope is the "latest"; older ones are kept.
+    scope = (
+        Report.workspace_id == ctx.workspace_id,
+        Report.report_type == payload.report_type,
+        Report.project_id.is_(payload.project_id)
+        if payload.project_id is None
+        else Report.project_id == payload.project_id,
+    )
+    max_version = (
+        await db.execute(select(func.coalesce(func.max(Report.version), 0)).where(*scope))
+    ).scalar_one()
+    await db.execute(update(Report).where(*scope).values(is_latest=False))
+
     report = Report(
         workspace_id=ctx.workspace_id,
         project_id=payload.project_id,
@@ -26,7 +40,10 @@ async def create_report(db: AsyncSession, ctx: AuthContext, payload: ReportCreat
         report_type=payload.report_type,
         format=payload.format,
         title=payload.title,
-        filters=payload.filters,
+        filters=payload.filters,           # frozen filter snapshot
+        version=int(max_version) + 1,
+        is_latest=True,
+        output_target=payload.output_target,
     )
     db.add(report)
     await db.flush()

@@ -1298,6 +1298,11 @@ function SheetsDesk({
     onSuccess: (r) => onNotice(r.message || "Sync started"),
     onError: (e: Error) => onNotice(e.message)
   });
+  const writeBack = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/sheets/${id}/writeback`, { method: "POST", token }),
+    onSuccess: (r) => onNotice(r.message || "Write-back started"),
+    onError: (e: Error) => onNotice(e.message)
+  });
 
   const cfg = config.data;
   return (
@@ -1375,12 +1380,21 @@ function SheetsDesk({
                 <Td>{s.imported_count} / {s.updated_count}</Td>
                 <Td>{formatDate(s.last_synced_at)}</Td>
                 <Td>
-                  <button
-                    onClick={() => syncOne.mutate(s.id)}
-                    className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" /> Sync
-                  </button>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => syncOne.mutate(s.id)}
+                      className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" /> Sync
+                    </button>
+                    <button
+                      onClick={() => writeBack.mutate(s.id)}
+                      title="Write QA/index results back to result columns in the sheet"
+                      className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+                    >
+                      <Upload className="h-3.5 w-3.5" /> Write back
+                    </button>
+                  </div>
                 </Td>
               </tr>
             ))}

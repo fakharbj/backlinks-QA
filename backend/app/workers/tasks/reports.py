@@ -47,6 +47,11 @@ _BACKLINK_HEADERS = [
     "Indexability",
     "Robots",
     "Canonical",
+    "Assigned User",
+    "Employee Code",
+    "Link Type",
+    "Index Status",
+    "Duplicate",
     "Global Rank",
     "Monthly Visits",
     "Domain Authority",
@@ -170,6 +175,11 @@ async def _backlink_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
                 "Indexability": _value(bl.indexability),
                 "Robots": bl.robots_status,
                 "Canonical": bl.canonical_status,
+                "Assigned User": bl.assigned_user_label,
+                "Employee Code": bl.employee_code,
+                "Link Type": bl.link_type,
+                "Index Status": bl.index_status or "unchecked",
+                "Duplicate": bl.duplicate_status or "unique",
                 "Global Rank": metrics.get("global_rank"),
                 "Monthly Visits": metrics.get("monthly_visits"),
                 "Domain Authority": metrics.get("da"),
@@ -211,6 +221,21 @@ def _apply_backlink_filters(stmt: Select, meta: dict[str, Any]) -> Select:
         stmt = stmt.where(BacklinkRecord.source_domain == str(filters["source_domain"]).lower())
     if filters.get("tag"):
         stmt = stmt.where(BacklinkRecord.tags.any(str(filters["tag"])))
+    # Dynamic filters mirroring the analytics layer (Phase 5/6).
+    if filters.get("assigned_user_label"):
+        stmt = stmt.where(BacklinkRecord.assigned_user_label == str(filters["assigned_user_label"]))
+    if filters.get("link_type"):
+        stmt = stmt.where(BacklinkRecord.link_type == str(filters["link_type"]))
+    if filters.get("index_status"):
+        if filters["index_status"] == "unchecked":
+            stmt = stmt.where(BacklinkRecord.index_status.is_(None))
+        else:
+            stmt = stmt.where(BacklinkRecord.index_status == str(filters["index_status"]))
+    if filters.get("duplicate_status"):
+        if filters["duplicate_status"] == "duplicate":
+            stmt = stmt.where(BacklinkRecord.is_duplicate.is_(True))
+        else:
+            stmt = stmt.where(BacklinkRecord.duplicate_status == str(filters["duplicate_status"]))
     if filters.get("status"):
         stmt = stmt.where(
             func.coalesce(BacklinkRecord.override_status, BacklinkRecord.status)

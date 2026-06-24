@@ -60,3 +60,16 @@ def sync_main_sheet(self, workspace_id: str) -> dict:
 )
 def sync_project_sheet(self, sheet_source_id: str) -> dict:
     return run_async(_sync_project_async(uuid.UUID(sheet_source_id)))
+
+
+async def _writeback_async(sheet_source_id: uuid.UUID) -> dict:
+    async with session_scope() as s:
+        return await sheet_sync_service.writeback_project(s, sheet_source_id)
+
+
+@celery_app.task(
+    name="tasks.sheets.writeback_project_sheet", bind=True, acks_late=True, max_retries=2,
+    autoretry_for=(OperationalError,), retry_backoff=True,
+)
+def writeback_project_sheet(self, sheet_source_id: str) -> dict:
+    return run_async(_writeback_async(uuid.UUID(sheet_source_id)))

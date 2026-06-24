@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -43,9 +43,14 @@ class Report(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
-    filters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    filters: Mapped[dict] = mapped_column(JSONB, default=dict)  # frozen filter snapshot
     file_key: Mapped[str | None] = mapped_column(String(500))
     file_size: Mapped[int | None] = mapped_column(Integer)
     row_count: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Versioning (Phase 6) — each generation is a frozen snapshot ───────────
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    is_latest: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    output_target: Mapped[str] = mapped_column(String(20), default="download")  # download|google_sheet

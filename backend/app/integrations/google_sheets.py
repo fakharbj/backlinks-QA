@@ -108,3 +108,40 @@ def read_project_sheet(
     # Normalise every cell to a string (sheets return ints/floats for numeric cells).
     rows = [{str(k): ("" if v is None else str(v)) for k, v in r.items()} for r in records]
     return headers, rows
+
+
+def _col_letter(n: int) -> str:
+    """1 → A, 2 → B, … 27 → AA (1-based column index to A1 letter)."""
+    s = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def write_back(
+    spreadsheet_id: str, tab: str | None, result_headers: list[str], values_by_row: dict[int, list]
+) -> dict:
+    """Write RESULT columns into a project sheet without touching the input columns.
+
+    Results go into a fresh column block starting one gap-column to the right of the
+    existing data, so manual/input columns are never overwritten. ``values_by_row``
+    is keyed by the actual sheet row number (header = row 1).
+    """
+    client = _client()
+    ws = _open_worksheet(client, spreadsheet_id, tab)
+    input_cols = len(ws.row_values(1)) or 1
+    start_col = input_cols + 2  # leave one empty gap column
+    ncols = len(result_headers)
+    max_row = max([1, *values_by_row.keys()])
+
+    block: list[list] = [list(result_headers)]
+    for r in range(2, max_row + 1):
+        vals = values_by_row.get(r)
+        block.append(
+            [("" if v is None else str(v)) for v in (vals if vals is not None else [""] * ncols)]
+        )
+
+    rng = f"{_col_letter(start_col)}1:{_col_letter(start_col + ncols - 1)}{max_row}"
+    ws.batch_update([{"range": rng, "values": block}])
+    return {"rows": max_row - 1, "range": rng}

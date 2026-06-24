@@ -17,6 +17,7 @@ class ReportCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     project_id: uuid.UUID | None = None
     filters: dict = Field(default_factory=dict)
+    output_target: str = "download"  # download | google_sheet
 
 
 class ReportOut(ORMModel):
@@ -26,6 +27,8 @@ class ReportOut(ORMModel):
     format: ReportFormat
     status: ReportStatus
     title: str
+    version: int = 1
+    is_latest: bool = True
     row_count: int | None
     file_size: int | None
     error: str | None

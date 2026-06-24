@@ -78,3 +78,20 @@ async def sync_one(
 
     sync_project_sheet.apply_async(args=[str(sheet_id)], queue="sheets.sync")
     return SheetSyncResponse(message=f"Sync started for '{source.project_name}'.")
+
+
+@router.post("/{sheet_id}/writeback", response_model=SheetSyncResponse, status_code=202)
+async def writeback_one(
+    sheet_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EXPORT_REPORTS)),
+) -> SheetSyncResponse:
+    source = await db.get(SheetSource, sheet_id)
+    if source is None or source.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Sheet source not found")
+
+    from app.workers.tasks.sheets import writeback_project_sheet
+
+    writeback_project_sheet.apply_async(args=[str(sheet_id)], queue="sheets.sync")
+    return SheetSyncResponse(
+        message=f"Writing QA/index results back to '{source.project_name}' (result columns only)."
+    )

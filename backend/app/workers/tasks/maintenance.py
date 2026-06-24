@@ -20,7 +20,7 @@ from app.db import init_db
 from app.db.session import engine, session_scope
 from app.models.audit import AuditLog
 from app.models.backlink import BacklinkRecord
-from app.models.crawl import BacklinkHistory, CrawlJob, CrawlResult
+from app.models.crawl import CrawlJob
 from app.models.enums import JobStatus, JobType, ProjectStatus
 from app.models.project import Project
 from app.workers.celery_app import celery_app
@@ -90,17 +90,19 @@ async def _ensure_partitions_async(months_forward: int) -> dict:
 
 async def _retention_cleanup_async() -> dict:
     now = datetime.now(timezone.utc)
-    history_cutoff = now - timedelta(days=settings.RETENTION_HISTORY_DAYS)
+    history_cutoff = (now - timedelta(days=settings.RETENTION_HISTORY_DAYS)).date()
     audit_cutoff = now - timedelta(days=settings.RETENTION_AUDIT_DAYS)
-    result_cutoff = history_cutoff
 
-    async with session_scope() as s:
-        history = await s.execute(delete(BacklinkHistory).where(BacklinkHistory.created_at < history_cutoff))
-        results = await s.execute(delete(CrawlResult).where(CrawlResult.crawled_at < result_cutoff))
+    # Drop whole monthly partitions older than retention (efficient at scale) rather
+    # than row DELETEs that would scan/bloat millions of rows.
+    results = await init_db.drop_partitions_before(engine, "crawl_results", history_cutoff)
+    history = await init_db.drop_partitions_before(engine, "backlink_history", history_cutoff)
+
+    async with session_scope() as s:  # audit_log is not partitioned → DELETE
         audit = await s.execute(delete(AuditLog).where(AuditLog.created_at < audit_cutoff))
     return {
-        "history_deleted": history.rowcount or 0,
-        "crawl_results_deleted": results.rowcount or 0,
+        "crawl_result_partitions_dropped": results,
+        "history_partitions_dropped": history,
         "audit_deleted": audit.rowcount or 0,
     }
 

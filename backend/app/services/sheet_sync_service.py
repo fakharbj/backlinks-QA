@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.integrations import google_sheets
+from app.models.backlink import BacklinkRecord
 from app.models.enums import ImportSource, ImportStatus
 from app.models.imports import Import
 from app.models.project import Project
@@ -176,3 +177,52 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         "new": len(new_ids),
         "new_ids": [str(i) for i in new_ids],
     }
+
+
+# Result columns written back to the sheet (allow-list — never input columns).
+_WRITEBACK_HEADERS = ["LS Status", "LS Score", "LS Index", "LS Duplicate", "LS Checked"]
+
+
+async def writeback_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
+    """Write QA/index/duplicate result columns back into the project sheet."""
+    source = await db.get(SheetSource, sheet_source_id)
+    if source is None:
+        return {"error": "sheet source not found"}
+
+    backlinks = (
+        await db.execute(
+            select(BacklinkRecord).where(
+                BacklinkRecord.source_sheet_id == source.id,
+                BacklinkRecord.sheet_row_ref.is_not(None),
+            )
+        )
+    ).scalars().all()
+
+    values_by_row: dict[int, list] = {}
+    for bl in backlinks:
+        try:
+            sheet_row = int(bl.sheet_row_ref) + 1  # +1 for the header row
+        except (TypeError, ValueError):
+            continue
+        status = (bl.override_status or bl.status)
+        values_by_row[sheet_row] = [
+            status.value if status else "",
+            bl.score if bl.score is not None else "",
+            bl.index_status or "unchecked",
+            bl.duplicate_status or "unique",
+            bl.last_checked_at.strftime("%Y-%m-%d %H:%M") if bl.last_checked_at else "",
+        ]
+    if not values_by_row:
+        return {"rows": 0}
+
+    try:
+        result = await asyncio.to_thread(
+            google_sheets.write_back,
+            source.spreadsheet_id, source.sheet_tab, _WRITEBACK_HEADERS, values_by_row,
+        )
+    except Exception as exc:  # noqa: BLE001 - write-back failure must not crash
+        log.warning("writeback_failed", sheet_source_id=str(sheet_source_id), error=repr(exc))
+        return {"error": str(exc)}
+    source.last_sync_error = None
+    await db.commit()
+    return result
