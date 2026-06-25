@@ -80,6 +80,7 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_assigned_label", "assigned_user_label"),
         Index("ix_backlink_records_link_type", "link_type"),
         Index("ix_backlink_records_identity", "link_identity_id"),
+        Index("ix_backlink_records_canonical_url", "canonical_url_id"),
         Index("ix_backlink_records_duplicate", "workspace_id", "duplicate_status"),
         Index("ix_backlink_records_index_status", "workspace_id", "index_status"),
         Index("ix_backlink_records_index_due", "index_checked_at"),
@@ -130,6 +131,11 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     sheet_row_ref: Mapped[str | None] = mapped_column(String(40))         # row number for write-back
     sheet_created_date: Mapped[date | None] = mapped_column(Date)
+
+    # ── Canonical identity (Phase 8) — global fingerprint of the source URL ───
+    # FK to canonical_urls (sha256 of the normalized URL). Populated by the 0007
+    # backfill; the import/conflict wiring that reads it lands in a later increment.
+    canonical_url_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
     # ── Duplicate detection (Phase 3) ────────────────────────────────────────
     # Identity = (source_url_normalized, target_domain) per workspace.
