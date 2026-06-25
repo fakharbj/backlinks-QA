@@ -245,3 +245,21 @@ def urls_match(
     na = normalize_url(a, trailing_slash_policy=trailing_slash_policy)
     nb = normalize_url(b, trailing_slash_policy=trailing_slash_policy)
     return na.valid and nb.valid and na.normalized == nb.normalized
+
+
+def is_domain_root(raw: str, *, trailing_slash_policy: str = "lenient") -> bool:
+    """True when ``raw`` targets a bare registrable-domain root — no real path,
+    query, or fragment (e.g. ``https://limo.black/``).
+
+    When the agreed target of a backlink is the project's *main domain* (rather
+    than one exact URL), link matching widens from exact-URL to whole-domain
+    scope: a link to any page on that registrable domain counts as the backlink.
+    """
+    n = normalize_url(raw, trailing_slash_policy=trailing_slash_policy)
+    return bool(
+        n.valid
+        and n.registrable_domain
+        and n.path in ("", "/")
+        and not n.query_pairs
+        and not n.fragment
+    )

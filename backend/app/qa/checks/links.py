@@ -146,6 +146,10 @@ def normalized_only_match(ctx: CheckContext) -> Iterable[Issue]:
     link = ctx.artifact.primary_link
     if link is None:
         return
+    if ctx.request.domain_match():
+        # Whole-domain scope: a different page on the target domain is a valid
+        # match, not a minor normalization difference — don't flag it.
+        return
     expected = ctx.request.expected_target_url or ctx.request.target_url
     if link.resolved_url and expected and link.resolved_url.rstrip("/") != expected.rstrip("/"):
         # Matched only after normalization (trailing slash / scheme / tracking params).

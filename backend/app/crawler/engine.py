@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -398,6 +399,26 @@ class CrawlEngine:
             artifact.canonical_resolved = resolved.normalized if resolved.valid else None
 
     def _match_links(self, links: list[ParsedLink], request: CrawlRequest) -> list[ParsedLink]:
+        # Domain-scope matching: the agreed target is the project's main domain, so
+        # a link to ANY page on that registrable domain counts as the backlink.
+        if request.domain_match():
+            target_dom = normalize_url(
+                request.expected_target_url or request.target_url,
+                trailing_slash_policy=request.trailing_slash_policy,
+            ).registrable_domain
+            if target_dom:
+                return [
+                    link
+                    for link in links
+                    if registrable_domain(urlsplit(link.normalized_url).hostname or "") == target_dom
+                    or (
+                        link.unwrapped_url is not None
+                        and registrable_domain(urlsplit(link.unwrapped_url).hostname or "")
+                        == target_dom
+                    )
+                ]
+
+        # Exact-URL matching (default): only the agreed target URL(s) count.
         targets = {
             normalize_url(
                 request.target_url, trailing_slash_policy=request.trailing_slash_policy

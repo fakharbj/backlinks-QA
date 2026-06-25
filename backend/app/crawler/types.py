@@ -159,6 +159,25 @@ class CrawlRequest:
     respect_robots: bool = True
     use_googlebot_ua: bool = False
     allow_render: bool = True
+    # Link-match scope: "url" = only the exact target URL counts; "domain" = any
+    # link to the target's registrable domain counts; "auto" (default) = domain
+    # scope when the agreed target is a bare domain root (project main domain),
+    # else exact-URL. See ``crawler.normalize.is_domain_root``.
+    match_scope: str = "auto"
+
+    def domain_match(self) -> bool:
+        """Resolve ``match_scope`` to a boolean: should a link to *any* page on the
+        target's registrable domain be accepted as this backlink?"""
+        if self.match_scope == "domain":
+            return True
+        if self.match_scope == "url":
+            return False
+        from app.crawler.normalize import is_domain_root
+
+        return is_domain_root(
+            self.expected_target_url or self.target_url,
+            trailing_slash_policy=self.trailing_slash_policy,
+        )
 
 
 @dataclass(slots=True)
