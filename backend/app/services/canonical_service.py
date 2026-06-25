@@ -16,6 +16,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,3 +82,41 @@ async def resolve_canonical(
     if cache is not None:
         cache[fp] = canonical_id
     return await db.get(CanonicalUrl, canonical_id)
+
+
+async def recanonicalize(db: AsyncSession, workspace_id: uuid.UUID | None = None) -> int:
+    """Recompute ``canonical_url_id`` for backlinks under the CURRENT normalization
+    rule (run after changing what counts as a tracking/share param), then drop
+    ``canonical_urls`` rows that no longer have any backlink referencing them.
+
+    Returns the number of backlinks updated. The caller commits + re-detects
+    conflicts.
+    """
+    from app.models.backlink import BacklinkRecord  # local import avoids any cycle
+
+    stmt = select(BacklinkRecord.id, BacklinkRecord.source_page_url)
+    if workspace_id is not None:
+        stmt = stmt.where(BacklinkRecord.workspace_id == workspace_id)
+    rows = (await db.execute(stmt)).all()
+
+    cache: dict[str, uuid.UUID] = {}
+    updated = 0
+    for backlink_id, source_url in rows:
+        canonical = await resolve_canonical(db, source_url, cache=cache)
+        if canonical is not None:
+            await db.execute(
+                update(BacklinkRecord)
+                .where(BacklinkRecord.id == backlink_id)
+                .values(canonical_url_id=canonical.id)
+            )
+            updated += 1
+
+    # Drop canonical rows orphaned by the re-mapping above.
+    await db.execute(
+        text(
+            "DELETE FROM canonical_urls cu WHERE NOT EXISTS "
+            "(SELECT 1 FROM backlink_records b WHERE b.canonical_url_id = cu.id)"
+        )
+    )
+    await db.flush()
+    return updated

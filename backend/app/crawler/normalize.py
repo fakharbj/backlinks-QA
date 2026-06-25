@@ -28,14 +28,22 @@ import tldextract
 # A self-contained extractor (no network calls for the public-suffix list refresh).
 _extract = tldextract.TLDExtract(suffix_list_urls=())
 
-# Tracking parameters removed for *comparison* (preserved in the original).
-_TRACKING_PREFIXES = ("utm_",)
+# Tracking / referral / share parameters removed for *comparison* (the original is
+# preserved). Matched case-insensitively. We strip well-known analytics + share
+# tokens (so e.g. a Substack "?r=…&showWelcomeOnShare=true" share link fingerprints
+# the same as the clean page) while keeping genuine identity params like ?id=.
+_TRACKING_PREFIXES = ("utm_", "mtm_", "pk_", "hsa_", "matomo_")
 _TRACKING_PARAMS = frozenset(
     {
+        # ad / click identifiers
         "gclid", "fbclid", "mc_eid", "mc_cid", "_ga", "_gl", "mkt_tok", "igshid",
-        "msclkid", "yclid", "dclid", "gclsrc", "wbraid", "gbraid", "vero_id",
-        "oly_anon_id", "oly_enc_id", "ref", "ref_src", "spm", "scm", "_hsenc",
-        "_hsmi", "hsa_cam", "hsa_grp", "hsa_ad",
+        "igsh", "msclkid", "yclid", "dclid", "gclsrc", "wbraid", "gbraid", "vero_id",
+        "twclid", "li_fat_id", "epik", "rdt_cid", "ttclid", "oly_anon_id",
+        "oly_enc_id", "spm", "scm", "_hsenc", "_hsmi", "hsa_cam", "hsa_grp", "hsa_ad",
+        # referral / share / "came from" tokens (ubiquitous on backlink source pages)
+        "ref", "ref_src", "referrer", "referral", "r", "share", "shared", "shareid",
+        "share_id", "showwelcomeonshare", "si", "source_impression_id", "feature",
+        "usp",
     }
 )
 

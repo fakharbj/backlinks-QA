@@ -50,3 +50,29 @@ def test_invalid_urls_have_no_fingerprint():
     assert canonical_form("mailto:hi@example.com") is None
     assert fingerprint_of_raw("javascript:void(0)") is None
     assert fingerprint_of_raw("") is None
+
+
+def test_share_and_referral_params_are_stripped():
+    # The real Substack case: ?r=…&showWelcomeOnShare=true must fingerprint the
+    # same as the clean page.
+    clean = fingerprint_of_raw(
+        "https://open.substack.com/pub/jasmine529054/p/premium-hourly-limo-service-for-luxury"
+    )
+    shared = fingerprint_of_raw(
+        "https://open.substack.com/pub/jasmine529054/p/premium-hourly-limo-service-for-luxury"
+        "?r=7ume7w&showWelcomeOnShare=true"
+    )
+    assert clean == shared
+
+
+def test_more_share_tokens_stripped():
+    base = fingerprint_of_raw("https://example.com/article")
+    assert fingerprint_of_raw("https://example.com/article?si=abc123") == base
+    assert fingerprint_of_raw("https://example.com/article?share=xyz&feature=share") == base
+
+
+def test_identity_params_still_distinguish_pages():
+    # ?id= is genuine identity, not tracking — must NOT be stripped.
+    assert fingerprint_of_raw("https://example.com/p?id=1") != fingerprint_of_raw(
+        "https://example.com/p?id=2"
+    )
