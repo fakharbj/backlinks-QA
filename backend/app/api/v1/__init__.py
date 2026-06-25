@@ -10,6 +10,7 @@ from app.api.v1 import (
     conflicts,
     crawl,
     dashboard,
+    employees,
     imports,
     index,
     project_settings,
@@ -26,6 +27,7 @@ api_router.include_router(projects.router)
 api_router.include_router(project_settings.router)
 api_router.include_router(backlinks.router)
 api_router.include_router(conflicts.router)
+api_router.include_router(employees.router)
 api_router.include_router(imports.router)
 api_router.include_router(crawl.router)
 api_router.include_router(dashboard.router)

@@ -64,6 +64,36 @@ export type ProjectSettings = {
   domains: ProjectDomain[];
 };
 
+export type AppUser = {
+  id: string;
+  name: string | null;
+  email: string;
+};
+
+export type EmployeeCode = {
+  id: string;
+  code: string;
+  display_name: string | null;
+  user_id: string | null;
+  user_name: string | null;
+  is_active: boolean;
+};
+
+export type EmployeeMapping = {
+  id: string;
+  sheet_user_label: string;
+  user_id: string | null;
+  user_name: string | null;
+  employee_code_id: string | null;
+  backlink_count: number;
+};
+
+export type EmployeeOverview = {
+  codes: EmployeeCode[];
+  mappings: EmployeeMapping[];
+  app_users: AppUser[];
+};
+
 export type Dashboard = {
   totals: {
     total: number;

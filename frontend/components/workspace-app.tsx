@@ -26,6 +26,7 @@ import {
   Star,
   Trash2,
   Upload,
+  UserCog,
   UserPlus,
   Users,
   XCircle
@@ -51,6 +52,7 @@ import {
   ConflictGroup,
   ConflictSummary,
   Dashboard,
+  EmployeeOverview,
   Page,
   Project,
   ProjectDomain,
@@ -64,7 +66,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "imports" | "sheets" | "alerts" | "reports" | "team" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -188,6 +190,7 @@ export function WorkspaceApp() {
             <ReportsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "employees" ? <EmployeesDesk token={token} onNotice={setNotice} /> : null}
           {tab === "settings" ? (
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -287,6 +290,7 @@ function TopBar({
     ["alerts", "Alerts", Bell],
     ["reports", "Reports", FileSpreadsheet],
     ["team", "Team", Users],
+    ["employees", "Employees", UserCog],
     ["settings", "Settings", Settings]
   ];
 
@@ -1479,6 +1483,233 @@ function ReportGroup({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function EmployeesDesk({
+  token,
+  onNotice
+}: {
+  token: string | null;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [newCode, setNewCode] = useState("");
+  const [newCodeName, setNewCodeName] = useState("");
+
+  const data = useQuery({
+    queryKey: ["employees", token],
+    enabled: Boolean(token),
+    queryFn: () => api<EmployeeOverview>("/employees", { token })
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["employees"] });
+
+  const sync = useMutation({
+    mutationFn: () => api<EmployeeOverview>("/employees/sync", { token, method: "POST" }),
+    onSuccess: () => {
+      onNotice("Synced employees from sheet data");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const mapUser = useMutation({
+    mutationFn: (v: { id: string; user_id: string | null }) =>
+      api(`/employees/mappings/${v.id}`, {
+        token,
+        method: "PATCH",
+        body: JSON.stringify({ user_id: v.user_id })
+      }),
+    onSuccess: () => {
+      onNotice("Mapping updated");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const addCode = useMutation({
+    mutationFn: () =>
+      api("/employees/codes", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ code: newCode.trim(), display_name: newCodeName.trim() || null })
+      }),
+    onSuccess: () => {
+      setNewCode("");
+      setNewCodeName("");
+      onNotice("Employee code added");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const updateCode = useMutation({
+    mutationFn: (v: { id: string; patch: Record<string, unknown> }) =>
+      api(`/employees/codes/${v.id}`, {
+        token,
+        method: "PATCH",
+        body: JSON.stringify(v.patch)
+      }),
+    onSuccess: () => invalidate(),
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const deleteCode = useMutation({
+    mutationFn: (id: string) => api(`/employees/codes/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Employee code removed");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const d = data.data;
+  const users = d?.app_users || [];
+  const userOptions = (
+    <>
+      <option value="">— unmapped —</option>
+      {users.map((u) => (
+        <option key={u.id} value={u.id}>
+          {u.name || u.email}
+        </option>
+      ))}
+    </>
+  );
+
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-muted">
+          Connect the sheet &quot;User&quot; names to real accounts, and manage employee codes.
+        </p>
+        <button
+          onClick={() => sync.mutate()}
+          className="flex h-9 items-center gap-2 self-start rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black"
+        >
+          {sync.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          Sync from sheets
+        </button>
+      </div>
+
+      <section className="rounded-lg border border-line bg-panel">
+        <SectionTitle title="Sheet users → app accounts" />
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-field text-left text-xs uppercase text-muted">
+              <tr>
+                <Th>Sheet user</Th>
+                <Th>Backlinks</Th>
+                <Th>Mapped to</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(d?.mappings || []).map((m) => (
+                <tr key={m.id}>
+                  <Td>
+                    <span className="font-medium text-ink">{m.sheet_user_label}</span>
+                  </Td>
+                  <Td>{m.backlink_count}</Td>
+                  <Td>
+                    <select
+                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      value={m.user_id || ""}
+                      onChange={(event) =>
+                        mapUser.mutate({ id: m.id, user_id: event.target.value || null })
+                      }
+                    >
+                      {userOptions}
+                    </select>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {d && !d.mappings.length ? (
+            <Empty label="No sheet users yet — click 'Sync from sheets'." />
+          ) : null}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-line bg-panel">
+        <SectionTitle title="Employee codes" />
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-field text-left text-xs uppercase text-muted">
+              <tr>
+                <Th>Code</Th>
+                <Th>Name</Th>
+                <Th>Linked account</Th>
+                <Th>Active</Th>
+                <Th> </Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(d?.codes || []).map((c) => (
+                <tr key={c.id}>
+                  <Td>
+                    <span className="font-medium text-ink">{c.code}</span>
+                  </Td>
+                  <Td>{c.display_name || "—"}</Td>
+                  <Td>
+                    <select
+                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      value={c.user_id || ""}
+                      onChange={(event) =>
+                        updateCode.mutate({ id: c.id, patch: { user_id: event.target.value || null } })
+                      }
+                    >
+                      {userOptions}
+                    </select>
+                  </Td>
+                  <Td>
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={c.is_active}
+                      onChange={(event) =>
+                        updateCode.mutate({ id: c.id, patch: { is_active: event.target.checked } })
+                      }
+                    />
+                  </Td>
+                  <Td>
+                    <button
+                      onClick={() => deleteCode.mutate(c.id)}
+                      aria-label="Remove code"
+                      className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-muted transition hover:bg-field hover:text-danger"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {d && !d.codes.length ? (
+            <Empty label="No employee codes — add one below or sync from sheets." />
+          ) : null}
+        </div>
+        <form
+          className="flex flex-wrap gap-2 border-t border-line p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (newCode.trim()) addCode.mutate();
+          }}
+        >
+          <input
+            className="h-9 w-32 rounded-md border border-line bg-white px-2 text-sm"
+            placeholder="Code"
+            value={newCode}
+            onChange={(event) => setNewCode(event.target.value)}
+          />
+          <input
+            className="h-9 flex-1 rounded-md border border-line bg-white px-2 text-sm"
+            placeholder="Name (optional)"
+            value={newCodeName}
+            onChange={(event) => setNewCodeName(event.target.value)}
+          />
+          <button className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black">
+            {addCode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Add code
+          </button>
+        </form>
+      </section>
+    </section>
   );
 }
 
