@@ -1210,7 +1210,9 @@ const REPORT_FACETS: Array<[string, string, string]> = [
   ["index_status", "index_status", "Index"],
   ["duplicate_status", "duplicate_status", "Duplicate"],
   ["user", "assigned_user_label", "Assigned user"],
-  ["link_type", "link_type", "Link type"]
+  ["link_type", "link_type", "Link type"],
+  ["source_domain", "source_domain", "Source domain"],
+  ["scoring_version", "scoring_rule_version_id", "Scoring version"]
 ];
 
 // Plain-language report types (non-technical labels + a one-line description).
@@ -1220,7 +1222,10 @@ const REPORT_TYPES: Array<{ value: string; label: string; desc: string }> = [
   { value: "change_history", label: "Change history", desc: "What changed over time: links lost, status flips, anchor / rel changes." },
   { value: "client", label: "Client summary", desc: "A clean, client-facing summary of backlink health." },
   { value: "vendor", label: "Vendor report", desc: "Results grouped for reviewing a vendor's delivered links." },
-  { value: "campaign", label: "Campaign report", desc: "Results for one outreach campaign." }
+  { value: "campaign", label: "Campaign report", desc: "Results for one outreach campaign." },
+  { value: "source_domain_summary", label: "Source-domain summary", desc: "One row per source domain: totals, pass/fail, indexed %, nofollow, duplicates." },
+  { value: "link_type_summary", label: "Link-type summary", desc: "One row per link type: totals, pass/fail, indexed %, nofollow, duplicates." },
+  { value: "user_performance", label: "User performance", desc: "One row per assigned user: volume, pass rate, average score." }
 ];
 
 const REPORT_FORMATS: Array<{ value: string; label: string; hint: string }> = [
@@ -1234,7 +1239,9 @@ const FILTER_LABELS: Record<string, string> = {
   index_status: "Index",
   duplicate_status: "Duplicate",
   assigned_user_label: "User",
-  link_type: "Link type"
+  link_type: "Link type",
+  source_domain: "Source domain",
+  scoring_rule_version_id: "Scoring version"
 };
 
 function typeLabel(t: string) {

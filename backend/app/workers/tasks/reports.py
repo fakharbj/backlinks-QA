@@ -27,6 +27,19 @@ from app.models.crawl import BacklinkHistory, BacklinkIssue
 from app.models.enums import OverallStatus, ReportFormat, ReportStatus, ReportType
 from app.models.project import Campaign, Project, Vendor
 from app.models.report import Report
+from app.models.scoring import ScoringRuleVersion
+
+# Summary/pivot report types → analytics group-by dimension.
+_PIVOT_GROUP_BY = {
+    ReportType.SOURCE_DOMAIN_SUMMARY: "source_domain",
+    ReportType.LINK_TYPE_SUMMARY: "link_type",
+    ReportType.USER_PERFORMANCE: "user",
+}
+
+_PIVOT_HEADERS = [
+    "Group", "Total", "Avg Score", "Pass", "Warning", "Fail", "Unknown", "Review",
+    "Indexed", "Not Indexed", "Nofollow", "Duplicates", "Link Missing",
+]
 from app.workers.celery_app import celery_app
 from app.workers.runtime import run_async
 
@@ -50,6 +63,8 @@ _BACKLINK_HEADERS = [
     "Assigned User",
     "Employee Code",
     "Link Type",
+    "Source Domain",
+    "Scoring Version",
     "Index Status",
     "Duplicate",
     "Global Rank",
@@ -102,6 +117,8 @@ async def _generate_async(report_id: uuid.UUID) -> dict:
         async with session_scope() as s:
             if meta["report_type"] == ReportType.CHANGE_HISTORY:
                 headers, rows = _HISTORY_HEADERS, await _history_rows(s, meta)
+            elif meta["report_type"] in _PIVOT_GROUP_BY:
+                headers, rows = _PIVOT_HEADERS, await _pivot_rows(s, meta)
             else:
                 headers, rows = _BACKLINK_HEADERS, await _backlink_rows(s, meta)
 
@@ -140,10 +157,13 @@ async def _backlink_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
             Project.name.label("project_name"),
             Vendor.name.label("vendor_name"),
             Campaign.name.label("campaign_name"),
+            ScoringRuleVersion.scope.label("srv_scope"),
+            ScoringRuleVersion.version.label("srv_version"),
         )
         .join(Project, Project.id == BacklinkRecord.project_id)
         .outerjoin(Vendor, Vendor.id == BacklinkRecord.vendor_id)
         .outerjoin(Campaign, Campaign.id == BacklinkRecord.campaign_id)
+        .outerjoin(ScoringRuleVersion, ScoringRuleVersion.id == BacklinkRecord.scoring_rule_version_id)
         .where(BacklinkRecord.workspace_id == meta["workspace_id"])
     )
     stmt = _apply_backlink_filters(stmt, meta)
@@ -152,11 +172,11 @@ async def _backlink_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
     ).limit(_limit(meta["filters"]))
 
     results = (await s.execute(stmt)).all()
-    ids = [bl.id for bl, _project_name, _vendor_name, _campaign_name in results]
+    ids = [row[0].id for row in results]
     issues = await _issues_by_backlink(s, ids)
 
     rows: list[dict[str, Any]] = []
-    for bl, project_name, vendor_name, campaign_name in results:
+    for bl, project_name, vendor_name, campaign_name, srv_scope, srv_version in results:
         current_issues = issues.get(bl.id, [])
         metrics = (bl.extra or {}).get("metrics") or {}
         rows.append(
@@ -178,6 +198,8 @@ async def _backlink_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
                 "Assigned User": bl.assigned_user_label,
                 "Employee Code": bl.employee_code,
                 "Link Type": bl.link_type,
+                "Source Domain": bl.source_domain,
+                "Scoring Version": f"{srv_scope} v{srv_version}" if srv_scope else "",
                 "Index Status": bl.index_status or "unchecked",
                 "Duplicate": bl.duplicate_status or "unique",
                 "Global Rank": metrics.get("global_rank"),
@@ -226,6 +248,12 @@ def _apply_backlink_filters(stmt: Select, meta: dict[str, Any]) -> Select:
         stmt = stmt.where(BacklinkRecord.assigned_user_label == str(filters["assigned_user_label"]))
     if filters.get("link_type"):
         stmt = stmt.where(BacklinkRecord.link_type == str(filters["link_type"]))
+    if filters.get("link_type_id"):
+        stmt = stmt.where(BacklinkRecord.link_type_id == uuid.UUID(str(filters["link_type_id"])))
+    if filters.get("scoring_rule_version_id"):
+        stmt = stmt.where(
+            BacklinkRecord.scoring_rule_version_id == uuid.UUID(str(filters["scoring_rule_version_id"]))
+        )
     if filters.get("index_status"):
         if filters["index_status"] == "unchecked":
             stmt = stmt.where(BacklinkRecord.index_status.is_(None))
@@ -274,6 +302,43 @@ async def _issues_by_backlink(s, ids: list[uuid.UUID]) -> dict[uuid.UUID, list[d
             }
         )
     return grouped
+
+
+async def _pivot_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """Grouped summary rows (source domain / link type / user) reusing the analytics
+    group-by engine, so a pivot report stays consistent with the Analytics desk."""
+    from app.services import analytics_service
+
+    group_by = _PIVOT_GROUP_BY[meta["report_type"]]
+    filters = dict(meta["filters"] or {})
+    if meta["project_id"] is not None:
+        filters["project_id"] = str(meta["project_id"])
+
+    class _Ctx:  # minimal AuthContext for the workspace-scoped analytics query
+        workspace_id = meta["workspace_id"]
+        allowed_project_ids = None
+
+    groups = await analytics_service.groups(
+        s, _Ctx(), filters, group_by, limit=_limit(meta["filters"])
+    )
+    return [
+        {
+            "Group": g.get("label") or g.get("key") or "",
+            "Total": g.get("total"),
+            "Avg Score": g.get("avg_score"),
+            "Pass": g.get("pass"),
+            "Warning": g.get("warning"),
+            "Fail": g.get("fail"),
+            "Unknown": g.get("unknown"),
+            "Review": g.get("review"),
+            "Indexed": g.get("indexed"),
+            "Not Indexed": g.get("not_indexed"),
+            "Nofollow": g.get("nofollow"),
+            "Duplicates": g.get("duplicates"),
+            "Link Missing": g.get("link_missing"),
+        }
+        for g in groups
+    ]
 
 
 async def _history_rows(s, meta: dict[str, Any]) -> list[dict[str, Any]]:

@@ -87,6 +87,10 @@ class ReportType(str, enum.Enum):
     FAILED_LINKS = "failed_links"
     MONTHLY_QA = "monthly_qa"
     CHANGE_HISTORY = "change_history"
+    # Pivot/summary reports (Phase 8) — grouped rows instead of one row per link.
+    SOURCE_DOMAIN_SUMMARY = "source_domain_summary"
+    LINK_TYPE_SUMMARY = "link_type_summary"
+    USER_PERFORMANCE = "user_performance"
 
 
 class ReportFormat(str, enum.Enum):
