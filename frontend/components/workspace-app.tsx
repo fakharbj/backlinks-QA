@@ -210,10 +210,10 @@ export function WorkspaceApp() {
 
 function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("admin@linksentinel.local");
-  const [password, setPassword] = useState("ChangeMe123!");
-  const [fullName, setFullName] = useState("SEO Ops Admin");
-  const [workspaceName, setWorkspaceName] = useState("Acme Link Ops");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [workspaceName, setWorkspaceName] = useState("");
   const [error, setError] = useState("");
 
   const submit = useMutation({
@@ -414,9 +414,10 @@ function ProjectPanel({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [name, setName] = useState("Acme Backlinks");
-  const [client, setClient] = useState("Acme Co");
-  const [domain, setDomain] = useState("acme.test");
+  const [name, setName] = useState("");
+  const [client, setClient] = useState("");
+  const [domain, setDomain] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
 
   const createProject = useMutation({
     mutationFn: () =>
@@ -435,6 +436,10 @@ function ProjectPanel({
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       onSelect(project.id);
       onNotice("Project created");
+      setName("");
+      setClient("");
+      setDomain("");
+      setShowCreate(false);
     },
     onError: (err: Error) => onNotice(err.message)
   });
@@ -457,21 +462,40 @@ function ProjectPanel({
           </option>
         ))}
       </select>
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          createProject.mutate();
-        }}
-      >
-        <Field label="Name" value={name} onChange={setName} />
-        <Field label="Client" value={client} onChange={setClient} />
-        <Field label="Target domain" value={domain} onChange={setDomain} />
-        <button className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white hover:bg-teal-800">
-          {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          New project
+      {showCreate ? (
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            createProject.mutate();
+          }}
+        >
+          <Field label="Name" value={name} onChange={setName} />
+          <Field label="Client" value={client} onChange={setClient} />
+          <Field label="Target domain" value={domain} onChange={setDomain} />
+          <div className="flex gap-2">
+            <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white hover:bg-teal-800">
+              {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              Create
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreate(false)}
+              className="h-9 rounded-md border border-line px-3 text-sm font-medium text-muted transition hover:bg-field"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowCreate(true)}
+          className="flex h-9 w-full items-center justify-center gap-2 rounded-md border border-dashed border-line text-sm font-medium text-muted transition hover:border-ocean hover:text-ocean"
+        >
+          <Plus className="h-4 w-4" /> New project
         </button>
-      </form>
+      )}
     </section>
   );
 }
