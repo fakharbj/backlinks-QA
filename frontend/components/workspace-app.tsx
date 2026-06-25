@@ -24,6 +24,7 @@ import {
   Settings,
   Sheet,
   ShieldAlert,
+  SlidersHorizontal,
   Star,
   Trash2,
   Upload,
@@ -60,7 +61,9 @@ import {
   ProjectDomain,
   ProjectSettings,
   Report,
+  RescoreResult,
   Role,
+  ScoringConfig,
   SheetConfig,
   SheetSource,
   SourceDomain,
@@ -70,7 +73,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "scoring" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -199,6 +202,9 @@ export function WorkspaceApp() {
           ) : null}
           {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
           {tab === "employees" ? <EmployeesDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "scoring" ? (
+            <ScoringDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+          ) : null}
           {tab === "settings" ? (
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -296,6 +302,7 @@ const NAV_GROUPS: Array<{ label: string; items: Array<[Tab, string, NavIcon]> }>
     items: [
       ["team", "Team", Users],
       ["employees", "Employees", UserCog],
+      ["scoring", "Scoring", SlidersHorizontal],
       ["settings", "Settings", Settings]
     ]
   }
@@ -2107,6 +2114,290 @@ function LinkTypesCard({
           </button>
         </form>
       </div>
+    </section>
+  );
+}
+
+function cleanScoringRules(
+  draft: Record<string, Record<string, number | "">>
+): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  for (const [param, outcomes] of Object.entries(draft)) {
+    const block: Record<string, number> = {};
+    for (const [oc, v] of Object.entries(outcomes)) {
+      if (v === "" || v === null || v === undefined || Number.isNaN(Number(v))) continue;
+      block[oc] = Math.trunc(Number(v));
+    }
+    if (Object.keys(block).length) out[param] = block;
+  }
+  return out;
+}
+
+function ScoringDesk({
+  token,
+  projectId,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [scope, setScope] = useState<"global" | "link_type" | "project">("global");
+  const [refId, setRefId] = useState<string>("");
+  const [draft, setDraft] = useState<Record<string, Record<string, number | "">>>({});
+  const [bands, setBands] = useState<{ fail_below: number; warn_below: number }>({
+    fail_below: 30,
+    warn_below: 80
+  });
+  const [preview, setPreview] = useState<RescoreResult | null>(null);
+
+  const linkTypes = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+  const projects = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+
+  // Default the "by project" scope to whatever project is selected in the sidebar.
+  useEffect(() => {
+    if (scope === "project" && !refId && projectId) setRefId(projectId);
+  }, [scope, projectId, refId]);
+
+  const effectiveRef = scope === "global" ? "" : refId;
+  const ready = scope === "global" || Boolean(effectiveRef);
+  const cfgKey = ["scoring-config", token, scope, effectiveRef];
+  const config = useQuery({
+    queryKey: cfgKey,
+    enabled: Boolean(token) && ready,
+    queryFn: () =>
+      api<ScoringConfig>(
+        `/scoring/config?scope=${scope}${effectiveRef ? `&scope_ref_id=${effectiveRef}` : ""}`,
+        { token }
+      )
+  });
+
+  useEffect(() => {
+    if (config.data) {
+      setDraft(JSON.parse(JSON.stringify(config.data.rules || {})));
+      setBands({ ...config.data.bands });
+      setPreview(null);
+    }
+  }, [config.data]);
+
+  const body = () =>
+    JSON.stringify({ scope, scope_ref_id: effectiveRef || null, rules: cleanScoringRules(draft), bands });
+
+  const save = useMutation({
+    mutationFn: () => api<ScoringConfig>("/scoring/config", { token, method: "PUT", body: body() }),
+    onSuccess: () => {
+      onNotice("Scoring saved as a new version");
+      queryClient.invalidateQueries({ queryKey: cfgKey });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const rescore = (apply: boolean) =>
+    api<RescoreResult>("/scoring/rescore", {
+      token,
+      method: "POST",
+      body: JSON.stringify({ scope, scope_ref_id: effectiveRef || null, preview: !apply })
+    });
+  const previewMut = useMutation({
+    mutationFn: () => rescore(false),
+    onSuccess: (r) => setPreview(r),
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const applyMut = useMutation({
+    mutationFn: () => rescore(true),
+    onSuccess: (r) => {
+      setPreview(r);
+      onNotice(`Re-scored ${r.changed} of ${r.total} backlinks`);
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const cfg = config.data;
+  const setCell = (param: string, outcome: string, value: string) => {
+    setDraft((d) => {
+      const next: Record<string, Record<string, number | "">> = { ...d, [param]: { ...(d[param] || {}) } };
+      if (value === "") delete next[param][outcome];
+      else next[param][outcome] = Number(value);
+      if (Object.keys(next[param]).length === 0) delete next[param];
+      return next;
+    });
+  };
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Scoring rules</h2>
+        <p className="text-sm text-muted">
+          Set how many points each parameter adds or subtracts. Project and link-type rules
+          override the global defaults; leave a box blank to inherit (the faint number is what
+          applies). Saving creates a new version; “Apply now” re-scores existing links instantly
+          (no re-crawl).
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {(["global", "link_type", "project"] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => {
+              setScope(s);
+              setRefId(s === "project" && projectId ? projectId : "");
+            }}
+            className={clsx(
+              "h-9 rounded-md border px-3 text-sm font-medium transition",
+              scope === s ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:bg-field"
+            )}
+          >
+            {s === "global" ? "Global" : s === "link_type" ? "By link type" : "By project"}
+          </button>
+        ))}
+        {scope === "link_type" ? (
+          <select
+            value={refId}
+            onChange={(e) => setRefId(e.target.value)}
+            className="h-9 rounded-md border border-line bg-white px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          >
+            <option value="">Select link type…</option>
+            {(linkTypes.data || []).map((lt) => (
+              <option key={lt.id} value={lt.id}>
+                {lt.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {scope === "project" ? (
+          <select
+            value={refId}
+            onChange={(e) => setRefId(e.target.value)}
+            className="h-9 rounded-md border border-line bg-white px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          >
+            <option value="">Select project…</option>
+            {(projects.data || []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+
+      {!ready ? (
+        <Empty label="Pick a link type or project to configure its scoring." />
+      ) : config.isLoading || !cfg ? (
+        <div className="flex justify-center p-8">
+          <Loader2 className="h-5 w-5 animate-spin text-muted" />
+        </div>
+      ) : (
+        <>
+          <section className="rounded-lg border border-line bg-panel">
+            <SectionTitle title={`Status thresholds · ${cfg.version ? `v${cfg.version}` : "inherited"}`} />
+            <div className="flex flex-wrap items-end gap-4 p-4">
+              <label className="text-sm">
+                <span className="mb-1 block text-xs uppercase text-muted">Fail below</span>
+                <input
+                  type="number"
+                  value={bands.fail_below}
+                  onChange={(e) => setBands((b) => ({ ...b, fail_below: Number(e.target.value) }))}
+                  className="h-9 w-24 rounded-md border border-line px-2 text-sm"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs uppercase text-muted">Warn below</span>
+                <input
+                  type="number"
+                  value={bands.warn_below}
+                  onChange={(e) => setBands((b) => ({ ...b, warn_below: Number(e.target.value) }))}
+                  className="h-9 w-24 rounded-md border border-line px-2 text-sm"
+                />
+              </label>
+              <div className="ml-auto flex flex-wrap gap-2">
+                <button
+                  onClick={() => save.mutate()}
+                  disabled={save.isPending}
+                  className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white hover:bg-teal-800"
+                >
+                  {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Save version
+                </button>
+                <button
+                  onClick={() => previewMut.mutate()}
+                  disabled={previewMut.isPending}
+                  className="flex h-9 items-center gap-2 rounded-md border border-line px-3 text-sm font-medium text-ink hover:bg-field"
+                >
+                  {previewMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+                  Preview re-score
+                </button>
+                <button
+                  onClick={() => applyMut.mutate()}
+                  disabled={applyMut.isPending}
+                  className="flex h-9 items-center gap-2 rounded-md border border-ember/40 px-3 text-sm font-medium text-ember hover:bg-ember/10"
+                >
+                  {applyMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  Apply now
+                </button>
+              </div>
+            </div>
+            {preview ? (
+              <div className="border-t border-line p-4 text-sm">
+                <span className="font-medium text-ink">{preview.applied ? "Applied" : "Preview"}:</span>{" "}
+                <span className="text-muted">
+                  {preview.changed} of {preview.total} backlinks change (avg{" "}
+                  {preview.avg_score_delta > 0 ? "+" : ""}
+                  {preview.avg_score_delta} pts)
+                </span>
+                {Object.keys(preview.transitions).length ? (
+                  <span className="ml-2 text-muted">
+                    · {Object.entries(preview.transitions).map(([k, v]) => `${k}: ${v}`).join(" · ")}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+
+          <section className="rounded-lg border border-line bg-panel">
+            <SectionTitle title="Parameters" />
+            <div className="divide-y divide-line">
+              {cfg.parameters.map((p) => (
+                <div key={p.key} className="p-4">
+                  <div className="mb-2">
+                    <div className="text-sm font-semibold text-ink">{p.display_name}</div>
+                    {p.description ? <div className="text-xs text-muted">{p.description}</div> : null}
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {p.outcomes.map((oc) => {
+                      const own = draft[p.key]?.[oc.key];
+                      const inherited = cfg.inherited_rules[p.key]?.[oc.key];
+                      const fallback = inherited !== undefined ? inherited : p.default_points[oc.key] ?? 0;
+                      return (
+                        <label key={oc.key} className="text-xs">
+                          <span className="mb-1 block text-muted">{oc.label}</span>
+                          <input
+                            type="number"
+                            value={own === undefined ? "" : own}
+                            placeholder={String(fallback)}
+                            onChange={(e) => setCell(p.key, oc.key, e.target.value)}
+                            className="h-9 w-20 rounded-md border border-line px-2 text-sm"
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
     </section>
   );
 }

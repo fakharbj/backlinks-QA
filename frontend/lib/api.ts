@@ -104,6 +104,39 @@ export type LinkType = {
   backlink_count: number;
 };
 
+export type ScoringParameter = {
+  key: string;
+  display_name: string;
+  description: string | null;
+  category: string;
+  value_kind: string;
+  outcomes: Array<{ key: string; label: string }>;
+  default_points: Record<string, number>;
+  sort_order: number;
+};
+
+export type ScoringConfig = {
+  scope: string;
+  scope_ref_id: string | null;
+  version: number;
+  version_id: string | null;
+  rules: Record<string, Record<string, number>>;
+  bands: { fail_below: number; warn_below: number };
+  inherited_rules: Record<string, Record<string, number>>;
+  inherited_bands: { fail_below: number; warn_below: number };
+  note: string | null;
+  parameters: ScoringParameter[];
+};
+
+export type RescoreResult = {
+  scope: string;
+  applied: boolean;
+  total: number;
+  changed: number;
+  avg_score_delta: number;
+  transitions: Record<string, number>;
+};
+
 export type SourceDomain = {
   id: string;
   domain_key: string;
