@@ -26,6 +26,12 @@ celery-redbeat>=2.3.2     # 2.2.0 not published for current setuptools
 
 # ── Crawler ─────────────────────────────────────────────────────────────────
 httpx[http2]==0.27.0
+# Content-Encoding decoders for httpx. brotli is the DEFAULT on most CDNs/
+# Cloudflare; without it httpx passes the compressed bytes through undecoded and
+# the HTML parser sees 0 links → false "link missing" verdicts. zstandard covers
+# the newer `zstd` encoding. gzip/deflate are stdlib.
+brotli>=1.1.0
+zstandard>=0.22.0
 lxml>=5.3.0              # 5.3.0 is the first with Python 3.13 wheels
 tldextract==5.1.2
 idna==3.7

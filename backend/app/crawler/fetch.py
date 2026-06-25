@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ssl
 import time
+import zlib
 from dataclasses import dataclass, field
 
 import httpx
@@ -119,6 +120,46 @@ async def _read_capped(response: httpx.Response, cap: int) -> tuple[bytes, bool]
     return b"".join(chunks), False
 
 
+# Hard ceiling on bytes produced by the defensive decompressor below — guards
+# against a decompression bomb (a small compressed body inflating to GBs).
+_DECOMP_OUTPUT_CAP = 32 * 1024 * 1024  # 32 MiB
+
+
+def _bounded_inflate(data: bytes, wbits: int) -> bytes:
+    """zlib/gzip inflate capped at ``_DECOMP_OUTPUT_CAP`` (truncated, not unbounded)."""
+    return zlib.decompressobj(wbits).decompress(data, _DECOMP_OUTPUT_CAP)
+
+
+def _maybe_decompress(data: bytes) -> bytes:
+    """Defensive net against a missing/failed Content-Encoding decoder.
+
+    httpx normally decompresses the body itself, so this is a no-op on a correctly
+    decoded page. But if a decoder package is unavailable (e.g. ``brotli`` not
+    installed) httpx silently passes the *compressed* bytes through — the HTML
+    parser then finds 0 links and we emit a false "link missing". If the body
+    still bears a recognizable compression magic, decompress it here so the parser
+    always sees real HTML. Brotli has no fixed magic, so it must be handled by the
+    installed library (pinned in requirements.txt); gzip/zlib/zstd are caught here.
+    """
+    if len(data) < 4:
+        return data
+    head = data[:4]
+    try:
+        if head[:2] == b"\x1f\x8b":  # gzip
+            return _bounded_inflate(data, 31)  # zlib.MAX_WBITS | 16
+        if head == b"\x28\xb5\x2f\xfd":  # zstandard
+            import zstandard
+
+            return zstandard.ZstdDecompressor().decompress(
+                data, max_output_size=_DECOMP_OUTPUT_CAP
+            )
+        if head[0] == 0x78 and head[1] in (0x01, 0x5E, 0x9C, 0xDA):  # zlib/deflate
+            return _bounded_inflate(data, 15)
+    except Exception:  # noqa: BLE001 — corrupt/partial body: leave as-is for decode
+        return data
+    return data
+
+
 async def fetch_raw(
     client: httpx.AsyncClient,
     url: str,
@@ -189,6 +230,7 @@ async def fetch_raw(
             # Terminal response — read (capped) and finish.
             body_bytes, too_large = await _read_capped(response, max_bytes)
             await response.aclose()
+            body_bytes = _maybe_decompress(body_bytes)
             outcome.redirect_chain.append(
                 RedirectHop(url=current, status=response.status_code)
             )
