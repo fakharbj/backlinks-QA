@@ -49,6 +49,21 @@ export type ConflictSummary = {
   by_scope: Record<string, number>;
 };
 
+export type ProjectDomain = {
+  id: string;
+  domain: string;
+  is_primary: boolean;
+};
+
+export type ProjectSettings = {
+  project_id: string;
+  scoring_profile: string;
+  index_expected: boolean;
+  treat_sponsored_as_follow: boolean;
+  status_thresholds: Record<string, number>;
+  domains: ProjectDomain[];
+};
+
 export type Dashboard = {
   totals: {
     total: number;

@@ -20,8 +20,10 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Settings,
   Sheet,
   ShieldAlert,
+  Star,
   Trash2,
   Upload,
   UserPlus,
@@ -51,6 +53,8 @@ import {
   Dashboard,
   Page,
   Project,
+  ProjectDomain,
+  ProjectSettings,
   Report,
   Role,
   SheetConfig,
@@ -60,7 +64,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "imports" | "sheets" | "alerts" | "reports" | "team";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "imports" | "sheets" | "alerts" | "reports" | "team" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -184,6 +188,9 @@ export function WorkspaceApp() {
             <ReportsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "settings" ? (
+            <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+          ) : null}
         </section>
       </section>
     </main>
@@ -279,7 +286,8 @@ function TopBar({
     ["sheets", "Sheets", Sheet],
     ["alerts", "Alerts", Bell],
     ["reports", "Reports", FileSpreadsheet],
-    ["team", "Team", Users]
+    ["team", "Team", Users],
+    ["settings", "Settings", Settings]
   ];
 
   return (
@@ -1471,6 +1479,206 @@ function ReportGroup({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SettingsDesk({
+  token,
+  projectId,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [newDomain, setNewDomain] = useState("");
+
+  const settings = useQuery({
+    queryKey: ["project-settings", token, projectId],
+    enabled: Boolean(token && projectId),
+    queryFn: () => api<ProjectSettings>(`/projects/${projectId}/settings`, { token })
+  });
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["project-settings", token, projectId] });
+
+  const addDomain = useMutation({
+    mutationFn: () =>
+      api<ProjectSettings>(`/projects/${projectId}/domains`, {
+        token,
+        method: "POST",
+        body: JSON.stringify({ domain: newDomain.trim() })
+      }),
+    onSuccess: () => {
+      setNewDomain("");
+      onNotice("Main domain added");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const removeDomain = useMutation({
+    mutationFn: (id: string) =>
+      api<ProjectSettings>(`/projects/${projectId}/domains/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Main domain removed");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const setPrimary = useMutation({
+    mutationFn: (id: string) =>
+      api<ProjectSettings>(`/projects/${projectId}/domains/${id}/primary`, {
+        token,
+        method: "POST"
+      }),
+    onSuccess: () => {
+      onNotice("Primary domain updated");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const saveSettings = useMutation({
+    mutationFn: (patch: Record<string, unknown>) =>
+      api<ProjectSettings>(`/projects/${projectId}/settings`, {
+        token,
+        method: "PUT",
+        body: JSON.stringify(patch)
+      }),
+    onSuccess: () => {
+      onNotice("Settings saved");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  if (!projectId) {
+    return (
+      <div className="rounded-lg border border-line bg-panel">
+        <Empty label="Select a project (top‑left) to manage its settings and main domains." />
+      </div>
+    );
+  }
+
+  const s = settings.data;
+  return (
+    <section className="grid gap-5 xl:grid-cols-2">
+      <section className="rounded-lg border border-line bg-panel">
+        <SectionTitle title="Main domains" />
+        <div className="space-y-3 p-4">
+          <p className="text-xs text-muted">
+            The website(s) this project builds links to. The <strong>primary</strong> domain is the
+            project&apos;s target for QA, reports and analytics.
+          </p>
+          <div className="divide-y divide-line rounded-md border border-line">
+            {(s?.domains || []).map((d) => (
+              <div key={d.id} className="flex items-center justify-between gap-2 p-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Star
+                    className={clsx("h-4 w-4 shrink-0", d.is_primary ? "text-ember" : "text-muted/40")}
+                    aria-hidden
+                  />
+                  <span className="truncate font-medium text-ink">{d.domain}</span>
+                  {d.is_primary ? (
+                    <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ember">
+                      Primary
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {!d.is_primary ? (
+                    <button
+                      onClick={() => setPrimary.mutate(d.id)}
+                      className="rounded border border-line bg-white px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+                    >
+                      Set primary
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={() => removeDomain.mutate(d.id)}
+                    aria-label="Remove domain"
+                    className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-muted transition hover:bg-field hover:text-danger"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {s && !s.domains.length ? (
+              <Empty label="No main domain yet — add one below." />
+            ) : null}
+          </div>
+          <form
+            className="flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (newDomain.trim()) addDomain.mutate();
+            }}
+          >
+            <input
+              className="h-10 flex-1 rounded-md border border-line bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              placeholder="example.com"
+              value={newDomain}
+              onChange={(event) => setNewDomain(event.target.value)}
+            />
+            <button className="flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white transition hover:bg-black">
+              {addDomain.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4" />
+              )}
+              Add
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-line bg-panel">
+        <SectionTitle title="QA policy" />
+        <div className="space-y-4 p-4">
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-sm text-ink">Treat sponsored / UGC links as dofollow</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={Boolean(s?.treat_sponsored_as_follow)}
+              disabled={!s || saveSettings.isPending}
+              onChange={(event) =>
+                saveSettings.mutate({ treat_sponsored_as_follow: event.target.checked })
+              }
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-sm text-ink">Expect pages to be indexable</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={Boolean(s?.index_expected)}
+              disabled={!s || saveSettings.isPending}
+              onChange={(event) => saveSettings.mutate({ index_expected: event.target.checked })}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">
+              Scoring profile
+            </span>
+            <select
+              className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm"
+              value={s?.scoring_profile || "inherit_global"}
+              disabled={!s || saveSettings.isPending}
+              onChange={(event) => saveSettings.mutate({ scoring_profile: event.target.value })}
+            >
+              <option value="inherit_global">Inherit global scoring</option>
+              <option value="custom">Custom (per‑project scoring)</option>
+            </select>
+          </label>
+          <p className="text-xs text-muted">
+            Per‑parameter scoring weights arrive in a later step; this chooses whether the project
+            uses global defaults or its own rules.
+          </p>
+        </div>
+      </section>
+    </section>
   );
 }
 
