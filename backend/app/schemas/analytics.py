@@ -21,3 +21,14 @@ class AnalyticsResponse(BaseModel):
     facets: dict[str, list[dict[str, Any]]]
     groups: list[dict[str, Any]]
     dimensions: list[str]  # allowed group/facet dimensions
+
+
+class AnalyticsRecordsRequest(BaseModel):
+    filters: dict[str, Any] = Field(default_factory=dict)
+    group_by: str
+    group_key: str
+    limit: int = 50
+
+
+class AnalyticsRecordsResponse(BaseModel):
+    records: list[dict[str, Any]]

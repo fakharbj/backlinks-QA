@@ -3065,7 +3065,9 @@ const ANALYTICS_FACETS: Array<[string, string, string]> = [
   ["status", "status", "QA status"],
   ["index_status", "index_status", "Index"],
   ["duplicate_status", "duplicate_status", "Duplicate"],
-  ["rel", "rel", "Rel"]
+  ["rel", "rel", "Rel"],
+  ["source_domain", "source_domain", "Source domain"],
+  ["scoring_version", "scoring_rule_version_id", "Scoring version"]
 ];
 
 const GROUP_OPTIONS: Array<[string, string]> = [
@@ -3077,7 +3079,8 @@ const GROUP_OPTIONS: Array<[string, string]> = [
   ["duplicate_status", "Duplicate status"],
   ["rel", "Rel"],
   ["vendor", "Vendor"],
-  ["source_domain", "Source domain"]
+  ["source_domain", "Source domain"],
+  ["scoring_version", "Scoring version"]
 ];
 
 function pct(n: number, total: number) {
@@ -3088,6 +3091,18 @@ function pct(n: number, total: number) {
 function AnalyticsDesk({ token }: { token: string | null }) {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [groupBy, setGroupBy] = useState("user");
+  const [drillKey, setDrillKey] = useState<string | null>(null);
+
+  const drill = useQuery({
+    queryKey: ["analytics-records", token, filters, groupBy, drillKey],
+    enabled: Boolean(token) && drillKey !== null,
+    queryFn: () =>
+      api<{ records: Array<Record<string, any>> }>("/analytics/records", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ filters, group_by: groupBy, group_key: drillKey, limit: 50 })
+      })
+  });
 
   const q = useQuery({
     queryKey: ["analytics", token, filters, groupBy],
@@ -3165,7 +3180,10 @@ function AnalyticsDesk({ token }: { token: string | null }) {
           <select
             className="h-9 rounded-md border border-line bg-white px-3 text-sm"
             value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value)}
+            onChange={(e) => {
+              setGroupBy(e.target.value);
+              setDrillKey(null);
+            }}
           >
             {GROUP_OPTIONS.map(([v, l]) => (
               <option key={v} value={v}>Group by {l}</option>
@@ -3189,9 +3207,14 @@ function AnalyticsDesk({ token }: { token: string | null }) {
               {(q.data?.groups || []).map((g, i) => {
                 const t = Number(g.total || 0);
                 const name = (g.label && String(g.label)) || String(g.key);
+                const active = drillKey === String(g.key);
                 return (
-                  <tr key={i} className="hover:bg-field/60">
-                    <Td><span className="font-medium text-ink">{name || "—"}</span></Td>
+                  <tr
+                    key={i}
+                    onClick={() => setDrillKey(active ? null : String(g.key))}
+                    className={clsx("cursor-pointer hover:bg-field/60", active && "bg-ocean/5")}
+                  >
+                    <Td><span className="font-medium text-ocean hover:underline">{name || "—"}</span></Td>
                     <Td>{t}</Td>
                     <Td>{g.avg_score ?? "-"}</Td>
                     <Td>
@@ -3209,6 +3232,51 @@ function AnalyticsDesk({ token }: { token: string | null }) {
           </table>
           {!q.isLoading && !(q.data?.groups || []).length ? <Empty label="No data for these filters" /> : null}
         </div>
+        {drillKey !== null ? (
+          <div className="border-t border-line p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <h4 className="text-sm font-semibold text-ink">
+                Backlinks in “{
+                  (() => {
+                    const g = (q.data?.groups || []).find((x) => String(x.key) === drillKey);
+                    return (g && (String(g.label) || String(g.key))) || drillKey;
+                  })()
+                }”
+              </h4>
+              <button onClick={() => setDrillKey(null)} className="text-xs font-medium text-ocean hover:underline">
+                Close
+              </button>
+            </div>
+            {drill.isLoading ? (
+              <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+            ) : !(drill.data?.records || []).length ? (
+              <Empty label="No backlinks in this group" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-field text-xs uppercase text-muted">
+                    <tr><Th>Source page</Th><Th>Status</Th><Th>Score</Th><Th>Rel</Th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {(drill.data?.records || []).map((r) => (
+                      <tr key={String(r.id)} className="hover:bg-field/60">
+                        <Td>
+                          <a href={String(r.source_page_url)} target="_blank" rel="noreferrer"
+                            className="break-all text-ocean hover:underline">
+                            {String(r.source_page_url)}
+                          </a>
+                        </Td>
+                        <Td><Status value={String(r.status)} /></Td>
+                        <Td>{r.score ?? "-"}</Td>
+                        <Td>{r.current_rel || "-"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
     </section>
   );

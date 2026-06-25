@@ -81,6 +81,11 @@ _FILTERS: dict[str, Callable] = {
     "http_class": _http_class,
     "score_min": lambda v: ("b.score >= :score_min", {"score_min": int(v)}),
     "score_max": lambda v: ("b.score <= :score_max", {"score_max": int(v)}),
+    "link_type_id": lambda v: ("b.link_type_id = :link_type_id", {"link_type_id": v}),
+    "scoring_rule_version_id": lambda v: (
+        "b.scoring_rule_version_id::text = :scoring_rule_version_id",
+        {"scoring_rule_version_id": str(v)},
+    ),
     "link_found": lambda v: ("b.link_found = :link_found", {"link_found": bool(v)}),
     "tag": lambda v: ("b.tags @> ARRAY[:tag]", {"tag": str(v)}),
     "search": _ilike_search,
@@ -105,6 +110,11 @@ _GROUPS: dict[str, tuple[str, str, str]] = {
     "indexability": ("coalesce(b.indexability::text, 'unknown')", "''", ""),
     "vendor": ("coalesce(b.vendor_id::text, '(none)')", "max(ven.name)", "LEFT JOIN vendors ven ON ven.id = b.vendor_id"),
     "source_domain": ("b.source_domain", "''", ""),
+    "scoring_version": (
+        "coalesce(b.scoring_rule_version_id::text, '(none)')",
+        "max(srv.scope || ' v' || srv.version)",
+        "LEFT JOIN scoring_rule_versions srv ON srv.id = b.scoring_rule_version_id",
+    ),
 }
 
 # Metric expressions reused by summary + groups.
@@ -225,8 +235,43 @@ _DIM_TO_FILTER = {
     "project": "project_id", "user": "assigned_user_label", "employee_code": "employee_code",
     "link_type": "link_type", "rel": "rel", "status": "status", "index_status": "index_status",
     "duplicate_status": "duplicate_status", "indexability": "indexability", "vendor": "vendor_id",
-    "source_domain": "source_domain",
+    "source_domain": "source_domain", "scoring_version": "scoring_rule_version_id",
 }
+
+
+async def records(
+    db: AsyncSession,
+    ctx: AuthContext,
+    filters: dict,
+    group_by: str,
+    group_key: str,
+    *,
+    limit: int = 50,
+) -> list[dict]:
+    """Drill-down: the backlinks behind one analytics group cell. Reuses the group's
+    own key expression (``key_expr = :gkey``) so coalesced buckets like '(none)'
+    match exactly the rows that were counted."""
+    spec = _GROUPS.get(group_by)
+    if spec is None:
+        return []
+    key_expr = spec[0]
+    where, params = _build_where(ctx, filters)
+    params["gkey"] = group_key
+    params["lim"] = max(1, min(int(limit), 500))
+    sql = _bind(
+        f"""
+        SELECT b.id::text AS id, b.source_page_url, b.target_url,
+               {_EFF}::text AS status, b.score, b.link_found,
+               b.current_rel::text AS current_rel, b.link_type, b.source_domain
+        FROM backlink_records b
+        WHERE {where} AND {key_expr} = :gkey
+        ORDER BY b.score ASC NULLS LAST
+        LIMIT :lim
+        """,
+        params,
+    )
+    rows = (await db.execute(sql, params)).mappings().all()
+    return [dict(r) for r in rows]
 
 
 def allowed_dimensions() -> list[str]:
