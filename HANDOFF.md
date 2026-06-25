@@ -447,9 +447,14 @@ not be installed locally — the **build is done on the server**, so a clean loc
 
 ## 13. Where to go deeper
 
+- **`CLAUDE.md`** — the short always-loaded working guide (rules, commands, conventions).
 - **`backend/app/core/config.py`** — every behavior/tunable, heavily commented.
 - **`docs/DEVELOPMENT-PLAN.md`** — the phased plan and rationale.
 - **`docs/FINAL-STATUS.md`** — phase-by-phase status + recommendations.
+- **`docs/01-product-requirements.md`** — product requirements.
+- **`docs/02-system-architecture.md`** — system architecture detail.
+- **`docs/03-production-runbook.md`** — production runbook.
+- **`docs/FINAL-YEAR-PROJECT-REPORT.md`** — narrative project report.
 - **`backend/app/services/*`** — business logic; start with `report_service.py`,
   `analytics_service.py`, `sheet_sync_service.py`, `index_service.py`.
 - **`frontend/components/workspace-app.tsx`** — the whole UI in one tree; search for

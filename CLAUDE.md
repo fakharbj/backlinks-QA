@@ -156,6 +156,8 @@ under `/api/v1` (nginx only proxies `/api/v1`) — reach them on the box at
 | PM2 process defs | `deploy/ecosystem.config.js` |
 | Full handoff / deep dive | `HANDOFF.md` |
 | Build plan / phase status | `docs/DEVELOPMENT-PLAN.md`, `docs/FINAL-STATUS.md` |
+| Requirements / architecture / runbook | `docs/01-product-requirements.md`, `docs/02-system-architecture.md`, `docs/03-production-runbook.md` |
+| Project report (narrative) | `docs/FINAL-YEAR-PROJECT-REPORT.md` |
 
 ---
 
