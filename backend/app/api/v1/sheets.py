@@ -14,8 +14,14 @@ from app.core.rbac import Permission
 from app.integrations import google_sheets
 from app.models.enums import AuditAction
 from app.models.sheets import SheetSource
-from app.schemas.sheet import SheetConfigOut, SheetSourceOut, SheetSyncResponse
-from app.services import audit_service
+from app.schemas.sheet import (
+    SheetConfigOut,
+    SheetSourceOut,
+    SheetSyncResponse,
+    SheetTabOut,
+    SheetTabUpdate,
+)
+from app.services import audit_service, sheet_sync_service
 
 router = APIRouter(prefix="/sheets", tags=["sheets"])
 
@@ -95,3 +101,26 @@ async def writeback_one(
     return SheetSyncResponse(
         message=f"Writing QA/index results back to '{source.project_name}' (result columns only)."
     )
+
+
+def _tab_out(t) -> SheetTabOut:
+    return SheetTabOut(
+        id=t.id, gid=t.gid, tab_name=t.tab_name, link_type_name=t.link_type_name,
+        import_enabled=t.import_enabled, qa_enabled=t.qa_enabled, status=t.status,
+        row_count=t.row_count,
+    )
+
+
+@router.get("/{sheet_id}/tabs", response_model=list[SheetTabOut])
+async def list_sheet_tabs(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> list[SheetTabOut]:
+    return [_tab_out(t) for t in await sheet_sync_service.list_tabs(db, ctx, sheet_id)]
+
+
+@router.patch("/tabs/{tab_id}", response_model=SheetTabOut)
+async def update_sheet_tab(
+    tab_id: uuid.UUID, payload: SheetTabUpdate, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> SheetTabOut:
+    tab = await sheet_sync_service.update_tab(db, ctx, tab_id, payload)
+    await db.commit()
+    return _tab_out(tab)

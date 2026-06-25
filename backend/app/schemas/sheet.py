@@ -26,6 +26,23 @@ class SheetSourceOut(ORMModel):
     writeback_enabled: bool
 
 
+class SheetTabOut(BaseModel):
+    id: uuid.UUID
+    gid: str
+    tab_name: str
+    link_type_name: str | None = None
+    import_enabled: bool
+    qa_enabled: bool
+    status: str
+    row_count: int
+
+
+class SheetTabUpdate(BaseModel):
+    link_type_name: str | None = None
+    import_enabled: bool | None = None
+    qa_enabled: bool | None = None
+
+
 class SheetConfigOut(BaseModel):
     enabled: bool
     service_account_email: str | None

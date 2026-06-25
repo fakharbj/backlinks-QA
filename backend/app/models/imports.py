@@ -32,6 +32,8 @@ class Import(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     # Set when the import was produced by a Google Sheets sync (Phase 2).
     sheet_source_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # The specific sub-sheet/tab this import came from (Phase 8 multi-tab sync).
+    sheet_tab: Mapped[str | None] = mapped_column(String(200))
     filename: Mapped[str | None] = mapped_column(String(500))
     upload_key: Mapped[str | None] = mapped_column(String(500))  # object-storage key
     column_mapping: Mapped[dict] = mapped_column(JSONB, default=dict)

@@ -50,6 +50,7 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index(
             "uq_backlink_records_sheet_entry",
             "source_sheet_id",
+            "sheet_tab",
             "sheet_row_ref",
             unique=True,
             postgresql_where=text("source_sheet_id IS NOT NULL"),
@@ -136,6 +137,7 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="SET NULL")
     )
     sheet_row_ref: Mapped[str | None] = mapped_column(String(40))         # row number for write-back
+    sheet_tab: Mapped[str | None] = mapped_column(String(200))            # sub-sheet/tab name (Phase 8)
     sheet_created_date: Mapped[date | None] = mapped_column(Date)
 
     # ── Canonical identity (Phase 8) — global fingerprint of the source URL ───

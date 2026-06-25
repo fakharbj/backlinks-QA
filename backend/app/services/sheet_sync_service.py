@@ -21,7 +21,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -31,6 +31,7 @@ from app.models.backlink import BacklinkRecord
 from app.models.enums import ImportSource, ImportStatus
 from app.models.imports import Import
 from app.models.project import Project
+from app.models.sheet_tab import GoogleSheetTab
 from app.models.sheets import SheetSource
 from app.services import import_parse, import_service
 
@@ -39,6 +40,35 @@ log = get_logger("services.sheet_sync")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def list_tabs(db: AsyncSession, ctx, sheet_source_id: uuid.UUID) -> list[GoogleSheetTab]:
+    from app.core.errors import NotFoundError
+
+    source = await db.get(SheetSource, sheet_source_id)
+    if source is None or source.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Sheet source not found")
+    return list(
+        (
+            await db.execute(
+                select(GoogleSheetTab)
+                .where(GoogleSheetTab.sheet_source_id == sheet_source_id)
+                .order_by(GoogleSheetTab.tab_name.asc())
+            )
+        ).scalars().all()
+    )
+
+
+async def update_tab(db: AsyncSession, ctx, tab_id: uuid.UUID, payload) -> GoogleSheetTab:
+    from app.core.errors import NotFoundError
+
+    tab = await db.get(GoogleSheetTab, tab_id)
+    if tab is None or tab.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Sheet tab not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(tab, field, value)
+    await db.flush()
+    return tab
 
 
 def _slugify(name: str) -> str:
@@ -119,8 +149,41 @@ async def _resolve_sheet_source(
     return source
 
 
+async def _sync_tabs(db, source, worksheets) -> dict:
+    """Upsert a GoogleSheetTab per detected tab (by stable gid); mark vanished tabs
+    missing. Returns ``{gid: GoogleSheetTab}``."""
+    seen = {w["gid"] for w in worksheets}
+    existing = {
+        t.gid: t
+        for t in (
+            await db.execute(
+                select(GoogleSheetTab).where(GoogleSheetTab.sheet_source_id == source.id)
+            )
+        ).scalars().all()
+    }
+    out: dict = {}
+    for w in worksheets:
+        tab = existing.get(w["gid"])
+        if tab is None:
+            tab = GoogleSheetTab(
+                workspace_id=source.workspace_id, sheet_source_id=source.id,
+                gid=w["gid"], tab_name=w["title"], link_type_name=w["title"], status="detected",
+            )
+            db.add(tab)
+        else:
+            tab.tab_name = w["title"]  # follow renames (gid is stable)
+            tab.status = "detected"
+        out[w["gid"]] = tab
+    for gid, tab in existing.items():
+        if gid not in seen:
+            tab.status = "missing"  # keep the tab + its imported links; just flag it
+    await db.flush()
+    return out
+
+
 async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
-    """Sync one project sheet into the system via the import pipeline."""
+    """Sync ALL sub-sheets (tabs) of a project spreadsheet. Each tab name = a link
+    type; rows inherit it. Re-sync is idempotent per (tab, row)."""
     source = await db.get(SheetSource, sheet_source_id)
     if source is None:
         return {"error": "sheet source not found"}
@@ -130,52 +193,80 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     await db.commit()
 
     try:
-        headers, rows = await asyncio.to_thread(
-            google_sheets.read_project_sheet, source.spreadsheet_id, source.sheet_tab
-        )
-    except Exception as exc:  # noqa: BLE001 - one bad sheet must not stop the rest
-        log.warning("project_sheet_read_failed", sheet_source_id=str(sheet_source_id),
-                    error=repr(exc))
+        worksheets = await asyncio.to_thread(google_sheets.list_worksheets, source.spreadsheet_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sheet_tabs_read_failed", sheet_source_id=str(sheet_source_id), error=repr(exc))
         source.last_sync_status = "error"
         source.last_sync_error = str(exc)[:1000]
         source.last_synced_at = _now()
         await db.commit()
         return {"error": str(exc)}
 
-    # Per-sheet override mapping if set, else auto-map by header synonyms.
-    mapping = dict(source.column_mapping) if source.column_mapping else import_parse.auto_map(headers)
-
-    imp = Import(
-        workspace_id=source.workspace_id,
-        project_id=source.project_id,
-        created_by=None,
-        source=ImportSource.GOOGLE_SHEETS,
-        sheet_source_id=source.id,
-        filename=f"sheet:{source.spreadsheet_id}",
-        column_mapping=mapping,
-        status=ImportStatus.PENDING,
-    )
-    db.add(imp)
-    await db.flush()
-    await import_service.stage_rows(db, imp, rows)
+    tabs = await _sync_tabs(db, source, worksheets)
     await db.commit()
 
-    new_ids = await import_service.process(db, imp.id)
+    total_rows = 0
+    total_imported = 0
+    all_new: list[uuid.UUID] = []
+    for ws in worksheets:
+        tab = tabs[ws["gid"]]
+        if not tab.import_enabled:
+            continue
+        try:
+            headers, rows = await asyncio.to_thread(
+                google_sheets.read_project_sheet, source.spreadsheet_id, ws["title"]
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad tab must not stop the rest
+            log.warning("tab_read_failed", tab=ws["title"], error=repr(exc))
+            continue
+        mapping = (
+            dict(source.column_mapping) if source.column_mapping else import_parse.auto_map(headers)
+        )
+        imp = Import(
+            workspace_id=source.workspace_id,
+            project_id=source.project_id,
+            created_by=None,
+            source=ImportSource.GOOGLE_SHEETS,
+            sheet_source_id=source.id,
+            sheet_tab=ws["title"],
+            filename=f"sheet:{source.spreadsheet_id}:{ws['title']}",
+            column_mapping=mapping,
+            status=ImportStatus.PENDING,
+        )
+        db.add(imp)
+        await db.flush()
+        await import_service.stage_rows(
+            db, imp, rows, default_link_type=(tab.link_type_name or ws["title"])
+        )
+        await db.commit()
+        new_ids = await import_service.process(db, imp.id)
+        refreshed = await db.get(Import, imp.id)
+        all_new.extend(new_ids)
+        total_rows += len(rows)
+        total_imported += refreshed.imported_rows if refreshed else len(new_ids)
+        tab.row_count = len(rows)
+        tab.last_synced_at = _now()
+        source.last_sync_import_id = imp.id
 
-    refreshed = await db.get(Import, imp.id)
+    # Remove legacy single-tab rows (imported before multi-tab existed, sheet_tab NULL)
+    # now superseded by the tab-aware imports above.
+    await db.execute(
+        text("DELETE FROM backlink_records WHERE source_sheet_id = :sid AND sheet_tab IS NULL"),
+        {"sid": source.id},
+    )
+
     source.last_synced_at = _now()
     source.last_sync_status = "ok"
     source.last_sync_error = None
-    source.last_sync_import_id = imp.id
-    source.row_count = len(rows)
-    source.imported_count = refreshed.imported_rows if refreshed else len(new_ids)
-    source.updated_count = (refreshed.imported_rows - len(new_ids)) if refreshed else 0
+    source.row_count = total_rows
+    source.imported_count = total_imported
+    source.updated_count = max(0, total_imported - len(all_new))
     await db.commit()
 
     return {
-        "rows": len(rows),
-        "new": len(new_ids),
-        "new_ids": [str(i) for i in new_ids],
+        "tabs": len([w for w in worksheets if tabs[w["gid"]].import_enabled]),
+        "rows": total_rows,
+        "new": len(all_new),
     }
 
 
@@ -198,31 +289,36 @@ async def writeback_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dic
         )
     ).scalars().all()
 
-    values_by_row: dict[int, list] = {}
+    # Group rows by their sub-sheet/tab so each tab is written back to itself.
+    by_tab: dict[str | None, dict[int, list]] = {}
     for bl in backlinks:
         try:
             sheet_row = int(bl.sheet_row_ref) + 1  # +1 for the header row
         except (TypeError, ValueError):
             continue
-        status = (bl.override_status or bl.status)
-        values_by_row[sheet_row] = [
+        status = bl.override_status or bl.status
+        by_tab.setdefault(bl.sheet_tab, {})[sheet_row] = [
             status.value if status else "",
             bl.score if bl.score is not None else "",
             bl.index_status or "unchecked",
             bl.duplicate_status or "unique",
             bl.last_checked_at.strftime("%Y-%m-%d %H:%M") if bl.last_checked_at else "",
         ]
-    if not values_by_row:
+    if not by_tab:
         return {"rows": 0}
 
-    try:
-        result = await asyncio.to_thread(
-            google_sheets.write_back,
-            source.spreadsheet_id, source.sheet_tab, _WRITEBACK_HEADERS, values_by_row,
-        )
-    except Exception as exc:  # noqa: BLE001 - write-back failure must not crash
-        log.warning("writeback_failed", sheet_source_id=str(sheet_source_id), error=repr(exc))
-        return {"error": str(exc)}
+    written = 0
+    for tab, values_by_row in by_tab.items():
+        if not values_by_row:
+            continue
+        try:
+            await asyncio.to_thread(
+                google_sheets.write_back,
+                source.spreadsheet_id, tab, _WRITEBACK_HEADERS, values_by_row,
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - write-back failure must not crash
+            log.warning("writeback_failed", tab=tab, error=repr(exc))
     source.last_sync_error = None
     await db.commit()
-    return result
+    return {"tabs_written": written}

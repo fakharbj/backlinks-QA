@@ -71,12 +71,19 @@ async def create_import(
 
 
 async def stage_rows(
-    db: AsyncSession, imp: Import, raw_rows: list[dict[str, str]]
+    db: AsyncSession, imp: Import, raw_rows: list[dict[str, str]],
+    *, default_link_type: str | None = None,
 ) -> None:
-    """Project each raw row through the mapping and persist it for processing."""
+    """Project each raw row through the mapping and persist it for processing.
+
+    ``default_link_type`` (the sub-sheet/tab name) is applied to rows that don't
+    already carry a link type, so every row in a tab inherits that link type.
+    """
     mapping = imp.column_mapping or {}
     for i, raw in enumerate(raw_rows, start=1):
-        mapped = apply_mapping(raw, mapping) if mapping else raw
+        mapped = apply_mapping(raw, mapping) if mapping else dict(raw)
+        if default_link_type and not str(mapped.get("link_type") or "").strip():
+            mapped["link_type"] = default_link_type
         db.add(
             ImportRow(
                 import_id=imp.id,
@@ -108,6 +115,9 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     # Resolve the sheet "User" label to an app user when it matches an account
     # email. Built once per import (cheap) so we never query per row at 1M+ scale.
     user_map = await _workspace_user_map(db, imp.workspace_id)
+    # Target authority = the project's main domain (Phase 8): a row's target comes
+    # from the project, not the sheet. Loaded once per import.
+    project_domain = await _project_target_domain(db, imp.project_id)
 
     rows = (
         await db.execute(
@@ -121,7 +131,7 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
         try:
             created_id = await _process_row(
                 db, imp, row, user_map, dirty_identities, identity_cache,
-                canonical_cache, dirty_canonicals, link_type_cache,
+                canonical_cache, dirty_canonicals, link_type_cache, project_domain,
             )
             if created_id is not None:
                 new_ids.append(created_id)
@@ -159,13 +169,21 @@ async def _process_row(
     canonical_cache: dict[str, uuid.UUID],
     dirty_canonicals: set[uuid.UUID],
     link_type_cache: dict[str, uuid.UUID],
+    project_domain: str | None,
 ) -> uuid.UUID | None:
     data = row.mapped or {}
     source = (data.get("source_page_url") or "").strip()
-    target = (data.get("target_url") or "").strip()
-    if not source or not target:
+    # The project's main domain is the target for all its links (Phase 8). The sheet
+    # 'target' column is only a fallback for projects with no main domain configured.
+    target = f"https://{project_domain}/" if project_domain else (data.get("target_url") or "").strip()
+    if not source:
         row.status = ImportRowStatus.ERROR
-        row.error = "Missing source or target URL"
+        row.error = "Missing source URL"
+        imp.error_rows += 1
+        return None
+    if not target:
+        row.status = ImportRowStatus.ERROR
+        row.error = "No target: set the project's main domain in Settings"
         imp.error_rows += 1
         return None
 
@@ -208,6 +226,7 @@ async def _process_row(
             await db.execute(
                 select(BacklinkRecord).where(
                     BacklinkRecord.source_sheet_id == imp.sheet_source_id,
+                    BacklinkRecord.sheet_tab == imp.sheet_tab,
                     BacklinkRecord.sheet_row_ref == str(row.row_number),
                 )
             )
@@ -318,7 +337,22 @@ def _apply_input_fields(
         bl.sheet_created_date = _parse_date(data.get("sheet_created_date"))
     if imp.sheet_source_id is not None:
         bl.source_sheet_id = imp.sheet_source_id
+    bl.sheet_tab = imp.sheet_tab
     bl.sheet_row_ref = str(row.row_number)
+
+
+async def _project_target_domain(db: AsyncSession, project_id: uuid.UUID) -> str | None:
+    """The project's main domain (primary first) — the target for all its links."""
+    from app.models.project_settings import ProjectDomain
+
+    return (
+        await db.execute(
+            select(ProjectDomain.domain)
+            .where(ProjectDomain.project_id == project_id)
+            .order_by(ProjectDomain.is_primary.desc(), ProjectDomain.domain.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def _workspace_user_map(db: AsyncSession, workspace_id: uuid.UUID) -> dict[str, uuid.UUID]:

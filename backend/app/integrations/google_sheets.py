@@ -82,6 +82,16 @@ def _open_worksheet(client, spreadsheet_id: str, tab: str | None):
     return sheet.sheet1
 
 
+def list_worksheets(spreadsheet_id: str) -> list[dict]:
+    """Return every tab in a spreadsheet: ``[{title, gid, index}]`` (stable gid)."""
+    client = _client()
+    sheet = client.open_by_key(spreadsheet_id)
+    return [
+        {"title": ws.title, "gid": str(ws.id), "index": ws.index}
+        for ws in sheet.worksheets()
+    ]
+
+
 def read_main_sheet() -> list[dict[str, str]]:
     """Rows of the global main sheet as dicts keyed by header."""
     client = _client()
