@@ -1519,6 +1519,14 @@ function SourceDomainsDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const fetchMetrics = useMutation({
+    mutationFn: () => api<SourceDomain[]>("/source-domains/fetch-metrics", { token, method: "POST" }),
+    onSuccess: () => {
+      onNotice("Domain metrics updated (age is live; DA/Semrush need RapidAPI keys)");
+      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
 
   return (
     <section className="space-y-4">
@@ -1552,6 +1560,13 @@ function SourceDomainsDesk({
             {recompute.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             Recompute
           </button>
+          <button
+            onClick={() => fetchMetrics.mutate()}
+            className="flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            {fetchMetrics.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+            Fetch metrics
+          </button>
         </div>
       </div>
       <section className="rounded-lg border border-line bg-panel">
@@ -1563,6 +1578,10 @@ function SourceDomainsDesk({
                 <Th>Backlinks</Th>
                 <Th>Indexed</Th>
                 <Th>Dofollow</Th>
+                <Th>DA</Th>
+                <Th>AS</Th>
+                <Th>Traffic</Th>
+                <Th>Age</Th>
                 <Th>Dupes</Th>
                 <Th>Avg score</Th>
                 <Th>Projects</Th>
@@ -1612,13 +1631,23 @@ function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }
           </span>
         </Td>
         <Td>{d.dofollow_pct}%</Td>
+        <Td>{d.da ?? "—"}</Td>
+        <Td>{d.semrush_as ?? "—"}</Td>
+        <Td>{d.semrush_traffic != null ? compactNum(d.semrush_traffic) : "—"}</Td>
+        <Td>
+          {d.domain_age_days != null ? (
+            <span title={`${d.domain_age_days} days`}>{Math.floor(d.domain_age_days / 365)}y</span>
+          ) : (
+            "—"
+          )}
+        </Td>
         <Td>{d.duplicate_count}</Td>
         <Td>{d.avg_score ?? "—"}</Td>
         <Td>{d.project_count}</Td>
       </tr>
       {open ? (
         <tr>
-          <td colSpan={7} className="bg-field/30 px-4 py-3">
+          <td colSpan={11} className="bg-field/30 px-4 py-3">
             <div className="grid gap-4 md:grid-cols-[260px_1fr]">
               <div>
                 <div className="text-xs font-semibold uppercase text-muted">Index status</div>

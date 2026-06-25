@@ -41,3 +41,15 @@ async def recompute_source_domains(
     await db.commit()
     rows = await svc.list_domains(db, ctx)
     return [SourceDomainOut(**r) for r in rows]
+
+
+@router.post("/fetch-metrics", response_model=list[SourceDomainOut])
+async def fetch_source_domain_metrics(
+    db: DbSession, force: bool = False,
+    ctx: AuthContext = Depends(require(Permission.RUN_CRAWLS)),
+) -> list[SourceDomainOut]:
+    """Fetch Moz/Semrush/domain-age for stale domains (batch-capped per call)."""
+    await svc.fetch_metrics(db, ctx, force=force)
+    await db.commit()
+    rows = await svc.list_domains(db, ctx)
+    return [SourceDomainOut(**r) for r in rows]

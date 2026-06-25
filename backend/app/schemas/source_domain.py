@@ -28,6 +28,14 @@ class SourceDomainOut(BaseModel):
     user_count: int
     link_type_distribution: dict = {}
     last_recomputed_at: datetime | None = None
+    da: int | None = None
+    pa: int | None = None
+    spam_score: int | None = None
+    semrush_as: int | None = None
+    semrush_traffic: int | None = None
+    semrush_keywords: int | None = None
+    domain_age_days: int | None = None
+    metrics_updated_at: datetime | None = None
 
 
 class SourceDomainBacklinkOut(BaseModel):

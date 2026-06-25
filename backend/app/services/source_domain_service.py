@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.deps import AuthContext
 from app.core.errors import NotFoundError
 from app.models.backlink import BacklinkRecord
@@ -150,6 +151,14 @@ def _to_dict(sd: SourceDomain) -> dict:
         "user_count": sd.user_count,
         "link_type_distribution": sd.link_type_distribution or {},
         "last_recomputed_at": sd.last_recomputed_at,
+        "da": sd.da,
+        "pa": sd.pa,
+        "spam_score": sd.spam_score,
+        "semrush_as": sd.semrush_as,
+        "semrush_traffic": sd.semrush_traffic,
+        "semrush_keywords": sd.semrush_keywords,
+        "domain_age_days": sd.domain_age_days,
+        "metrics_updated_at": sd.metrics_updated_at,
     }
 
 
@@ -193,3 +202,40 @@ async def detail(db: AsyncSession, ctx: AuthContext, domain_id: uuid.UUID) -> di
         for bid, pname, src, tgt, status, score, link_type, index_status, label in rows
     ]
     return {**_to_dict(sd), "backlinks": backlinks}
+
+
+async def fetch_metrics(
+    db: AsyncSession, ctx: AuthContext, *, force: bool = False, limit: int | None = None
+) -> int:
+    """Fetch + store third-party metrics for the workspace's source domains.
+
+    Processes the highest-traffic stale domains first, capped at
+    ``DOMAIN_METRICS_BATCH_LIMIT`` per call (one shared HTTP client). Domain age is
+    free (RDAP); Moz/Semrush populate only when their RapidAPI key is configured.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import httpx
+
+    from app.integrations import domain_metrics
+
+    cap = limit or settings.DOMAIN_METRICS_BATCH_LIMIT
+    stmt = select(SourceDomain).where(SourceDomain.workspace_id == ctx.workspace_id)
+    if not force:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.DOMAIN_METRICS_REFRESH_DAYS)
+        stmt = stmt.where(
+            or_(SourceDomain.metrics_updated_at.is_(None), SourceDomain.metrics_updated_at < cutoff)
+        )
+    stmt = stmt.order_by(SourceDomain.backlink_count.desc()).limit(cap)
+    domains = list((await db.execute(stmt)).scalars().all())
+    if not domains:
+        return 0
+
+    timeout = httpx.Timeout(settings.DOMAIN_METRICS_TIMEOUT_SECONDS)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+        for sd in domains:
+            metrics = await domain_metrics.fetch_all(sd.domain_key, client)
+            for field, value in metrics.items():
+                setattr(sd, field, value)
+    await db.flush()
+    return len(domains)

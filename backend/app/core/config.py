@@ -200,6 +200,19 @@ class Settings(BaseSettings):
     MOZ_API_TOKEN: str | None = None
     MOZ_API_ENDPOINT: str = "https://lsapi.seomoz.com/v2/url_metrics"
 
+    # ── Per-domain metrics (Phase 8: Moz DA/PA · Semrush · domain age) ────────
+    # Fetched per SOURCE MAIN DOMAIN, stored in source_domains (no Redis), refreshed
+    # on a cadence. Domain age uses free RDAP (no key); Moz/Semrush need RAPIDAPI_KEY.
+    # Semrush via RapidAPI (Authority Score / monthly traffic / # keywords).
+    SEMRUSH_RAPIDAPI_HOST: str = "semrush-api6.p.rapidapi.com"
+    SEMRUSH_RAPIDAPI_ENDPOINT: str | None = None  # set the domain-overview endpoint URL
+    # Domain age via RDAP (free, no key). rdap.org bootstraps to the right registry.
+    DOMAIN_AGE_ENABLED: bool = True
+    DOMAIN_AGE_RDAP_ENDPOINT: str = "https://rdap.org/domain/"
+    DOMAIN_METRICS_REFRESH_DAYS: int = 30   # only refetch a domain this often
+    DOMAIN_METRICS_BATCH_LIMIT: int = 15    # domains processed per fetch trigger
+    DOMAIN_METRICS_TIMEOUT_SECONDS: float = 8.0
+
     # ── Google Sheets (ingest + write-back) ──────────────────────────────────
     # One global main sheet lists projects (Project Name + Project Sheet URL); each
     # project sheet is synced into the system. Auth is a Google service account —

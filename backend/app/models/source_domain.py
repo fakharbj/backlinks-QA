@@ -10,9 +10,19 @@ increment (separate tables keyed by domain).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -47,3 +57,14 @@ class SourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     project_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     user_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_recomputed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Third-party metrics (Phase 8 F21/F22/F23) — per source main domain ────
+    da: Mapped[int | None] = mapped_column(Integer)
+    pa: Mapped[int | None] = mapped_column(Integer)
+    spam_score: Mapped[int | None] = mapped_column(Integer)
+    semrush_as: Mapped[int | None] = mapped_column(Integer)
+    semrush_traffic: Mapped[int | None] = mapped_column(BigInteger)
+    semrush_keywords: Mapped[int | None] = mapped_column(Integer)
+    domain_created_on: Mapped[date | None] = mapped_column(Date)
+    domain_age_days: Mapped[int | None] = mapped_column(Integer)
+    metrics_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

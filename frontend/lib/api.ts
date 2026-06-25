@@ -114,6 +114,14 @@ export type SourceDomain = {
   user_count: number;
   link_type_distribution: Record<string, number>;
   last_recomputed_at: string | null;
+  da: number | null;
+  pa: number | null;
+  spam_score: number | null;
+  semrush_as: number | null;
+  semrush_traffic: number | null;
+  semrush_keywords: number | null;
+  domain_age_days: number | null;
+  metrics_updated_at: string | null;
 };
 
 export type SourceDomainBacklink = {
