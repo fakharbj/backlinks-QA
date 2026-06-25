@@ -146,8 +146,6 @@ export function WorkspaceApp() {
   return (
     <main className="min-h-screen">
       <TopBar
-        activeTab={tab}
-        onTab={setTab}
         onLogout={logout}
         onRefresh={() => {
           queryClient.invalidateQueries();
@@ -155,16 +153,21 @@ export function WorkspaceApp() {
         }}
       />
       <section className="mx-auto flex w-full max-w-[1500px] gap-5 px-5 py-5">
-        <aside className="hidden w-[280px] shrink-0 lg:block">
-          <ProjectPanel
-            token={token}
-            projects={projects.data || []}
-            activeProjectId={activeProjectId}
-            onSelect={setActiveProjectId}
-            onNotice={setNotice}
-          />
+        <aside className="hidden w-[260px] shrink-0 lg:block">
+          <div className="sticky top-[76px]">
+            <Sidebar
+              activeTab={tab}
+              onTab={setTab}
+              token={token}
+              projects={projects.data || []}
+              activeProjectId={activeProjectId}
+              onSelect={setActiveProjectId}
+              onNotice={setNotice}
+            />
+          </div>
         </aside>
         <section className="min-w-0 flex-1 space-y-5">
+          <MobileNav activeTab={tab} onTab={setTab} />
           <div className="lg:hidden">
             <ProjectPanel
               token={token}
@@ -274,35 +277,34 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
   );
 }
 
-function TopBar({
-  activeTab,
-  onTab,
-  onLogout,
-  onRefresh
-}: {
-  activeTab: Tab;
-  onTab: (tab: Tab) => void;
-  onLogout: () => void;
-  onRefresh: () => void;
-}) {
-  const tabs: Array<[Tab, string, typeof Gauge]> = [
-    ["overview", "Overview", Gauge],
-    ["analytics", "Analytics", BarChart3],
-    ["backlinks", "Backlinks", Link2],
-    ["conflicts", "Duplicates", Layers],
-    ["domains", "Source Domains", Globe],
-    ["imports", "Imports", Upload],
-    ["sheets", "Sheets", Sheet],
-    ["alerts", "Alerts", Bell],
-    ["reports", "Reports", FileSpreadsheet],
-    ["team", "Team", Users],
-    ["employees", "Employees", UserCog],
-    ["settings", "Settings", Settings]
-  ];
+type NavIcon = typeof Gauge;
 
+const NAV_GROUPS: Array<{ label: string; items: Array<[Tab, string, NavIcon]> }> = [
+  { label: "Monitor", items: [["overview", "Overview", Gauge], ["analytics", "Analytics", BarChart3]] },
+  {
+    label: "Backlinks",
+    items: [
+      ["backlinks", "Backlinks", Link2],
+      ["conflicts", "Duplicates", Layers],
+      ["domains", "Source Domains", Globe]
+    ]
+  },
+  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet]] },
+  { label: "Output", items: [["alerts", "Alerts", Bell], ["reports", "Reports", FileSpreadsheet]] },
+  {
+    label: "Workspace",
+    items: [
+      ["team", "Team", Users],
+      ["employees", "Employees", UserCog],
+      ["settings", "Settings", Settings]
+    ]
+  }
+];
+
+function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => void }) {
   return (
-    <header className="border-b border-line bg-white">
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-3 px-5 py-3 md:flex-row md:items-center md:justify-between">
+    <header className="sticky top-0 z-20 border-b border-line bg-white/95 backdrop-blur">
+      <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-3">
         <div className="flex items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-md bg-ink text-white">
             <Activity className="h-5 w-5" />
@@ -312,28 +314,89 @@ function TopBar({
             <div className="text-xs text-muted">Backlink QA operations</div>
           </div>
         </div>
-        <nav className="flex min-w-0 gap-1 overflow-x-auto scrollbar-thin">
-          {tabs.map(([id, label, Icon]) => (
-            <button
-              key={id}
-              onClick={() => onTab(id)}
-              className={clsx(
-                "flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition",
-                activeTab === id ? "bg-ink text-white" : "text-muted hover:bg-field hover:text-ink"
-              )}
-              title={label}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
-        </nav>
         <div className="flex gap-2">
           <IconButton label="Refresh" onClick={onRefresh} icon={RefreshCw} />
           <IconButton label="Log out" onClick={onLogout} icon={LogOut} />
         </div>
       </div>
     </header>
+  );
+}
+
+function Sidebar({
+  activeTab,
+  onTab,
+  token,
+  projects,
+  activeProjectId,
+  onSelect,
+  onNotice
+}: {
+  activeTab: Tab;
+  onTab: (tab: Tab) => void;
+  token: string | null;
+  projects: Project[];
+  activeProjectId: string;
+  onSelect: (id: string) => void;
+  onNotice: (text: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <ProjectPanel
+        token={token}
+        projects={projects}
+        activeProjectId={activeProjectId}
+        onSelect={onSelect}
+        onNotice={onNotice}
+      />
+      <nav className="rounded-lg border border-line bg-panel p-2">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="mb-1 last:mb-0">
+            <div className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              {group.label}
+            </div>
+            <div className="space-y-0.5">
+              {group.items.map(([id, label, Icon]) => (
+                <button
+                  key={id}
+                  onClick={() => onTab(id)}
+                  className={clsx(
+                    "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition",
+                    activeTab === id
+                      ? "bg-ink text-white"
+                      : "text-muted hover:bg-field hover:text-ink"
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+function MobileNav({ activeTab, onTab }: { activeTab: Tab; onTab: (tab: Tab) => void }) {
+  return (
+    <nav className="flex gap-1 overflow-x-auto rounded-lg border border-line bg-panel p-1 scrollbar-thin lg:hidden">
+      {NAV_GROUPS.flatMap((g) => g.items).map(([id, label, Icon]) => (
+        <button
+          key={id}
+          onClick={() => onTab(id)}
+          title={label}
+          className={clsx(
+            "flex h-9 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-medium transition",
+            activeTab === id ? "bg-ink text-white" : "text-muted hover:bg-field hover:text-ink"
+          )}
+        >
+          <Icon className="h-4 w-4" />
+          {label}
+        </button>
+      ))}
+    </nav>
   );
 }
 
