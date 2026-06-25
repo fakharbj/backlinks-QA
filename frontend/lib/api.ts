@@ -94,6 +94,16 @@ export type EmployeeOverview = {
   app_users: AppUser[];
 };
 
+export type LinkType = {
+  id: string;
+  name: string;
+  slug: string;
+  color: string | null;
+  description: string | null;
+  is_active: boolean;
+  backlink_count: number;
+};
+
 export type SourceDomain = {
   id: string;
   domain_key: string;

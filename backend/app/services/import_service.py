@@ -23,6 +23,7 @@ from app.services import (
     canonical_service,
     conflict_service,
     duplicate_service,
+    link_type_service,
     source_domain_service,
 )
 from app.services.catalog_helpers import resolve_campaign, resolve_vendor
@@ -101,6 +102,7 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     dirty_canonicals: set[uuid.UUID] = set()
     identity_cache: dict[str, uuid.UUID] = {}
     canonical_cache: dict[str, uuid.UUID] = {}
+    link_type_cache: dict[str, uuid.UUID] = {}
     processed = 0
 
     # Resolve the sheet "User" label to an app user when it matches an account
@@ -119,7 +121,7 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
         try:
             created_id = await _process_row(
                 db, imp, row, user_map, dirty_identities, identity_cache,
-                canonical_cache, dirty_canonicals,
+                canonical_cache, dirty_canonicals, link_type_cache,
             )
             if created_id is not None:
                 new_ids.append(created_id)
@@ -156,6 +158,7 @@ async def _process_row(
     identity_cache: dict[str, uuid.UUID],
     canonical_cache: dict[str, uuid.UUID],
     dirty_canonicals: set[uuid.UUID],
+    link_type_cache: dict[str, uuid.UUID],
 ) -> uuid.UUID | None:
     data = row.mapped or {}
     source = (data.get("source_page_url") or "").strip()
@@ -214,6 +217,9 @@ async def _process_row(
         old_label = existing.assigned_user_label
         _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id)
         existing.canonical_url_id = canonical_id
+        existing.link_type_id = await link_type_service.resolve_or_create(
+            db, imp.workspace_id, existing.link_type, link_type_cache
+        )
         identity_id = await duplicate_service.resolve_identity(
             db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
         )
@@ -248,6 +254,9 @@ async def _process_row(
         next_check_at=datetime.now(timezone.utc),
     )
     _apply_input_fields(backlink, data, imp, row, user_map, vendor_id, campaign_id)
+    backlink.link_type_id = await link_type_service.resolve_or_create(
+        db, imp.workspace_id, backlink.link_type, link_type_cache
+    )
     identity_id = await duplicate_service.resolve_identity(
         db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
     )

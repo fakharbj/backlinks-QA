@@ -54,6 +54,7 @@ import {
   ConflictSummary,
   Dashboard,
   EmployeeOverview,
+  LinkType,
   Page,
   Project,
   ProjectDomain,
@@ -1938,6 +1939,91 @@ function EmployeesDesk({
   );
 }
 
+function LinkTypesCard({
+  token,
+  onNotice
+}: {
+  token: string | null;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const types = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["link-types"] });
+  const create = useMutation({
+    mutationFn: () =>
+      api("/link-types", { token, method: "POST", body: JSON.stringify({ name: name.trim() }) }),
+    onSuccess: () => {
+      setName("");
+      onNotice("Link type added");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/link-types/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Link type removed");
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  return (
+    <section className="rounded-lg border border-line bg-panel">
+      <SectionTitle title="Link types (workspace catalog)" />
+      <div className="space-y-3 p-4">
+        <p className="text-xs text-muted">
+          The catalog of backlink types (Web 2.0, Profile, Guest Post…). Used by scoring, filters,
+          and competitor analysis. Imports auto‑add types they encounter.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {(types.data || []).map((t) => (
+            <span
+              key={t.id}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-field px-3 py-1 text-sm"
+            >
+              {t.name}
+              <span className="text-xs text-muted">({t.backlink_count})</span>
+              <button
+                onClick={() => remove.mutate(t.id)}
+                aria-label="Remove link type"
+                className="text-muted transition hover:text-danger"
+              >
+                <XCircle className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          ))}
+          {types.data && !types.data.length ? (
+            <span className="text-sm text-muted">No link types yet — add one below.</span>
+          ) : null}
+        </div>
+        <form
+          className="flex gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+        >
+          <input
+            className="h-9 flex-1 rounded-md border border-line bg-white px-3 text-sm"
+            placeholder="New link type (e.g. Web 2.0)"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <button className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black">
+            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Add
+          </button>
+        </form>
+      </div>
+    </section>
+  );
+}
+
 function SettingsDesk({
   token,
   projectId,
@@ -2008,17 +2094,16 @@ function SettingsDesk({
     onError: (e: Error) => onNotice(e.message)
   });
 
-  if (!projectId) {
-    return (
-      <div className="rounded-lg border border-line bg-panel">
-        <Empty label="Select a project (top‑left) to manage its settings and main domains." />
-      </div>
-    );
-  }
-
   const s = settings.data;
   return (
-    <section className="grid gap-5 xl:grid-cols-2">
+    <section className="space-y-5">
+      <LinkTypesCard token={token} onNotice={onNotice} />
+      {!projectId ? (
+        <div className="rounded-lg border border-line bg-panel">
+          <Empty label="Select a project (top‑left) to manage its main domains and QA policy." />
+        </div>
+      ) : (
+      <section className="grid gap-5 xl:grid-cols-2">
       <section className="rounded-lg border border-line bg-panel">
         <SectionTitle title="Main domains" />
         <div className="space-y-3 p-4">
@@ -2129,11 +2214,13 @@ function SettingsDesk({
             </select>
           </label>
           <p className="text-xs text-muted">
-            Per‑parameter scoring weights arrive in a later step; this chooses whether the project
-            uses global defaults or its own rules.
+            Per‑parameter scoring weights live in <strong>Global Settings → Scoring</strong> and can
+            be overridden per project there.
           </p>
         </div>
       </section>
+      </section>
+      )}
     </section>
   );
 }

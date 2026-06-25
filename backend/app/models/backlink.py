@@ -82,6 +82,7 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_source_sheet", "source_sheet_id"),
         Index("ix_backlink_records_assigned_label", "assigned_user_label"),
         Index("ix_backlink_records_link_type", "link_type"),
+        Index("ix_backlink_records_link_type_id", "link_type_id"),
         Index("ix_backlink_records_identity", "link_identity_id"),
         Index("ix_backlink_records_canonical_url", "canonical_url_id"),
         Index("ix_backlink_records_source_domain_id", "source_domain_id"),
@@ -129,7 +130,8 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # The sheet is the source of truth for these; QA/result fields are owned by DB.
     assigned_user_label: Mapped[str | None] = mapped_column(String(200))  # sheet "User"
     employee_code: Mapped[str | None] = mapped_column(String(60))
-    link_type: Mapped[str | None] = mapped_column(String(60))             # free text
+    link_type: Mapped[str | None] = mapped_column(String(60))             # free text (raw)
+    link_type_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))  # catalog (Phase 8)
     source_sheet_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("sheet_sources.id", ondelete="SET NULL")
     )

@@ -13,6 +13,7 @@ from app.api.v1 import (
     employees,
     imports,
     index,
+    link_types,
     project_settings,
     projects,
     reports,
@@ -29,6 +30,7 @@ api_router.include_router(project_settings.router)
 api_router.include_router(backlinks.router)
 api_router.include_router(conflicts.router)
 api_router.include_router(employees.router)
+api_router.include_router(link_types.router)
 api_router.include_router(imports.router)
 api_router.include_router(crawl.router)
 api_router.include_router(dashboard.router)
