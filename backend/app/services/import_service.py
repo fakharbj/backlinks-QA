@@ -19,7 +19,7 @@ from app.crawler.normalize import normalize_url
 from app.models.backlink import BacklinkRecord
 from app.models.link_identity import AssignmentHistory
 from app.models.user import User, WorkspaceMember
-from app.services import duplicate_service
+from app.services import canonical_service, conflict_service, duplicate_service
 from app.services.catalog_helpers import resolve_campaign, resolve_vendor
 from app.models.enums import (
     ImportRowStatus,
@@ -92,9 +92,10 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     await db.flush()
 
     new_ids: list[uuid.UUID] = []
-    seen_in_batch: set[tuple[str, str]] = set()
     dirty_identities: set[uuid.UUID] = set()
+    dirty_canonicals: set[uuid.UUID] = set()
     identity_cache: dict[str, uuid.UUID] = {}
+    canonical_cache: dict[str, uuid.UUID] = {}
     processed = 0
 
     # Resolve the sheet "User" label to an app user when it matches an account
@@ -112,7 +113,8 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     for row in rows:
         try:
             created_id = await _process_row(
-                db, imp, row, seen_in_batch, user_map, dirty_identities, identity_cache
+                db, imp, row, user_map, dirty_identities, identity_cache,
+                canonical_cache, dirty_canonicals,
             )
             if created_id is not None:
                 new_ids.append(created_id)
@@ -127,6 +129,9 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
 
     # Recompute duplicate status for every identity this import touched.
     await duplicate_service.recompute(db, dirty_identities)
+    # Group same-page backlinks (by canonical fingerprint) into conflict records so
+    # stored duplicates surface in the Duplicates tab / filters (Phase 8 F10).
+    await conflict_service.detect_for_canonicals(db, imp.workspace_id, dirty_canonicals)
 
     imp.status = (
         ImportStatus.COMPLETED if imp.error_rows == 0 else ImportStatus.PARTIAL
@@ -139,10 +144,11 @@ async def _process_row(
     db: AsyncSession,
     imp: Import,
     row: ImportRow,
-    seen: set[tuple[str, str]],
     user_map: dict[str, uuid.UUID],
     dirty_identities: set[uuid.UUID],
     identity_cache: dict[str, uuid.UUID],
+    canonical_cache: dict[str, uuid.UUID],
+    dirty_canonicals: set[uuid.UUID],
 ) -> uuid.UUID | None:
     data = row.mapped or {}
     source = (data.get("source_page_url") or "").strip()
@@ -166,14 +172,13 @@ async def _process_row(
         imp.error_rows += 1
         return None
 
-    key = (src.normalized, tgt.normalized)
-    if key in seen:
-        row.status = ImportRowStatus.DUPLICATE
-        imp.duplicate_rows += 1
-        return None
-    seen.add(key)
-
     from_sheet = imp.source == ImportSource.GOOGLE_SHEETS
+
+    # Canonical identity (SHA-256 fingerprint) of the SOURCE page (Phase 8 F8/F10).
+    canonical = await canonical_service.resolve_canonical(db, source, cache=canonical_cache)
+    canonical_id = canonical.id if canonical is not None else None
+    if canonical_id is not None:
+        dirty_canonicals.add(canonical_id)
     vendor_id = (
         await resolve_vendor(db, imp.workspace_id, data["vendor"].strip())
         if data.get("vendor") else None
@@ -183,44 +188,42 @@ async def _process_row(
         if data.get("campaign") else None
     )
 
-    existing = (
-        await db.execute(
-            select(BacklinkRecord).where(
-                BacklinkRecord.project_id == imp.project_id,
-                BacklinkRecord.source_url_normalized == src.normalized,
-                BacklinkRecord.target_url_normalized == tgt.normalized,
+    # Sheet rows are keyed by their sheet position (source_sheet_id + row number),
+    # so a re-sync UPDATES the same row in place (idempotent). Two DIFFERENT sheet
+    # rows pointing at the same link are stored as SEPARATE backlinks — duplicates
+    # are added (and grouped into a conflict), never silently skipped (Phase 8 F10).
+    existing = None
+    if from_sheet and imp.sheet_source_id is not None:
+        existing = (
+            await db.execute(
+                select(BacklinkRecord).where(
+                    BacklinkRecord.source_sheet_id == imp.sheet_source_id,
+                    BacklinkRecord.sheet_row_ref == str(row.row_number),
+                )
             )
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
 
     if existing is not None:
-        # From a sheet sync, the sheet owns the INPUT fields → update them in place
-        # (QA/result fields are untouched). A CSV/manual import keeps the old
-        # behaviour of treating an existing row as a duplicate.
-        if from_sheet:
-            old_label = existing.assigned_user_label
-            _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id)
-            identity_id = await duplicate_service.resolve_identity(
-                db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
-            )
-            existing.link_identity_id = identity_id
-            dirty_identities.add(identity_id)
-            new_label = existing.assigned_user_label
-            if old_label and new_label and old_label != new_label:
-                db.add(
-                    AssignmentHistory(
-                        workspace_id=imp.workspace_id, project_id=imp.project_id,
-                        backlink_id=existing.id, link_identity_id=identity_id,
-                        old_user_label=old_label, new_user_label=new_label, source="sheet",
-                    )
+        old_label = existing.assigned_user_label
+        _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id)
+        existing.canonical_url_id = canonical_id
+        identity_id = await duplicate_service.resolve_identity(
+            db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
+        )
+        existing.link_identity_id = identity_id
+        dirty_identities.add(identity_id)
+        new_label = existing.assigned_user_label
+        if old_label and new_label and old_label != new_label:
+            db.add(
+                AssignmentHistory(
+                    workspace_id=imp.workspace_id, project_id=imp.project_id,
+                    backlink_id=existing.id, link_identity_id=identity_id,
+                    old_user_label=old_label, new_user_label=new_label, source="sheet",
                 )
-            row.status = ImportRowStatus.IMPORTED
-            row.backlink_id = existing.id
-            imp.imported_rows += 1
-        else:
-            row.status = ImportRowStatus.DUPLICATE
-            row.backlink_id = existing.id
-            imp.duplicate_rows += 1
+            )
+        row.status = ImportRowStatus.IMPORTED
+        row.backlink_id = existing.id
+        imp.imported_rows += 1
         return None
 
     backlink = BacklinkRecord(
@@ -233,6 +236,7 @@ async def _process_row(
         target_url_normalized=tgt.normalized,
         source_domain=src.registrable_domain,
         target_domain=tgt.registrable_domain,
+        canonical_url_id=canonical_id,
         status=OverallStatus.PENDING,
         next_check_at=datetime.now(timezone.utc),
     )

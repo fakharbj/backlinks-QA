@@ -119,6 +119,90 @@ async def rebuild_workspace(db: AsyncSession, workspace_id: uuid.UUID) -> int:
     return count
 
 
+async def detect_for_canonicals(
+    db: AsyncSession, workspace_id: uuid.UUID, canonical_ids: set[uuid.UUID]
+) -> int:
+    """Re-evaluate conflict groups for specific canonical source URLs (targeted).
+
+    Called after an import so newly-stored duplicates surface immediately, without
+    a full-workspace rebuild (safe under concurrent per-sheet syncs). Idempotent
+    per canonical.
+    """
+    ids = [c for c in canonical_ids if c is not None]
+    if not ids:
+        return 0
+    rows = (
+        await db.execute(
+            select(
+                BacklinkRecord.canonical_url_id,
+                func.count().label("members"),
+                func.count(func.distinct(BacklinkRecord.project_id)).label("projects"),
+                func.count(
+                    func.distinct(func.nullif(BacklinkRecord.assigned_user_label, ""))
+                ).label("users"),
+                func.min(cast(BacklinkRecord.project_id, String)).label("any_project"),
+            )
+            .where(
+                BacklinkRecord.workspace_id == workspace_id,
+                BacklinkRecord.canonical_url_id.in_(ids),
+            )
+            .group_by(BacklinkRecord.canonical_url_id)
+        )
+    ).all()
+    counts = {r.canonical_url_id: r for r in rows}
+    now = datetime.now(timezone.utc)
+    changed = 0
+    for cid in ids:
+        existing = (
+            await db.execute(
+                select(BacklinkConflict).where(
+                    BacklinkConflict.workspace_id == workspace_id,
+                    BacklinkConflict.canonical_url_id == cid,
+                )
+            )
+        ).scalar_one_or_none()
+        r = counts.get(cid)
+        members = r.members if r else 0
+        if members <= 1:
+            # No longer a conflict → drop the group (members cascade).
+            if existing is not None:
+                await db.execute(delete(BacklinkConflict).where(BacklinkConflict.id == existing.id))
+                changed += 1
+            continue
+        scope = classify_scope(r.projects, r.users)
+        project_id = uuid.UUID(r.any_project) if r.projects == 1 and r.any_project else None
+        if existing is None:
+            conflict = BacklinkConflict(
+                workspace_id=workspace_id, canonical_url_id=cid, project_id=project_id,
+                scope=scope, resolution_status="open", member_count=members, detected_at=now,
+            )
+            db.add(conflict)
+            await db.flush()
+        else:
+            existing.scope = scope
+            existing.member_count = members
+            existing.project_id = project_id
+            conflict = existing
+            await db.execute(
+                delete(BacklinkConflictMember).where(
+                    BacklinkConflictMember.conflict_id == conflict.id
+                )
+            )
+        member_ids = (
+            await db.execute(
+                select(BacklinkRecord.id).where(
+                    BacklinkRecord.workspace_id == workspace_id,
+                    BacklinkRecord.canonical_url_id == cid,
+                )
+            )
+        ).scalars().all()
+        for bid in member_ids:
+            db.add(BacklinkConflictMember(conflict_id=conflict.id, backlink_id=bid))
+        changed += 1
+    await db.flush()
+    return changed
+
+
 async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
     rows = (
         await db.execute(

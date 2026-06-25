@@ -44,12 +44,15 @@ from app.models.enums import (
 class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "backlink_records"
     __table_args__ = (
-        # Dedup within a project on normalized (source, target) — PRD §8.3.
-        UniqueConstraint(
-            "project_id",
-            "source_url_normalized",
-            "target_url_normalized",
-            name="uq_backlink_records_project_src_tgt",
+        # Phase 8 F10: duplicates are STORED (not skipped) and grouped by canonical
+        # fingerprint into conflicts. A sheet row stays idempotent on re-sync via its
+        # sheet position, so syncs update in place instead of multiplying rows.
+        Index(
+            "uq_backlink_records_sheet_entry",
+            "source_sheet_id",
+            "sheet_row_ref",
+            unique=True,
+            postgresql_where=text("source_sheet_id IS NOT NULL"),
         ),
         # Tenant + scoping
         Index("ix_backlink_records_workspace", "workspace_id"),
