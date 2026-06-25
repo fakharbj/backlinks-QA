@@ -42,6 +42,7 @@ async def persist(
     raw_html_key: str | None = None,
     rendered_html_key: str | None = None,
     recheck_interval_hours: int = 24,
+    scoring_rule_version_id: uuid.UUID | None = None,
 ) -> tuple[CrawlResult, list[BacklinkHistory]]:
     crawled_at = artifact.crawled_at or _now()
     primary = artifact.primary_link
@@ -93,6 +94,7 @@ async def persist(
         score_breakdown=[s.to_dict() for s in qa.score_breakdown],
         is_followable=qa.is_followable,
         is_indexable=qa.is_indexable,
+        scoring_rule_version_id=scoring_rule_version_id,
         issues=[i.to_dict() for i in qa.issues],
         recommendations=qa.recommendations,
         raw_html_key=raw_html_key,
@@ -151,6 +153,7 @@ def _update_record(
     backlink.issue_count = len([i for i in qa.issues if i.severity is not Severity.INFO])
     backlink.top_issue_label = qa.top_issue.label.value if qa.top_issue else None
     backlink.latest_crawl_result_id = result.id
+    backlink.scoring_rule_version_id = qa.scoring_rule_version_id
     backlink.last_checked_at = result.crawled_at
 
     if qa.status in (OverallStatus.FAIL, OverallStatus.UNKNOWN):

@@ -12,6 +12,12 @@ Every mutation is recorded as a ``ScoreStep`` so the detail page can render
 from __future__ import annotations
 
 from app.qa.enums import IssueLabel, Severity
+from app.qa.scoring_rules import (
+    DEFAULT_RULESET,
+    METRIC_PARAMS,
+    ResolvedRuleset,
+    param_outcome_for,
+)
 from app.qa.types import Issue, ScoreStep
 
 # Labels that cap the ceiling without being CRITICAL (review-type uncertainty).
@@ -20,25 +26,62 @@ _LABEL_CAPS: dict[IssueLabel, int] = {
 }
 
 
-def score_issues(issues: list[Issue]) -> tuple[int, list[ScoreStep]]:
+def _issue_delta(iss: Issue, ruleset: ResolvedRuleset) -> int:
+    """Signed score delta for one issue: the configured override if the rule set
+    sets one for its (parameter, outcome), else today's ``-severity.deduction``."""
+    outcome = param_outcome_for(iss)
+    if outcome is not None:
+        override = ruleset.points(*outcome)
+        if override is not None:
+            return override
+    return -iss.severity.deduction
+
+
+def score_issues(
+    issues: list[Issue],
+    ruleset: ResolvedRuleset | None = None,
+    signals: dict[str, str] | None = None,
+) -> tuple[int, list[ScoreStep]]:
+    """Deterministic score. With no ruleset (or an empty one) this is identical to
+    the legacy severity model; a configured ruleset overrides per-parameter points
+    and adds metric-parameter contributions from ``signals``."""
+    rs = ruleset or DEFAULT_RULESET
     score = 100
     breakdown: list[ScoreStep] = [
         ScoreStep(code="START", severity=Severity.INFO, delta=0, note="Baseline score")
     ]
 
-    # 1) Severity deductions.
+    # 1) Per-issue deltas (override or severity deduction).
     for iss in issues:
-        deduction = iss.severity.deduction
-        if deduction:
-            score -= deduction
+        delta = _issue_delta(iss, rs)
+        if delta:
+            score += delta
             breakdown.append(
                 ScoreStep(
                     code=iss.code,
                     severity=iss.severity,
-                    delta=-deduction,
+                    delta=delta,
                     note=iss.label.value if iss.label is not IssueLabel.NONE else iss.message[:48],
                 )
             )
+
+    # 2) Metric-parameter contributions (DA/Semrush/age/index/duplicate). These are
+    #    not QA issues; they only move the score when explicitly configured.
+    if signals:
+        for param, outcome in signals.items():
+            if param not in METRIC_PARAMS or not outcome:
+                continue
+            pts = rs.points(param, outcome)
+            if pts:
+                score += pts
+                breakdown.append(
+                    ScoreStep(
+                        code=f"{param}:{outcome}",
+                        severity=Severity.INFO,
+                        delta=pts,
+                        note=f"{param} = {outcome}",
+                    )
+                )
 
     score = max(0, min(100, score))
 

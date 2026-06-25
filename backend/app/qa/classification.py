@@ -21,7 +21,19 @@ _TRANSIENT_STATUSES = {429, 503, 504}
 _CONFLICT_CODES = {"MR-05", "XR-05"}
 
 
-def classify(artifact: CrawlArtifact, issues: list[Issue], score: int) -> OverallStatus:
+def classify(
+    artifact: CrawlArtifact,
+    issues: list[Issue],
+    score: int,
+    bands: dict | None = None,
+) -> OverallStatus:
+    fail_below, warn_below = 30, 80
+    if bands:
+        try:
+            fail_below = int(bands.get("fail_below", 30))
+            warn_below = int(bands.get("warn_below", 80))
+        except (TypeError, ValueError):
+            fail_below, warn_below = 30, 80
     severities = {i.severity for i in issues}
     labels = {i.label for i in issues}
     det = artifact.detection
@@ -60,8 +72,8 @@ def classify(artifact: CrawlArtifact, issues: list[Issue], score: int) -> Overal
         return OverallStatus.NEEDS_MANUAL_REVIEW
     if transient:
         return OverallStatus.UNKNOWN
-    if score < 30:
+    if score < fail_below:
         return OverallStatus.FAIL
-    if Severity.HIGH in severities or Severity.MEDIUM in severities or score < 80:
+    if Severity.HIGH in severities or Severity.MEDIUM in severities or score < warn_below:
         return OverallStatus.WARNING
     return OverallStatus.PASS

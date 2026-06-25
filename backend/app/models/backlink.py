@@ -192,6 +192,8 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     top_issue_label: Mapped[str | None] = mapped_column(String(60))
 
     latest_crawl_result_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # The scoring rule set version that produced the current score/status (Phase 8 F17).
+    scoring_rule_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consecutive_failures: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)

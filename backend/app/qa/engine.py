@@ -21,13 +21,26 @@ from app.qa.enums import (
 from app.qa.recommendations import recommend
 from app.qa.registry import load_checks, run_all
 from app.qa.scoring import score_issues
+from app.qa.scoring_rules import ResolvedRuleset
 from app.qa.types import CheckContext, Issue, QAPolicy, QAResult
 
 # Populate the registry once at import time.
 load_checks()
 
 
-def evaluate(artifact: CrawlArtifact, policy: QAPolicy | None = None) -> QAResult:
+def evaluate(
+    artifact: CrawlArtifact,
+    policy: QAPolicy | None = None,
+    ruleset: ResolvedRuleset | None = None,
+    signals: dict[str, str] | None = None,
+) -> QAResult:
+    """Render a verdict for one crawl.
+
+    ``ruleset`` is the resolved (project→link_type→workspace→global) scoring rule
+    set; when None the engine uses the legacy severity model and 30/80 bands, so
+    behaviour is identical to pre-Phase-8. ``signals`` carries metric-parameter
+    values (DA/Semrush/age/index/duplicate bands) the worker derived from the DB.
+    """
     policy = policy or QAPolicy(
         treat_sponsored_as_follow=artifact.request.treat_sponsored_as_follow,
         trailing_slash_policy=artifact.request.trailing_slash_policy,
@@ -56,8 +69,8 @@ def evaluate(artifact: CrawlArtifact, policy: QAPolicy | None = None) -> QAResul
             )
         )
 
-    score, breakdown = score_issues(issues)
-    status = classify(artifact, issues, score)
+    score, breakdown = score_issues(issues, ruleset=ruleset, signals=signals)
+    status = classify(artifact, issues, score, bands=ruleset.bands if ruleset else None)
     grade = GradeBand.from_score(score)
     recommendations = _aggregate_recommendations(issues)
     top = _top_issue(issues)
@@ -81,6 +94,7 @@ def evaluate(artifact: CrawlArtifact, policy: QAPolicy | None = None) -> QAResul
         canonical_status=_canonical_status(artifact, issues),
         robots_status=_robots_status(artifact),
         top_issue=top,
+        scoring_rule_version_id=ruleset.version_id if ruleset else None,
     )
 
 

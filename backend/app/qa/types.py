@@ -6,6 +6,7 @@ is the explainable verdict the rest of the system persists and renders.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,6 +84,7 @@ class QAResult:
     canonical_status: str | None = None
     robots_status: str | None = None
     top_issue: Issue | None = None
+    scoring_rule_version_id: uuid.UUID | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +105,9 @@ class QAResult:
             "final_url": self.final_url,
             "canonical_status": self.canonical_status,
             "robots_status": self.robots_status,
+            "scoring_rule_version_id": (
+                str(self.scoring_rule_version_id) if self.scoring_rule_version_id else None
+            ),
         }
 
 

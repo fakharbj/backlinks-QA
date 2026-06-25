@@ -145,6 +145,9 @@ class CrawlResult(Base):
     is_indexable: Mapped[Indexability | None] = mapped_column(
         pg_enum(Indexability, "indexability_enum", create_type=False)
     )
+    # The scoring rule set version that produced this verdict (Phase 8 F17). Added
+    # in migration 0016; nullable so pre-Phase-8 historical rows resolve to global v1.
+    scoring_rule_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     issues: Mapped[list] = mapped_column(JSONB, default=list)  # full issue snapshot
     recommendations: Mapped[list] = mapped_column(JSONB, default=list)
 

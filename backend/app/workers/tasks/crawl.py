@@ -28,11 +28,25 @@ from app.models.enums import JobStatus, OverallStatus, ScheduleInterval
 from app.models.project import Project
 from app.qa import evaluate
 from app.qa.types import QAPolicy
-from app.services import alert_service, result_service
+from app.services import alert_service, result_service, scoring_config_service
 from app.workers.celery_app import celery_app
 from app.workers.runtime import RedisRobotsCache, get_browser, make_rate_limiter, run_async
 
 log = get_logger("worker.crawl")
+
+
+def _scoring_signals(record: BacklinkRecord) -> dict[str, str]:
+    """Metric-parameter values for the scorer (duplicate / external index). DA /
+    Semrush / age bands are looked up only when a rule set configures them; they
+    default to no contribution otherwise (added in a later increment)."""
+    signals: dict[str, str] = {}
+    dup = record.duplicate_status
+    if dup:
+        signals["duplicate"] = "unique" if dup == "unique" else "duplicate"
+    idx = record.index_status
+    if idx in ("indexed", "not_indexed"):
+        signals["external_index"] = idx
+    return signals
 
 _INTERVAL_HOURS = {
     ScheduleInterval.DAILY: 24,
@@ -172,7 +186,12 @@ async def _persist_one(
         policy = QAPolicy.from_settings(
             treat_sponsored_as_follow=project.treat_sponsored_as_follow if project else None
         )
-        qa = evaluate(artifact, policy)
+        # Resolve the active scoring rule set (project→link_type→workspace→global)
+        # and derive metric signals; both fall back to today's behaviour if unset.
+        ruleset = await scoring_config_service.resolve(
+            s, record.workspace_id, record.project_id, record.link_type_id
+        )
+        qa = evaluate(artifact, policy, ruleset=ruleset, signals=_scoring_signals(record))
         QA_VERDICTS.labels(status=qa.status.value).inc()
 
         interval = _INTERVAL_HOURS.get(
@@ -185,6 +204,7 @@ async def _persist_one(
             raw_html_key=artifact.raw_html_key,
             rendered_html_key=artifact.rendered_html_key,
             recheck_interval_hours=interval,
+            scoring_rule_version_id=ruleset.version_id,
         )
         # Enrich with source-site metrics (Similarweb/Moz) — no-op unless configured.
         from app.integrations import site_metrics
