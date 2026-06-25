@@ -1,1697 +1,860 @@
-# LinkSentinel — Phase 8 Planning Document
+# LinkSentinel — Phase 8 Development Plan (consolidated)
 
-> **Scope of this phase:** Project Settings & Main Domain · User/Employee‑Code
-> management · Dynamic (global + project + link‑type + parameter) Scoring ·
-> Link‑types from Google‑Sheet sub‑sheets · Dynamic safe‑delete · Source
-> main‑domain analytics · Competitor/Market analysis · Domain Authority (Moz).
+> **Single source of truth for Phase 8 — the two earlier plans (v1 + v2) are merged
+> into this one document; every feature from both is included** (see the coverage map
+> in §19.0). Covers: URL **canonicalization + SHA-256 fingerprint** system,
+> **store-don't-skip duplicates** with conflict tracking, **Semrush + Moz + domain-age**
+> metrics per source main domain, **aggregate index/non-index counters** (no full
+> scans), the **dynamic filtration & reporting registry** (§11A),
+> **multi-workspace/company** hardening, **Redis-free** caching + background jobs, and
+> large-DB indexing best practices.
 >
-> **This is a planning document only. No production code is written here.**
-> Where the existing system already does something, this document says so and
-> plans to *reuse/extend* it rather than rebuild. Every genuinely undecided
-> business rule is tagged **[NEEDS CONFIRMATION]** and collected at the end —
-> nothing is guessed.
->
-> **Legend used throughout:**
-> `✅ CONFIRMED` = derivable from the current code/requirements ·
-> `🟦 RECOMMENDED` = my design recommendation where options exist ·
-> `❓ NEEDS CONFIRMATION` = a business decision only you can make.
+> Tags: `✅ CONFIRMED` (derivable from code/your requirements) · `🟦 RECOMMENDED`
+> (my design where options exist) · `❓ NEEDS CONFIRMATION` (a business/architecture
+> decision only you can make). **Status:** implementation has begun — delivered live
+> so far: **F8** (canonical/fingerprint) and **F9** (conflict detection); the rest
+> follow the sequence in §6. Every entity/field must be filterable + reportable (§11A).
 
 ---
 
 ## 1. Executive Summary
 
-Phase 8 turns LinkSentinel from a **per‑link QA tool** into a **per‑project,
-per‑link‑type, configurable SEO operations platform** with a competitor‑research
-arm. It is the largest phase since the original build because it touches the two
-deepest subsystems — **scoring** and **Google‑Sheets ingest** — and adds an
-entirely new **competitor/opportunity** domain.
+This phase turns LinkSentinel into a **large-scale, multi-tenant off-page SEO
+operations platform** built on three new foundations:
 
-The work divides into **five capability clusters**, in dependency order:
+1. **Canonical‑URL + Fingerprint core.** Every URL (project backlink *and*
+   competitor) is canonicalised, hashed to a SHA‑256 **fingerprint**, and resolved
+   against an indexed `canonical_urls` table **before** storage or comparison.
+   Duplicate detection becomes an O(log n) B‑tree lookup, and — critically —
+   **duplicates are stored, not skipped**, and surfaced as **conflicts** in
+   filters/reports.
+2. **Source‑domain intelligence with cached third‑party metrics.** Source URLs
+   group into source main domains; each domain carries **Moz DA/PA**, **Semrush
+   Authority Score / monthly traffic / keywords**, and **domain age**, fetched
+   **per domain** (never per URL), stored in DB, refreshed on a schedule.
+   Index/non‑index ratios are read from **stored aggregate counters**, never by
+   scanning links.
+3. **Competitor/opportunity engine.** Competitor sheets (stored separately) are
+   fingerprinted, compared against our source domains (existing vs new),
+   auto‑categorised by link type, scored as opportunities, and promoted to
+   assignable tasks for the off‑page team.
 
-1. **Foundations (settings + catalogs).** Project Settings + Project Main
-   Domain(s); a real `link_types` catalog; User ↔ Employee‑Code management. These
-   are prerequisites for almost everything else.
-2. **Dynamic scoring engine.** Global → link‑type → project override resolution,
-   versioned rules, frozen scores in reports. This is the highest‑risk item: the
-   current engine is **severity‑deduction based**, not weighted‑parameter based,
-   so this is a re‑architecture, not a tweak.
-3. **Sheet evolution.** Detect sub‑sheets (tabs) inside a project spreadsheet,
-   map each tab → link type, choose which tabs sync/QA via checkboxes.
-4. **Source‑domain intelligence.** Aggregate source URLs into source main
-   domains, attach Domain Authority (reuse the existing Moz/Similarweb
-   integration), and surface a source‑domain analytics dashboard.
-5. **Competitor/Market analysis.** Upload competitor sheets per project, extract
-   their source domains, compare to our existing domains, auto‑categorise link
-   types, score opportunities, and produce off‑page opportunity reports.
+Cross‑cutting: **multi‑workspace isolation** (already present — hardened),
+**dynamic scoring** (global → workspace → project → link‑type → parameter,
+versioned, frozen in reports), **dynamic filtration + reporting registry** (one
+declaration → filter + facet + group‑by + report column + report filter),
+**Redis‑free** caching/jobs (DB‑backed), **soft delete + audit everywhere**, and
+**large‑DB indexing** discipline.
 
-Cross‑cutting: **dynamic safe‑delete** (soft delete + dependency preflight +
-audit), **report snapshots** (true freezing), and **audit/activity logging**
-(extend the existing `audit_logs`).
+**Biggest architectural decisions in this phase (must be confirmed — §5):**
+the fingerprint/duplicate model change, the Redis‑free job queue, multi‑workspace
+"company" layering, and whether scoring re‑computes history.
 
-**What already exists and will be reused (not rebuilt):**
+### What already exists and is REUSED (not rebuilt)
 
-| You asked for | Already in the codebase | Plan |
+| Capability | In code today | Plan |
 |---|---|---|
-| Source main‑domain extraction | `crawler/normalize.py:registrable_domain()` + `BacklinkRecord.source_domain` (registrable, indexed) | **Reuse** the normalizer; add an aggregate table + analytics, do **not** re‑extract |
-| Domain Authority via RapidAPI Moz | `integrations/site_metrics.py` (Moz RapidAPI / Moz official / Similarweb, Redis‑cached, provider‑abstracted) | **Reuse** the provider abstraction; move storage from `backlink.extra` to a domain‑keyed table + history |
-| Report versioning / "frozen snapshot" | `reports.version` + `is_latest`, `crawl_results.score_breakdown` (frozen per crawl) | **Extend**: add true row‑level report snapshots; clarify freeze semantics |
-| Audit logs | `audit_logs` (before/after JSONB) + `audit_service.record()` | **Reuse/extend** for delete + scoring‑change audit |
-| Analytics dimensions | `analytics_service.py` whitelist map | **Extend**: add `source_domain` dimension |
-| Per‑project sponsored policy | `Project.treat_sponsored_as_follow`, `Project.crawl_settings` (JSONB), `Campaign.campaign_type` | **Generalise** into the dynamic scoring/rules layer |
+| Multi‑tenant workspaces | `Workspace`, `WorkspaceMember` (M:N user↔workspace), `workspace_id` on every table | **Reuse/harden** — add UI switcher + optional company layer |
+| URL canonicalisation | `crawler/normalize.py` (https, strip www, strip tracking, lenient slash, drop fragment, sort query, IDN) | **Reuse** as the canonicaliser feeding the fingerprint |
+| SHA‑256 identity | `duplicate_service.identity_key` = sha256(workspace|src|tgt_domain) | **Evolve** into `canonical_urls.fingerprint` |
+| Source registrable domain | `normalize.registrable_domain()` + `backlink_records.source_domain` | **Reuse**; add `source_domains` table + platform‑host rule |
+| Third‑party metrics | `integrations/site_metrics.py` (Similarweb/Moz RapidAPI/Moz official, provider‑abstracted) | **Extend** with Semrush + domain‑age providers; move storage to DB tables |
+| Reports + versioning | `reports.version`/`is_latest` | **Extend** with true frozen snapshots |
+| Audit | `audit_logs` + `audit_service.record()` | **Reuse** for delete + change audit |
+| Analytics dimensions | `analytics_service.py` whitelist | **Unify** with report filters via one dimension registry (§11A) |
 
-**Headline risk:** the dynamic scoring engine and the "project main domain = the
-target for all links" rule both change **how a verdict is computed**. They must be
-designed behind explicit confirmations (Section 3) and shipped with backfill +
-re‑scoring jobs, or historical reports will silently shift.
+### What must CHANGE (verified in code)
+
+- **Dedup model:** unique constraint `(project_id, source_url_normalized,
+  target_url_normalized)` + import logic **merge/skip** same‑(source,target) rows.
+  → Replace with `canonical_urls` + `backlinks.canonical_url_id` + **conflict**
+  records; stop skipping.
+- **Redis usage:** broker + RedBeat + robots cache + metrics cache + rate limiter.
+  → Move caches to DB; replace the job system (Celery+Redis) with a Postgres‑backed
+  queue (`🟦`/`❓`).
+- **Metrics storage:** today written into `backlink.extra['metrics']` per backlink.
+  → Move to per‑domain tables.
+- **Ratios:** computed live. → Move to stored aggregate counters.
 
 ---
 
 ## 2. Current Problem Understanding
 
-### 2.1 What the system does today (verified in code)
+### 2.1 Verified current behaviour (the baseline we build on)
 
-- **Backlink = the unit.** Each `BacklinkRecord` carries its **own** `target_url`
-  / `expected_target_url`; QA link‑matching compares source‑page links against
-  *that row's* target (`crawler/engine.py` + `qa/checks/links.py`). The
-  **Project's** `target_domain`/`target_urls` exist on the model but are **not**
-  the matching authority today.
-- **Scoring** (`qa/scoring.py`): `score = 100 − Σ severity.deduction`, clamped,
-  then **capped** (CRITICAL caps to 25, CAPTCHA caps to 25). Severity→deduction is
-  **hard‑coded in the `Severity` enum** (CRITICAL −60, HIGH −25, MEDIUM −10, LOW
-  −3, INFO 0). There is **no per‑parameter weight, no per‑project, no
-  per‑link‑type** scoring. `QAPolicy` (`qa/types.py`) has only a handful of
-  tunables (`treat_sponsored_as_follow`, `index_expected`, thresholds).
-- **Link type** is a **free‑text** column (`BacklinkRecord.link_type`, String 60).
-  There is **no `link_types` catalog table**.
-- **Google Sheets**: one global main sheet → `Project Name` + `Project Sheet URL`;
-  each project sheet is **one `SheetSource` (1:1 with a project), one tab**
-  (`SheetSource.sheet_tab`, default = first worksheet). `google_sheets.py` reads a
-  single worksheet — there is **no sub‑sheet/tab enumeration** yet.
-- **Source domain** is already computed and stored as the **registrable domain**
-  (`source_domain`), indexed. There is **no source‑domain aggregate table** and no
-  source‑domain analytics page.
-- **Domain Authority**: `site_metrics.py` can fetch Moz DA/PA (RapidAPI or
-  official) or Similarweb, Redis‑cached per domain, but it's **disabled by
-  default** and writes into `backlink.extra['metrics']` — **not** a domain table
-  with history.
-- **Employee code / assigned user**: free‑text `employee_code` +
-  `assigned_user_label` on each backlink, plus an `assignment_history` table. No
-  `employee_codes` table, no sheet‑label → app‑user reconciliation.
-- **Delete** is **hard delete** (`project_service.delete_project` → `db.delete`,
-  relying on FK `ondelete=CASCADE`). No soft delete, no dependency preflight, no
-  delete‑specific confirmation logic on the server (only UI).
-- **Competitor/market analysis: does not exist.**
+- **Workspaces are already multi‑tenant.** `Workspace` + `WorkspaceMember` (M:N),
+  `workspace_id` FK on all business tables, RBAC scoping in `core/deps.py`/`rbac.py`.
+  A user can already belong to many workspaces; `/auth/me` returns memberships.
+  **Gap:** no UI workspace switcher; no "company > workspace" hierarchy; some new
+  features must remember to carry `workspace_id`.
+- **Import dedup (verified in `import_service._process_row`):**
+  - Within one import batch, a `seen` set drops exact `(src.normalized,
+    tgt.normalized)` repeats (`status=DUPLICATE`, not stored).
+  - Against the DB, an `existing` lookup on `(project_id, source_url_normalized,
+    target_url_normalized)` → **Google Sheets**: updates input fields *in place*
+    (no new row, records assignment‑change history); **CSV/manual**: marks
+    `DUPLICATE`, no new row.
+  - `link_identity` (sha256 of `workspace|src_norm|tgt_domain`) tracks
+    cross‑project/user duplicate *rollups* (`duplicate_status`), recomputed per
+    touched identity. **But same‑(source,target) inside a project is one row.**
+- **Canonicalisation (verified in `normalize.py`):** `normalize_url` →
+  `normalized` = https‑pinned, www‑stripped, tracking‑params dropped + sorted,
+  fragment dropped (unless `#!`), lenient trailing slash, IDN→punycode. This is a
+  solid canonical form already.
+- **Metrics:** `site_metrics.py` fetches Similarweb/Moz (RapidAPI or official),
+  Redis‑cached per domain, written into `backlink.extra['metrics']`. Prod is
+  `SITE_METRICS_PROVIDER=similarweb`.
+- **Index check:** `index_checks` table, deduped by source URL, denormalised onto
+  `backlink_records.index_status`. No per‑domain aggregate counters.
+- **Jobs:** Celery on Redis (broker db1 / result db2 / RedBeat). Robots cache,
+  metric cache, per‑domain rate limiter all in Redis.
 
-### 2.2 What you're missing (your words, mapped to reality)
+### 2.2 Existing debt / risks to fix this phase
 
-| You said you lack | Reality | Where this doc solves it |
+1. **`backend/app.zip`** tracked + stale → `.gitignore` + `git rm --cached`.
+2. **Filter logic duplicated** (analytics_service vs report worker) + hardcoded
+   report columns → unify via dimension registry (§11A).
+3. **Dead `qa` Celery queue** (declared, unused). If we keep Celery, use it for
+   re‑scoring; if we move to a DB queue, drop it.
+4. **LinkIdentity rollup freshness** depends on the import calling `recompute`;
+   any non‑import write path can leave stale `duplicate_status`. The new aggregate
+   counters (§ feature 14) must avoid the same trap (transactional update + nightly
+   reconcile).
+5. **Reports aren't truly frozen** (worker reads live `backlink.score`). Add
+   snapshots.
+6. **`api` PM2 process ~300 restarts** — investigate before heavier endpoints.
+7. **Metrics in `extra` JSONB** can't be filtered/indexed well → move to columns/
+   tables.
+
+---
+
+## 3. Confirmed Logic (from your requirements + the code)
+
+- Every workspace/company has isolated data; every project belongs to a workspace;
+  every business row carries `workspace_id`. **(exists)**
+- Each project has **one or more** main target domains.
+- **All URLs are canonicalised before storage/checking; every canonical URL has a
+  SHA‑256 fingerprint; duplicate detection uses the fingerprint.**
+- **Duplicates are NOT skipped** — they are stored and marked duplicate/conflict,
+  and appear in filters/reports/Sheets export.
+- Source URLs group by **source main domain**; analytics exist globally,
+  per‑project, and per‑workspace.
+- Link types come from **project‑sheet sub‑sheet (tab) names**; user chooses which
+  tabs import/QA/ignore via checkboxes.
+- Scoring is **dynamic, parameter‑based, versioned**, with global → project (→
+  workspace, → link‑type) overrides; **reports store frozen score snapshots**.
+- Third‑party metrics (**Moz DA/PA, Semrush AS/traffic/keywords, domain age**) are
+  stored **per source main domain**, cached in DB, refreshed on schedule, fetched
+  via async jobs, keys from env.
+- Index/non‑index **ratios are read from stored aggregate counts**, not by scanning
+  all backlinks.
+- Competitor sheets attach to projects; competitor backlinks are **stored
+  separately**, also fingerprinted; compared (existing vs new); auto‑categorised by
+  link type; promoted to assignable **opportunities**.
+- **Redis is excluded as a cache this phase** → DB indexed tables instead.
+- Soft delete + audit logs where possible.
+
+## 4. Recommended Logic (my design where options exist)
+
+- **Fingerprint = `sha256(canonical_url)`**, where canonical_url is
+  `normalize_url(raw).normalized`. Store fingerprint **without** workspace in the
+  hash so the same page is one canonical row globally; scope **conflict detection**
+  to workspace (and optionally project) so no cross‑tenant leakage. `🟦`
+- **`canonical_urls`** is a global dimension table (id, fingerprint UNIQUE,
+  sample_url, registrable/source_domain_id, total_uses, first/last_seen). Both
+  `backlinks` and `competitor_backlinks` reference it by `canonical_url_id`. `🟦`
+- **"Same entry vs new duplicate":** a Google‑Sheet **re‑sync of the same sheet
+  row** updates in place (keyed by `sheet_source_id + tab + row_ref`), so re‑syncs
+  don't multiply rows; **two different rows** that share a fingerprint are stored as
+  **separate** backlinks and grouped into a **conflict**. `🟦` (confirm the
+  "same‑entry" key — `❓`).
+- **Conflict scopes:** `same_project`, `cross_project`, `cross_user`,
+  `cross_workspace` (off by default), `competitor_vs_project`. Conflict has a
+  `resolution_status` (open/acknowledged/resolved/ignored). `🟦`
+- **Redis‑free jobs:** Postgres‑backed queue (`background_jobs` + `FOR UPDATE SKIP
+  LOCKED` workers) + a DB scheduler table; robots/rate‑limit state in DB or
+  in‑process. `🟦` (vs keep Redis only as broker — `❓`).
+- **Metrics live on the domain**, in dedicated tables keyed by `source_domain_id`
+  (`domain_authority_results`, `semrush_domain_metrics`, `domain_age_results`) +
+  history tables; aggregated onto `source_domains`/metrics tables for fast reads.
+- **Aggregate counters** (`indexed_count`, `not_indexed_count`, `uncertain_count`,
+  `total`, by domain × project × workspace) updated **transactionally** when an
+  index verdict changes, plus a **nightly reconcile** job for self‑healing. `🟦`
+- **One dimension registry** drives filters + facets + group‑by + report columns +
+  report filters + UI (§11A). `🟦`
+- **Company layer:** treat **workspace = company/tenant**; add an **optional**
+  `companies` parent only if a company owns multiple workspaces. `🟦` (`❓`).
+- **Competitor links never auto‑create users.** They belong to the competitor
+  sheet/source. Only an **approved opportunity** is assignable to an internal user.
+  `🟦` (matches your recommendation).
+
+## 5. Missing Information / Needs Confirmation `❓`
+
+> Development of the dependent feature is blocked until answered. Restated in §22.
+
+1. **(Redis):** confirm scope. Cache‑only removal (keep Celery broker) — fast,
+   low‑risk — **or** full Redis removal → Postgres job queue (recommended for
+   "no Redis", but a real re‑architecture)? → blocks the async strategy (§17).
+2. **(Fingerprint canonical rule):** lowercase the **whole** URL path or only the
+   domain? Drop **all** query params or only tracking params? Always drop the
+   fragment? (The current normalizer lowercases host only, drops *tracking* params,
+   drops fragment, lenient slash.) → blocks §12.
+3. **(Same‑entry key):** what makes two sheet rows "the same record to update" vs
+   "a new duplicate to store"? Proposed: `sheet_source_id + tab + row_ref`. → blocks
+   the import change (feature 10).
+4. **(Conflict scope):** should duplicates ever be detected **across workspaces**,
+   or strictly within a workspace/project? → blocks §13.
+5. **(Main domain matching):** does the project main domain **replace** each link's
+   own target, or **validate** it? One or many primary? → blocks features 2, 11, 27.
+6. **(Company layer):** workspace = company, or a `companies` parent owning many
+   workspaces? → blocks §9.
+7. **(Domain grouping):** group Web‑2.0 hosts (`user.blogspot.com`) under
+   `blogspot.com`, or per‑subdomain? → blocks features 11–13, 27–28.
+8. **(Metrics providers & budget):** confirm Moz **and** Semrush via RapidAPI
+   (endpoints/plans) + domain‑age provider + monthly quota/cost ceilings. → blocks
+   §18, features 21–23.
+9. **(Scoring model & freeze):** weighted‑parameter (recommended) vs configurable
+   severity; re‑score history on rule change or keep versioned+frozen? → blocks
+   features 17–20, reports.
+10. **(Employee code rules):** unique per workspace? multiple codes per user?
+    reassignable? → blocks feature 3.
+11. **(Sheet layout):** confirm tabs = link types, same columns per tab; a sample
+    spreadsheet would remove all ambiguity. → blocks features 5–7.
+12. **(Delete policy):** which entities soft‑delete; restore window; project delete
+    = archive‑keep‑history vs delete‑all? → blocks feature 35.
+13. **(Saved filters/templates scope):** per‑user vs shared workspace? → blocks
+    §11A saved filters.
+
+---
+
+## 6. Recommended Development Sequence
+
+Six sub‑phases; each ships green and independently. Hard edges in §7.
+
+| Sub‑phase | Theme | Features |
 |---|---|---|
-| Proper development sequence | No phased order for these 20 features | §4, §5, §14 |
-| Proper business logic | Rules are implicit/contradictory in places | §11 per feature + §3 confirmations |
-| Proper database planning | New domains (scoring, competitor) need real schema | §9, §10 |
-| Proper feature dependency planning | Scoring depends on link‑types depends on sub‑sheets, etc. | §5 |
-| Proper user flow | No flows for settings/competitor/scoring | §11 user‑flow blocks + §8 flowcharts |
-| Proper report/dashboard logic | Frozen‑snapshot semantics are only partial today | §11 (F15/F19), §3 (C/Q) |
-| Proper scalable structure | Competitor + DA + domain analytics must scale to 1–2M links | §13 |
+| **8.0 Platform** | Redis‑free + registry + workspace hardening | 38 (jobs), §11A registry, 1 (workspace), 36 (audit), 35 (safe delete) |
+| **8.1 Identity core** | Canonical + fingerprint + don't‑skip dupes | 8 (canonical/fingerprint), 9 (conflicts), 10 (import change), 26 (competitor fingerprint) |
+| **8.2 Foundations** | Settings, users, link types, sheets | 2 (project+main domain), 3 (users/codes), 4–7 (sheets+tabs+link types) |
+| **8.3 Source‑domain intel** | Extraction, aggregates, metrics | 11, 12, 13, 14 (counters), 21 (Moz), 22 (Semrush), 23 (domain age) |
+| **8.4 Scoring** | Dynamic scoring | 17, 18, 19, 20 |
+| **8.5 Competitor/Reports** | Opportunity engine + ERP reports | 24, 25, 27, 28, 29, 30, 31, 32, 33, 34 |
 
-### 2.3 Existing issues / debt to address during this phase
-
-These were found while reading the code; fixing or consciously accepting each is
-part of Phase 8 hygiene:
-
-1. **`backend/app.zip` is tracked in git and shows as modified.** Dead artifact —
-   add to `.gitignore` and `git rm --cached`. (Confirmed stale per CLAUDE.md.)
-2. **Doc drift on storage:** HANDOFF says `STORAGE_BACKEND=local`, but **MinIO is
-   running under PM2 on the server**. Confirm the real prod backend before any
-   feature that writes blobs (report snapshots, competitor uploads). `❓`
-3. **Dead `qa` Celery queue:** the `qa` queue is declared/routed in
-   `celery_app.py` but **no task uses it** (QA runs inline in crawl persistence).
-   Either wire async re‑scoring through it (useful for the scoring re‑run job) or
-   remove it. Phase 8 will **use it** for the re‑score job (§11 F8).
-4. **LinkIdentity rollups** (`occurrence_count`, `project_count`, …) are
-   backfilled in migration `0004` but it's unclear they're kept fresh on
-   add/delete. Source‑domain rollups (new) must avoid the same trap → use a
-   scheduled recompute or triggers (§13).
-5. **Alert `digest_mode` + `quiet_hours`** columns exist but enforcement is
-   unverified (out of Phase‑8 scope, noted for Phase 9).
-6. **"Frozen snapshot" reports aren't fully frozen today:** the report worker
-   reads **live** `backlink.score`/status at generation time, not a stored
-   row‑level snapshot. The *filters* are frozen; the *data* is current‑as‑of‑run.
-   This matters for "how scoring changes affect old reports" (§3 C).
-7. **`api` PM2 process shows ~300 restarts** — investigate stability before
-   loading it with new heavy endpoints (ops task, §13).
-8. **Registrable‑domain grouping is too coarse for Web‑2.0 properties** (e.g.
-   `user.blogspot.com` and `other.blogspot.com` both collapse to `blogspot.com`).
-   This is a genuine correctness issue for source‑domain analytics and competitor
-   grouping — see §3 (E) and §11 (F9). `❓`
+(QA crawl **15** and index check **16** already exist — extended in 8.3 to feed
+counters; not net‑new.)
 
 ---
 
-## 3. Missing Information / Needs Confirmation
-
-> **These block correct implementation. Do not start the dependent feature until
-> answered.** Each is restated in the final "Questions" list.
-
-**A. Project Main Domain — cardinality & matching authority.** `❓`
-- Feature 1 says "each project should have **a** main domain" (singular); the
-  business‑rules section says "each project has **one or more** main domains."
-  **Which is it — one, or many?**
-- Does the project main domain **replace** each backlink row's `target_url` as the
-  match target (i.e. QA = "does the source page link to *any* URL on the project
-  main domain?"), or does it **supplement** the per‑row target (validate that each
-  row's target is *on* the main domain)? This changes link‑matching, the dedup key
-  `(project, source_norm, target_norm)`, and historical data.
-- 🟦 **Recommended:** support **many** main domains per project via a
-  `project_domains` table (one primary, others secondary), and make matching
-  "source links to **any** target URL whose registrable domain ∈ project domains,"
-  while still recording the specific matched URL. This is the most flexible and
-  backward‑compatible.
-
-**B. Scoring model shape.** `❓`
-- Should configurable scoring **replace** the severity‑deduction model, or **layer
-  weights on top of it**? Two coherent options:
-  - 🟦 **Option B1 (recommended): weighted‑parameter model.** Define a fixed set of
-    **scoring parameters** (HTTP status, link found, dofollow, indexed, duplicate,
-    DA band, …). Each parameter has a configurable **weight** and a mapping from
-    outcome → points. Final score = weighted aggregate, normalised to 0–100. The
-    existing 32 QA *checks* still run (they produce issues/evidence), but the
-    *score* is computed from the parameter layer. Cleaner mental model for
-    non‑technical admins; matches your "parameter scoring" language.
-  - **Option B2: keep severity model, make deductions/caps configurable.** Less
-    work, but "weights" become "deductions," which is less intuitive and can't
-    easily express "Web 2.0 nofollow is fine."
-- Does **status** (PASS/WARN/FAIL) derive from the configurable score thresholds,
-  or stay on the current classifier? 🟦 Recommended: score bands become
-  configurable thresholds per project; the *hard* classifier rules
-  (FAIL on 404/dead/link‑missing, REVIEW on CAPTCHA) stay fixed for safety.
-
-**C. Scoring changes vs. old reports (freeze semantics).** `❓`
-- When scoring rules change, should historical `crawl_results`/reports be
-  **re‑scored**, or remain at the score computed under the rules in effect then?
-- 🟦 **Recommended:** **Never silently mutate history.** Each crawl result stores
-  the **scoring‑rule version** used. New rules apply going forward; a report
-  generated under rule‑version N stores a **frozen row‑level snapshot** (true
-  freezing — see §11 F15/F19). Optionally provide an explicit, audited
-  "re‑score project under current rules" action that writes **new** crawl results.
-
-**D. Google‑Sheet sub‑sheet layout.** `❓`
-- Confirm the real structure: is each **link type a separate tab** inside the
-  project spreadsheet (Web 2.0 / Profile / Guest Post …), with the **same column
-  layout** in each tab? Or is link type a **column** within a single tab?
-- Does the **main sheet** still map Project → one spreadsheet URL (and we read all
-  its tabs)? 🟦 Assumed yes.
-- A sample project spreadsheet (anonymised) would remove all ambiguity here.
-
-**E. Source‑domain grouping granularity (Web‑2.0 problem).** `❓`
-- For platforms like `blogspot.com`, `wordpress.com`, `medium.com`,
-  `sites.google.com`, the registrable domain is **shared** across thousands of
-  independent properties. Do you want these grouped as **one** source domain
-  (`blogspot.com`) or **per‑subdomain/per‑path** (`user.blogspot.com`)?
-- 🟦 **Recommended:** maintain a small **"platform host" list** (PSL private
-  domains) for which we group by **full host** (or host+first path segment for
-  `medium.com/@user`) instead of registrable domain. Otherwise Web‑2.0 analytics
-  and competitor opportunity counts will be meaningless.
-
-**F. Employee‑code rules.** `❓`
-- Is `employee_code` **unique per workspace**? Can one user hold **multiple**
-  codes over time? Can a code be **reassigned** to a different user?
-- 🟦 **Recommended:** code unique per workspace at a point in time; full history
-  kept; reassignment allowed and audited.
-
-**G. Domain Authority provider & budget.** `❓`
-- Confirm exact provider: `moz_rapidapi`, `moz_official`, or `similarweb`
-  (all already supported in `site_metrics.py`). What's the **monthly quota /
-  cost ceiling**? This drives batch size, cache TTL, and refresh cadence.
-
-**H. Competitor sheet format & source.** `❓`
-- What columns do competitor sheets contain (just source URLs? source+anchor?
-  target? DA?)? Are they **uploaded files** (CSV/XLSX) or **Google Sheets URLs**
-  like project sheets? 🟦 Recommended: support both, reuse the existing import
-  pipeline; treat unknown columns leniently.
-
-**I. Soft‑delete scope & restore window.** `❓`
-- Which entities get **soft delete** (recoverable) vs **hard delete**? Is there a
-  **restore window** (e.g. 30 days) after which a purge job hard‑deletes?
-- 🟦 **Recommended:** soft‑delete projects, sheets, competitor data, scoring rules,
-  users; hard‑delete only trivial join rows. 30‑day restore, then audited purge.
-
-**J. Who may edit global scoring?** `❓` 🟦 Recommended: **Admin only** for global
-rules; **Manager+** for project overrides (new permissions in §11 F4).
-
----
-
-## 4. Recommended Development Sequence (high level)
-
-Build in five sub‑phases (8.1 → 8.5). Each is independently shippable and leaves
-the system green. **Do not parallelise across a dependency edge (see §5).**
-
-| Sub‑phase | Theme | Features | Why first/last |
-|---|---|---|---|
-| **8.1 Foundations** | Catalogs & settings | F1 Project Settings + Main Domain · F2 Users/Employee Codes · F20 Audit/History scaffolding · F7 Safe‑delete framework | Everything else references link‑types, domains, users, audit |
-| **8.2 Link‑type & Sheets** | Sheet evolution | F5 Sub‑sheet detection · F6 Tab selection checkboxes · (link‑types catalog finalised) | Scoring & competitor categorisation need a real link‑type catalog |
-| **8.3 Scoring** | Dynamic scoring | F4 Global scoring · F3 Project scoring · F8 Dynamic parameter scoring · (versioning + freeze) | Highest risk; depends on link‑types (8.2); gates report changes |
-| **8.4 Source‑domain intel** | Aggregation + DA | F9 Source‑domain extraction/aggregate · F16 DA via Moz · F10 Source‑domain analytics dashboard | Feeds competitor comparison & opportunity scoring |
-| **8.5 Competitor/Market** | Opportunity engine | F11 Upload · F12 Mapping/validation · F13 Existing‑vs‑new comparison · F14 Auto link‑type categorisation · F17 Competitor QA categorisation · F15 Opportunity reports · F18 Off‑page dashboard · F19 Sheets export | Depends on link‑types, source domains, DA |
-
-**Minimum Viable Phase (MVP)** = **8.1 + 8.2 + the read‑only half of 8.4** (source
-main‑domain analytics using DA you already can fetch). This delivers immediate
-value (project settings, real link types, source‑domain dashboard) **without** the
-risky scoring re‑architecture or the large competitor subsystem. (See §14.)
-
----
-
-## 5. Feature Dependencies
+## 7. Feature Dependencies
 
 ```
-                         ┌─────────────────────────────┐
-                         │ F20 Audit/Activity logging   │  (extend audit_logs; needed by all deletes/edits)
-                         └──────────────┬──────────────┘
-                                        │
-        ┌───────────────────────────────┼───────────────────────────────┐
-        ▼                               ▼                                ▼
-┌────────────────┐         ┌────────────────────────┐        ┌────────────────────┐
-│ F1 Project      │         │ F2 Users / Employee     │        │ F7 Safe‑delete      │
-│ Settings +      │         │ Codes + mapping         │        │ framework (soft     │
-│ Main Domain(s)  │         │                         │        │ delete + preflight) │
-└───────┬────────┘         └───────────┬────────────┘        └─────────┬──────────┘
-        │                              │                                │
-        │                              │                                │ (used by every delete)
-        ▼                              │                                │
-┌────────────────────────┐            │                                │
-│ link_types CATALOG      │◄───────────┘ (employee/user used in reports)│
-│ (F5/F6 populate it)     │                                             │
-└───────┬─────────────────┘                                            │
-        │                                                              │
-        ▼                                                              │
-┌────────────────────────┐   ┌──────────────────────────┐             │
-│ F5 Sub‑sheet detection  │──►│ F6 Tab→link‑type select   │             │
-└───────┬─────────────────┘   └─────────────┬────────────┘             │
-        │                                    │                          │
-        ▼                                    ▼                          │
-┌──────────────────────────────────────────────────────┐              │
-│ F4 Global scoring → F3 Project scoring → F8 Parameter  │              │
-│ scoring (resolution: global→link‑type→project; versioned)             │
-└───────┬────────────────────────────────────────────────┘             │
-        │ (score feeds reports + analytics)                             │
-        ▼                                                               │
-┌────────────────────────┐   ┌──────────────────────────┐              │
-│ F9 Source main‑domain   │──►│ F16 Domain Authority (Moz)│              │
-│ aggregate (reuse norm)  │   └─────────────┬────────────┘              │
-└───────┬─────────────────┘                 │                          │
-        ▼                                    ▼                          │
-┌────────────────────────┐                                              │
-│ F10 Source‑domain        │                                            │
-│ analytics dashboard      │                                            │
-└───────┬──────────────────┘                                           │
-        ▼                                                               │
-┌───────────────────────────────────────────────────────────────────┐ │
-│ COMPETITOR SUBSYSTEM (needs link_types, source_domains, DA, delete) │◄┘
-│ F11 Upload → F12 Map/validate → F13 Existing‑vs‑new → F14 Auto link  │
-│ ‑type → F17 QA categorisation → F15 Opportunity reports →            │
-│ F18 Off‑page dashboard → F19 Sheets export                            │
-└───────────────────────────────────────────────────────────────────┘
+8.0 Platform ─────────────────────────────────────────────────────────────┐
+  Postgres job queue (38) ─ dimension registry (§11A) ─ workspace harden (1)│
+  ─ audit (36) ─ safe delete (35)                                           │
+        │ (everything runs on these)                                        │
+        ▼                                                                    │
+8.1 Identity core                                                            │
+  canonical_urls + fingerprint (8) ─► conflicts (9) ─► import no‑skip (10)   │
+  └────────────────────────────────────────────► competitor fingerprint (26)│
+        │ (fingerprint feeds dedup, source domains, competitor compare)      │
+        ▼                                                                    │
+8.2 Foundations                                                              │
+  project settings + main domain (2)   users/employee codes (3)             │
+  sheets main (4) ─► project/sub‑sheet sync (5) ─► tab→link‑type (6,7)       │
+        │ (link_types catalog needed by scoring + competitor categorisation)│
+        ▼                                                                    │
+8.3 Source‑domain intel                                                      │
+  source_domains (11) ─► global/project analytics (12,13)                   │
+  aggregate counters (14) ◄─ index check (16)                               │
+  Moz (21) + Semrush (22) + domain age (23) ─► metrics on domains           │
+        │                                                                    │
+        ▼                                                                    │
+8.4 Scoring (17–20)  ── uses link_types + DA/Semrush parameters ────────────┘
+        │ (score feeds reports/analytics)
+        ▼
+8.5 Competitor + Reports
+  competitor upload (24) ─► map/validate (25) ─► fingerprint (26, from 8.1)
+   ─► existing‑vs‑new (27) ─► auto link‑type (28) ─► QA categorise (29)
+   ─► opportunity (30) ─► off‑page board (31)
+  reports + versioning (32) ─ ERP filters (33) ─ Sheets export (34)
 ```
-
-**Hard edges (must respect):**
-- F3/F4/F8 (scoring) **require** the `link_types` catalog (from F5/F6) — you can't
-  set "Web 2.0 scoring" before "Web 2.0" exists as a typed entity.
-- F13/F14 (competitor comparison & auto‑categorisation) **require** F9
-  (source‑domain aggregate) and the link‑type catalog.
-- F16 (DA) **feeds** F10 and F13/F15 but can ship independently (degrade
-  gracefully when DA is absent).
-- Every delete feature **requires** F7 + F20.
 
 ---
 
-## 6. Full System Architecture Plan
+## 8. Full System Architecture Plan
 
-Phase 8 keeps the existing **modular monolith** shape (FastAPI API + Celery
-workers sharing models/services/config). No new services/processes are required.
-
-### 6.1 New backend modules (following the existing layering)
+Keeps the **modular monolith** (FastAPI API + workers sharing models/services/
+config). Major change: the **worker runtime** moves from Celery/Redis to a
+Postgres‑backed queue (`❓1`). New backend modules:
 
 ```
 backend/app/
-├── api/v1/
-│   ├── project_settings.py     (NEW) project settings + main domains
-│   ├── users.py                (NEW) user/employee-code admin (or extend team.py)
-│   ├── scoring.py              (NEW) global/project/link-type scoring rules
-│   ├── link_types.py           (NEW) link-type catalog + sub-sheet mapping
-│   ├── sheets.py               (EXTEND) sub-sheet enumeration + tab selection
-│   ├── source_domains.py       (NEW) source-domain analytics
-│   ├── competitors.py          (NEW) competitor sheets, comparison, opportunities
-│   └── deletes.py              (NEW, or per-router) delete-preflight + soft delete
+├── core/
+│   └── jobs/                 (NEW) DB-backed queue: enqueue, claim (SKIP LOCKED), scheduler
 ├── services/
-│   ├── project_settings_service.py  (NEW)
-│   ├── employee_service.py          (NEW) user↔code mapping + reconciliation
-│   ├── scoring_rules_service.py     (NEW) rule CRUD + versioning + resolution
-│   ├── link_type_service.py         (NEW) catalog + tab mapping
-│   ├── sheet_tab_service.py         (NEW) sub-sheet detect/select/sync
-│   ├── source_domain_service.py     (NEW) aggregate rollups + analytics
-│   ├── domain_authority_service.py  (NEW) wraps integrations/site_metrics
-│   ├── competitor_service.py        (NEW) upload, comparison, opportunity scoring
-│   └── delete_service.py            (NEW) soft delete + dependency preflight + restore
-├── qa/
-│   └── scoring.py              (EXTEND/REPLACE) parameter-weight resolution (Option B1)
-│   └── scoring_params.py       (NEW) canonical parameter registry + outcome→points
-├── workers/tasks/
-│   ├── scoring.py              (NEW) re-score project under current rules (uses `qa` queue)
-│   ├── domain_authority.py     (NEW) batched DA fetch/refresh (uses index.check-style stagger)
-│   ├── competitors.py          (NEW) import + comparison + categorisation jobs
-│   └── source_domains.py       (NEW) periodic rollup recompute
-└── models/  (NEW model files — see §10)
+│   ├── canonical_service.py        (NEW) canonicalise + fingerprint + canonical_urls upsert
+│   ├── conflict_service.py         (NEW) duplicate/conflict detection + resolution
+│   ├── workspace_service.py        (EXTEND team) workspaces/companies, switching
+│   ├── project_settings_service.py (NEW) settings + main domains
+│   ├── employee_service.py         (NEW) users/codes/mappings
+│   ├── link_type_service.py        (NEW) catalog + tab mapping
+│   ├── sheet_tab_service.py        (NEW) sub-sheet detect/select
+│   ├── source_domain_service.py    (NEW) extraction + aggregate counters
+│   ├── domain_metrics_service.py   (NEW) Moz + Semrush + domain age (wraps integrations)
+│   ├── scoring_rules_service.py    (NEW) versioned scoring resolution
+│   ├── competitor_service.py       (NEW) upload/compare/categorise/opportunity
+│   ├── dimensions/registry.py      (NEW) the §11A single source of truth
+│   └── delete_service.py           (NEW) soft delete + preflight + restore
+├── integrations/
+│   ├── site_metrics.py             (EXTEND) + semrush provider
+│   └── domain_age.py               (NEW) domain-age provider (whois/RapidAPI)
+├── jobs/ (or workers/)             (REWORK) tasks become DB-queue handlers
+└── models/  (NEW model files — §15)
 ```
 
-### 6.2 New queues / beat jobs
-
-- Reuse `qa` queue for **re‑score** jobs (it's currently dead — §2.3).
-- Reuse pattern of `index.check` (staggered external calls) for **DA fetch**;
-  route `tasks.domain_authority.*` and `tasks.competitors.*` to existing
-  `index.check`/`sheets.sync`/`default` or add `domain.authority` +
-  `competitors` queues. 🟦 Recommended: add two queues to keep heavy external
-  calls isolated.
-- New beat jobs: `recompute-source-domain-rollups` (daily), `refresh-domain-
-  authority-due` (daily, respects cache TTL), optionally `purge-soft-deleted`
-  (daily, after restore window).
-
-### 6.3 Frontend
-
-All UI continues to live in `frontend/components/workspace-app.tsx` (one tree) +
-`frontend/lib/api.ts`. New **desks/tabs**:
-- **Settings desk** (Project Settings, Main Domains, Scoring, Link‑types, Sub‑sheet
-  selection, Global scoring — Admin/Manager scoped).
-- **Source Domains desk** (analytics).
-- **Competitors desk** (upload, comparison, opportunities, off‑page workflow).
-- Delete confirmation modals become a shared component (`ConfirmDelete` with
-  dependency preview).
-
-> Note: `workspace-app.tsx` is already ~2,210 lines. 🟦 Recommended hygiene: split
-> the new desks into sibling files (`components/desks/*.tsx`) imported by the tree,
-> rather than growing the single file. This is a *structure* improvement, not a
-> behaviour change, and keeps Phase 8 maintainable.
+Frontend: split new desks out of the 2,210‑line `workspace-app.tsx` into
+`components/desks/*` (Workspace switcher, Settings, Source Domains, Competitors,
+Conflicts, Audit), all reading the dimension registry for filters/columns.
 
 ---
 
-## 7. Data Flow Plan
+## 9. Multi-Workspace / Company Architecture
 
-### 7.1 Settings & catalog flow
-`Admin edits Project Settings → project_settings + project_domains rows →
-re‑match/re‑score job (optional, audited) → analytics & reports read new domains.`
+**Already present:** `workspaces`, `workspace_members` (M:N user↔workspace, with
+`role`), `workspace_id` on every business table, RBAC + project scoping in
+`core/deps.py`. **This is the isolation backbone — reuse it.**
 
-### 7.2 Sheet → link‑type flow
-`Sheets sync → enumerate tabs → upsert google_sheet_project_tabs → admin selects
-which tabs import/QA (checkboxes) + maps tab→link_type → per‑tab import via
-existing import pipeline → backlink_records.link_type set from tab mapping.`
+**To add:**
+- **UI workspace switcher** (the active workspace context already flows through
+  `AuthContext`; expose switching + remember last).
+- **Optional company layer** `❓6`: `🟦` `companies(id, name, …)` with
+  `workspaces.company_id` FK (nullable). Workspace stays the **isolation unit**;
+  company is only a reporting/grouping parent for agencies running multiple
+  workspaces. If a workspace already == a company for you, skip this.
+- **Isolation rule (enforced, mandatory):** every query filters by `workspace_id`
+  (via `AuthContext`); every new table has `workspace_id` (except truly global ones
+  like `canonical_urls`, `domain_authority_results`, `domain_age_results`, which are
+  **domain‑intrinsic** and safe to share — but **conflicts/backlinks** that
+  reference them stay workspace‑scoped). Cross‑workspace duplicate detection is
+  **off by default** (`❓4`).
+- **Settings hierarchy:** global defaults → workspace settings → project settings
+  (scoring, link types, column mappings). Resolver picks the most specific.
 
-### 7.3 Scoring flow (Option B1)
-`Crawl → QA checks produce issues/evidence (unchanged) → parameter extractor maps
-artifact+issues → parameter outcomes → scoring resolver picks the effective rule
-set (project override → link‑type rule → global default) at version V →
-weighted score + band → stored on crawl_results WITH rule_version=V → denormalised
-to backlink_records.`
-
-### 7.4 Source‑domain flow
-`Backlink upsert → source_domain (registrable/platform host) computed → upsert
-source_domains aggregate (counts, %s) via scheduled recompute → DA fetched per
-source domain (cached) → analytics dashboard reads aggregate + DA.`
-
-### 7.5 Competitor flow
-`Upload competitor sheet → competitor_sheets + competitor_sheet_imports →
-parse+normalize → competitor_backlinks + competitor_source_domains →
-compare competitor domains vs project source_domains → competitor_domain_comparisons
-(existing/new) → auto link‑type categorisation (inherit from our domain patterns) →
-opportunity scoring (DA + index + gap) → opportunity report → optional export to
-Google Sheet.`
-
----
-
-## 8. Flowchart‑Style Logic
-
-### 8.1 Project settings creation / update
+**Flowchart (workspace/company creation):**
 ```
 START
-→ Admin/Manager opens Project → Settings
-→ Loads current settings + project_domains (primary + secondary)
-→ User edits name / main domain(s) / scoring profile / schedule / policy flags
-→ Validate: at least one domain; each domain is a valid registrable domain;
-            no duplicate domain across THIS project; warn if domain already used
-            by another project in the workspace
-→ IF main domain changed:
-    → Record old → new in audit_logs (before/after)
-    → Ask: "Re-match & re-score existing links under the new domain now?"  [NEEDS CONFIRMATION A]
-        → IF yes → enqueue tasks.scoring.rescore_project (background, audited)
-        → IF no  → keep historical verdicts; new domain applies to future crawls
-    → Keep OLD QA history linked to the crawl that produced it (history is immutable)
-→ Persist project_settings + project_domains
-→ Invalidate analytics caches for the project
-→ END
-```
-
-### 8.2 Google‑Sheet sub‑sheet / link‑type sync
-```
-START
-→ Sheets sync triggered (manual or scheduled) for a project spreadsheet
-→ google_sheets.list_worksheets(spreadsheet_id)   (NEW integration fn)
-→ FOR each tab:
-    → Upsert google_sheet_project_tabs(tab_name, gid, last_seen_at, status=detected)
-    → IF tab is new and unmapped → status=needs_mapping (do NOT import yet)
-→ Admin opens Sub-sheet selection:
-    → For each tab: checkbox [import?] [QA?] [active?] + dropdown [map → link_type]
-    → "Other"/unknown tab → create link_type or mark ignored
-→ Save selections → google_sheet_subsheet_mappings
-→ FOR each tab WHERE import=true AND active=true:
-    → read_project_sheet(spreadsheet_id, tab) → existing import pipeline
-    → set backlink_records.link_type = mapped link_type
-→ Handle drift:
-    → tab RENAMED → match by gid (stable id) not name; update tab_name; keep mapping
-    → tab DELETED → mark mapping status=missing; do NOT delete imported links;
-                    surface a warning to admin
-    → tab ADDED   → status=needs_mapping; surface for admin decision
-→ END
-```
-
-### 8.3 User & employee‑code mapping
-```
-START
-→ Admin opens Users / Employee Codes
-→ Manual: add user / edit user / assign code / update code / set active|inactive
-→ Validate code uniqueness per workspace  [NEEDS CONFIRMATION F]
-→ Sheet reconciliation:
-    → Collect distinct (assigned_user_label, employee_code) seen in backlinks
-    → FOR each distinct label:
-        → IF exact mapping exists in user_employee_mappings → link to app user
-        → ELSE IF code matches a known employee_code → suggest that user
-        → ELSE → mark UNMAPPED, present to admin for manual mapping
-    → Admin confirms/overrides mappings
-→ On mapping change: record in audit_logs; (optionally) backfill
-  backlink_records.assigned_user_id for matching labels
-→ Reports/analytics by user can now use app-user identity OR raw sheet label
-→ END
-```
-
-### 8.4 Scoring calculation (Option B1, recommended)
-```
-START (a crawl artifact + its QA issues are ready)
-→ Determine link_type of the backlink (from tab mapping or free text)
-→ Resolve effective scoring rule set:
-    → IF project_scoring_rules exist for (project, link_type)     → use them
-    → ELSE IF project_scoring_rules exist for (project, ANY)      → use them
-    → ELSE IF link_type_scoring_rules exist for link_type (global)→ use them
-    → ELSE                                                        → global_scoring_rules (defaults)
-    → Capture the chosen scoring_rule_version = V
-→ Extract parameter outcomes from artifact+issues:
-    (http_ok?, link_found?, target_match?, dofollow?, indexed?, duplicate?,
-     da_band, robots_ok?, canonical_ok?, crawl_ok?, assigned?)
-→ score = Σ (parameter.weight × outcome_points(parameter))   normalised → 0..100
-→ Apply HARD safety rules (unchanged, non-configurable):
-    → link missing / 404 / dead / cross-domain canonical → FAIL regardless
-    → CAPTCHA / WAF uncertainty → NEEDS_MANUAL_REVIEW
-→ Determine status from configurable bands (fail<X, warn<Y, else pass)
-→ Persist score + band + breakdown + rule_version=V on crawl_results
-→ Denormalise to backlink_records (score/status/top_issue)
-→ END
-```
-
-### 8.5 Source main‑domain extraction
-```
-START (backlink source_page_url)
-→ normalize_url(source_page_url)  → NormalizedUrl (existing)
-→ IF host registrable domain ∈ PLATFORM_HOST_LIST (blogspot/wordpress/medium/...)  [NEEDS CONFIRMATION E]
-    → source_domain_key = full host (or host + first path segment for medium/@user)
-→ ELSE
-    → source_domain_key = registrable_domain (existing behaviour)
-→ Upsert source_domains(workspace_id, domain_key) ; bump counters
-→ Link backlink_records.source_domain_id → source_domains.id (new FK)
-→ END
-```
-
-### 8.6 Competitor sheet upload
-```
-START
-→ User selects project → Competitors → Upload
-→ Choose source: file (CSV/XLSX) OR Google Sheet URL
-→ Create competitor_sheets row + competitor_sheet_imports (status=pending)
-→ Validate: at least a source URL column; map columns (reuse import auto-map)
-→ Stage rows → normalize source URLs (reuse normalize_url)
-→ Drop invalid/unsupported-scheme URLs (record count)
-→ Extract competitor source main domains (same logic as 8.5)
-→ Persist competitor_backlinks + competitor_source_domains (SEPARATE from project links)
-→ Enqueue comparison job (8.7) + DA fetch for new domains (8.9)
-→ END
-```
-
-### 8.7 Existing vs new source‑domain comparison
-```
-START (competitor_source_domains for a project)
-→ Load project's existing source_domains set (from our backlinks)
-→ FOR each competitor source domain D:
-    → IF D ∈ existing project source domains:
-        → category = EXISTING
-        → attach: our backlinks count from D, competitor count from D,
-                  indexed%, link_type(s) we use for D, avg score, DA, users
-        → IF we have FEW links from a HIGH-DA existing domain → flag "expand here"
-    → ELSE:
-        → category = NEW_OPPORTUNITY
-        → attach: competitor URLs, estimated link type (8.8), DA, indexed%
-→ Write competitor_domain_comparisons (category + metrics + recommended_action)
-→ END
-```
-
-### 8.8 Auto link‑type categorisation
-```
-START (a competitor source domain D, not yet typed)
-→ Look up how OUR project uses domain D (from our backlinks' link_type):
-    → IF D unseen in our data → link_type = UNKNOWN/NEW ; confidence = none
-    → ELSE collect distinct link_types used for D:
-        → IF exactly ONE link_type → assign it ; confidence = HIGH ; source = inherited_single
-        → IF MULTIPLE link_types  → mark AMBIGUOUS ; store candidates ; confidence = LOW
-→ Allow manual override (records source = manual, confidence = confirmed)
-→ Persist link_type + confidence + categorization_source on competitor_backlinks
-→ Uncategorised/ambiguous → surfaced in off-page review queue
-→ END
-```
-
-### 8.9 Domain authority checking
-```
-START (a set of source/competitor domains needing DA)
-→ FOR each domain (deduped by domain_key):
-    → IF domain_authority_results fresh within cache TTL → use cached  [NEEDS CONFIRMATION G]
-    → ELSE enqueue tasks.domain_authority.fetch_one(domain) with stagger
-→ fetch_one:
-    → call integrations.site_metrics (Moz RapidAPI / official / Similarweb) — EXISTING
-    → on success → upsert domain_authority_results (current) + append domain_authority_history
-    → on failure/quota → mark stale, DO NOT block analytics; retry with backoff
-→ source_domains.da_* denormalised from latest domain_authority_results
-→ END
-```
-
-### 8.10 Competitor opportunity report generation
-```
-START
-→ Select project + scope (new only | existing | all) + min DA + link types
-→ Pull competitor_domain_comparisons + DA + index status
-→ Opportunity score = f(DA band, indexed%, our_gap (we have 0 or few links),
-                        link_type value weight, competitor frequency)
-→ Rank; group by EXISTING vs NEW
-→ Render (reuse report worker: CSV/XLSX/PDF) as a FROZEN snapshot (rule_version + data)
-→ Optional: export to a Google Sheet tab (reuse write_back pattern)  [NEEDS CONFIRMATION H]
-→ END
-```
-
-### 8.11 Safe delete confirmation flow
-```
-START
-→ User clicks Delete on entity E (project/sheet/tab-mapping/user/employee-code/
-                                  scoring-rule/imported-links/competitor-sheet/market-data)
-→ delete_service.preflight(E): count dependents
-    (e.g. project → N backlinks, M crawl_results, K reports, J competitor sheets)
-→ Show confirmation modal:
-    → list dependent counts + "what happens to each" (cascade vs detach vs keep)
-    → IF project delete → ask: delete links+history too? or archive project & keep history?  [NEEDS CONFIRMATION A/I]
-    → require typing the entity name for high-impact deletes
-→ On confirm:
-    → SOFT delete: set deleted_at + deleted_by; exclude from normal queries
-    → write audit_logs (action=DELETE, before snapshot, dependent counts)
-    → DO NOT physically remove within restore window
-→ Restore path: clear deleted_at (audited) within window
-→ Purge job: after restore window, hard-delete (cascade) — audited
+→ Admin creates company (optional) / workspace
+→ Create workspace row (+ company_id if used)
+→ Add creator as workspace_member role=ADMIN
+→ Seed workspace defaults (link types, scoring global→workspace copy, settings)
+→ User switches active workspace → AuthContext.workspace_id changes
+→ ALL subsequent queries scoped to that workspace_id
 → END
 ```
 
 ---
 
-## 9. Database Relationship Planning (before final schema)
+## 10. Data Flow Plan
 
-### 9.1 Main entities (new vs existing)
+1. **Sheet → canonical → store (no skip):** read tab rows → canonicalise source &
+   target → fingerprint → upsert `canonical_urls` → upsert/insert `backlinks`
+   (same sheet row updates in place; new rows stored even if fingerprint exists) →
+   conflict detection groups same‑fingerprint rows → extract source domain → bump
+   aggregate counters.
+2. **Crawl/QA:** unchanged engine → verdict → on index‑status change, adjust domain
+   aggregate counters transactionally → score via versioned rules.
+3. **Metrics:** per new source domain → enqueue Moz + Semrush + domain‑age jobs →
+   store on domain tables + history → aggregate onto `source_domains`.
+4. **Competitor:** upload → canonical+fingerprint (separate tables) → compare
+   fingerprints/domains vs ours → existing/new → auto link‑type → opportunity.
+5. **Reports/analytics:** dimension registry → filter/facet/group‑by (shared) →
+   report worker builds dynamic columns → frozen snapshot → export
+   (CSV/XLSX/PDF/Sheets).
 
-**Existing, reused/extended:** `workspaces`, `users`, `workspace_members`,
-`projects`, `project_members`, `vendors`, `campaigns`, `backlink_records`,
-`crawl_results` (partitioned), `backlink_history` (partitioned), `backlink_issues`,
-`reports`, `sheet_sources`, `imports`/`import_rows`, `link_identity`,
-`assignment_history`, `index_checks`, `audit_logs`, `settings`.
+---
 
-**New in Phase 8:** `project_settings`, `project_domains`, `link_types`,
-`employee_codes`, `user_employee_mappings`, `global_scoring_rules`,
-`link_type_scoring_rules`, `project_scoring_rules`, `scoring_parameters`,
-`scoring_rule_versions`, `google_sheet_project_tabs`,
-`google_sheet_subsheet_mappings`, `source_domains`, `source_domain_metrics`
-(= DA cache, see merge note), `domain_authority_results`,
-`domain_authority_history`, `competitor_sheets`, `competitor_sheet_imports`,
-`competitor_backlinks`, `competitor_source_domains`,
-`competitor_domain_comparisons`, `report_snapshots`.
+## 11. Flowchart-Style Logic (all 20)
 
-### 9.2 Reconciliation of your proposed table list ↔ reality
+**11.1 Workspace/company creation** — see §9.
 
-| Your proposed table | Status | Decision |
+**11.2 Project creation + main domain setup**
+```
+START → create project under workspace → add ≥1 main domain (project_domains, one primary)
+→ validate each domain is a valid registrable domain; dedup within project
+→ seed project_settings (scoring profile, status bands) → audit → END
+```
+
+**11.3 Google Sheet project sync**
+```
+START → for each project in main sheet → resolve project + sheet connection
+→ list worksheets (tabs) → for each ENABLED tab → read rows → (11.5 canonical)
+→ (11.6 conflict) → upsert/insert backlinks (NO skip) → (11.10 source domain)
+→ (11.11 counters) → update sync state/history → END
+```
+
+**11.4 Sub-sheet / link-type detection**
+```
+START → list tabs by stable gid → upsert google_sheet_project_tabs
+→ new tab → needs_mapping ; renamed (same gid) → update name ; deleted → mark missing (keep data)
+→ admin sets import/QA/active + tab→link_type → save mappings → END
+```
+
+**11.5 URL canonicalisation + fingerprint**
+```
+START → raw URL → normalize_url() → IF invalid → record error, stop
+→ canonical = normalized form (https, no-www, no-tracking, no-fragment, lenient slash, IDN)
+→ fingerprint = sha256(canonical) → look up canonical_urls.fingerprint (B-tree, unique)
+→ IF exists → reuse canonical_url_id, total_uses += 1
+→ ELSE → insert canonical_urls(fingerprint, sample_url, source_domain_id) → END
+```
+
+**11.6 Duplicate / conflict detection**
+```
+START (a backlink with canonical_url_id) → find other backlinks/competitor rows with same canonical_url_id
+→ IF none (besides self) → status unique → END
+→ ELSE → determine scope (same_project | cross_project | cross_user | competitor_vs_project)
+→ get-or-create backlink_conflicts(canonical_url_id, project_id, scope, resolution_status=open)
+→ add this row to conflict_members → mark each member is_duplicate + conflict_status
+→ surface in filters/reports → END
+```
+
+**11.7 User & employee-code mapping**
+```
+START → admin manages users + employee_codes → collect distinct (sheet label, code) from backlinks
+→ suggest mapping (exact > code-match > unmapped) → admin confirms → user_employee_mappings
+→ optional backfill assigned_user_id → audit → END
+```
+
+**11.8 Backlink QA crawl** (existing engine, unchanged)
+```
+START → claim due backlink (job queue) → crawl (https-first → googlebot → proxy → render)
+→ parse → QA checks → composite verdict → score (versioned rules) → persist crawl_results
+→ on index/status change → (11.11 counters) → history events → alerts → END
+```
+
+**11.9 Index / non-index checking**
+```
+START → select due source URLs (dedup by source) → query SERP (serper) → verdict indexed|not|uncertain
+→ store index_check_results → denormalise onto backlinks.index_status
+→ adjust source-domain aggregate counters (old bucket -1, new bucket +1) → END
+```
+
+**11.10 Source main-domain extraction**
+```
+START → canonical host → IF host in PLATFORM_HOST_LIST → key = full host (or host+seg)
+→ ELSE key = registrable domain → upsert source_domains(workspace?, key) → link backlink.source_domain_id → END
+```
+
+**11.11 Source main-domain aggregate metric update**
+```
+START (a backlink's index verdict or membership changes)
+→ BEGIN TX → UPDATE source_domain_project_metrics SET indexed_count/not_indexed_count/total accordingly
+→ UPDATE source_domain_workspace_metrics likewise → COMMIT
+→ (nightly) reconcile job recomputes counts from facts to self-heal drift → END
+```
+
+**11.12 Scoring calculation**
+```
+START → link_type known → resolve rule set (project+type → project → workspace → link_type → global), version V
+→ extract parameter outcomes (http, link_found, dofollow, indexed, duplicate, DA band, Semrush AS band, age, ...)
+→ score = normalised weighted sum → apply fixed hard-fail rules → band → store score + rule_version V on crawl_results → END
+```
+
+**11.13 Competitor sheet upload**
+```
+START → choose project → upload file / connect sheet → create competitor_sheets + import run
+→ validate (≥ source URL col) → stage rows → (11.5 canonical/fingerprint) → store competitor_backlinks (separate)
+→ extract competitor_source_domains → enqueue compare (11.14) + metrics (11.16) → END
+```
+
+**11.14 Existing vs new source-domain comparison**
+```
+START → load our source_domains set for the project → for each competitor source domain D:
+→ IF D ∈ ours → category EXISTING (+ our count, indexed%, link types, score, DA/Semrush, users)
+→ ELSE → category NEW_OPPORTUNITY (+ competitor URLs, est. link type, DA/Semrush, indexed%)
+→ also flag EXACT-URL match via fingerprint (already_used) → write competitor_domain_comparisons → END
+```
+
+**11.15 Auto link-type categorisation (competitor)**
+```
+START → for competitor source domain D → look up our link_type(s) for D
+→ unseen → UNKNOWN/new ; exactly one → inherit (HIGH confidence) ; multiple → AMBIGUOUS (candidates, LOW)
+→ allow manual override (store auto value + manual value + source + confidence) → END
+```
+
+**11.16 Moz / Semrush / domain-age metrics fetch**
+```
+START → for each domain needing metrics → IF fresh in DB within TTL → reuse
+→ ELSE enqueue background job (staggered) → call provider via RapidAPI (env key) →
+  on success → upsert domain_authority_results / semrush_domain_metrics / domain_age_results + append history
+  on failure/quota → mark stale, retry w/ backoff, never block analytics
+→ aggregate latest onto source_domains → END
+```
+
+**11.17 Competitor opportunity report generation**
+```
+START → select project + scope (new|existing|all) + min DA/AS + link types
+→ pull comparisons + metrics + index → opportunity_score = f(DA, AS, traffic, indexed%, our gap, link-type value)
+→ rank, group existing/new → render (dynamic columns) → frozen snapshot → optional Sheets export → END
+```
+
+**11.18 Google Sheets report export**
+```
+START → report ready + output_target=google_sheet → choose spreadsheet/tab
+→ create/locate results tab → write_table (never overwrite input cols) → record export → confirm (outward-facing) → END
+```
+
+**11.19 Safe delete confirmation**
+```
+START → delete entity E → preflight dependent counts → confirm modal (counts + type-to-confirm for high impact)
+→ project delete → archive(keep history) | delete links+history (❓12) → soft delete (deleted_at/by) → audit
+→ restore within window → purge job after window (hard delete) → END
+```
+
+**11.20 Aggregate metric rebuild job**
+```
+START (scheduled/nightly or on-demand) → for each (workspace, source_domain[, project])
+→ recompute indexed/not_indexed/uncertain/total + dofollow/dup/avg_score from facts (single grouped query)
+→ UPDATE metrics tables → log drift corrected → END
+```
+
+---
+
+## 12. URL Canonicalization and Fingerprint Logic
+
+**Goal:** one true identity per page. Raw URL → canonical URL → SHA‑256 fingerprint
+→ indexed lookup. Reuse `crawler/normalize.py` (already correct for most rules).
+
+**Canonicalisation rules (current behaviour → recommendation):**
+
+| Rule | Today (`normalize_url`) | Recommendation `🟦` / `❓` |
 |---|---|---|
-| projects | exists | extend (soft‑delete cols) |
-| project_settings | new | **new** (1:1 project) — typed columns + JSONB overflow |
-| project_domains | new | **new** (1 project → N domains, one `is_primary`) |
-| users | exists (`users`) | extend (no change to auth) |
-| employee_codes | new | **new** |
-| user_employee_mappings | new | **new** (M:N user↔code over time + sheet‑label aliases) |
-| link_types | new | **new** catalog (workspace‑scoped; global + per‑project enable) |
-| global_scoring_rules | new | **new** |
-| project_scoring_rules | new | **new** |
-| link_type_scoring_rules | new | **new** |
-| scoring_rule_versions | new | **new** (immutable snapshots of a rule set) |
-| google_sheet_connections | exists as `sheet_sources` | **reuse** (rename concept, not table) |
-| google_sheet_project_tabs | new | **new** (1 sheet_source → N tabs) |
-| google_sheet_subsheet_mappings | new | **new** (tab → link_type + import/QA flags) |
-| backlinks | exists as `backlink_records` | extend (`source_domain_id`, soft‑delete) |
-| backlink_assignments | partial (`assignment_history`) | **reuse**; add code linkage |
-| backlink_qa_results | exists as `crawl_results` | extend (`scoring_rule_version_id`) |
-| backlink_qa_history | exists as `backlink_history` | reuse (immutable) |
-| source_domains | new (string exists on backlink) | **new** aggregate table |
-| source_domain_metrics | new | **merge** with `domain_authority_results` (one DA table) 🟦 |
-| competitor_sheets | new | **new** |
-| competitor_sheet_imports | new | **new** (or reuse `imports` with a `kind` flag) 🟦 |
-| competitor_backlinks | new | **new** (separate from `backlink_records`) |
-| competitor_source_domains | new | **new** |
-| competitor_domain_comparisons | new | **new** |
-| domain_authority_results | new | **new** (current DA per domain) |
-| domain_authority_history | new | **new** (append‑only DA over time) |
-| reports | exists | extend |
-| report_versions | exists (`reports.version`/`is_latest`) | **reuse** |
-| report_snapshots | new | **new** (true frozen row‑level data) |
-| delete_audit_logs | exists as `audit_logs` | **reuse** (action=DELETE) |
-| activity_logs | exists as `audit_logs` | **reuse** |
-| background_jobs | partial (`crawl_jobs` + Celery) | 🟦 add generic `async_jobs` for non‑crawl jobs OR reuse `crawl_jobs` generalised |
+| Scheme | pins `https` in match form | keep: `http`→`https` for identity `✅` |
+| `www.` | stripped in match form | keep: strip `www.` `✅` |
+| Trailing slash | lenient (strips except root) | keep lenient `🟦` (confirm always‑strip? `❓2`) |
+| Tracking params | dropped (utm_*, gclid, fbclid, …); others kept + sorted | `🟦` keep only‑tracking‑dropped (preserves meaningful `?id=`); confirm "drop ALL params" `❓2` |
+| Fragment | dropped (unless `#!`) | keep dropped `✅` |
+| Case | host lowercased; **path case preserved** | `🟦` keep path case (paths are case‑sensitive on many servers); confirm lowercase‑all `❓2` |
+| IDN | punycode/ASCII | keep `✅` |
+| Encoding | decode+re‑encode (equivalent encodings compare equal) | keep `✅` |
+| Invalid/unsupported scheme | returns `valid=False` + error | record as error row, never store a bad canonical `✅` |
 
-> 🟦 **Recommendation:** collapse `source_domain_metrics` + `domain_authority_
-> results` into **one** `domain_authority_results` table (current value) plus
-> `domain_authority_history` (append‑only). Two tables for "current DA" would
-> duplicate state and risk drift.
+**Fingerprint:** `fingerprint = sha256(canonical_url_utf8).hexdigest()` (64 hex
+chars). Stored once in `canonical_urls.fingerprint` with a **UNIQUE B‑tree index**
+(the single most important index in the system — §16).
 
-### 9.3 Relationship notes
+**Storage split:** keep the **raw URL** on the backlink (`raw_url` /
+`source_page_url`) for crawling/audit; the **canonical URL + fingerprint** live on
+`canonical_urls`; `backlinks.canonical_url_id` FK joins them. (Mirrors the ER
+diagram you shared.)
 
-- **project → project_domains**: 1‑to‑N, exactly one `is_primary=true` enforced by
-  a partial unique index `(project_id) WHERE is_primary`.
-- **link_types**: workspace‑scoped catalog. `global` flag = available to all
-  projects; per‑project enablement via `project_settings`/junction (🟦 keep simple:
-  link_types are workspace catalog, projects reference by id).
-- **scoring resolution is a 3‑level fallback** (project → link‑type → global), each
-  level pointing at an immutable `scoring_rule_versions` row. `crawl_results` stores
-  the **version id actually used** (FK), giving perfect auditability and answering
-  "how scoring changes affect old reports" (they don't — old results keep their
-  version).
-- **source_domains** is an **aggregate/rollup** keyed by `(workspace_id,
-  domain_key)`; `backlink_records.source_domain_id` FK links each link to it.
-  Competitor side has its own `competitor_source_domains` to keep competitor data
-  **physically separate** from our verified data.
-- **competitor_domain_comparisons** is the M:N bridge insight between
-  `competitor_source_domains` and our `source_domains` (category + metrics).
-- **M:N relationships:** user↔employee_code (history), link_type↔project (enable),
-  competitor_domain↔our_domain (comparison). All via explicit junction tables (no
-  raw arrays for relational data).
-- **History/versioning:** scoring rules (versioned), DA (history table), QA
-  (existing partitioned history), reports (version + new snapshots), audit (all
-  mutations).
-- **Soft delete:** add `deleted_at TIMESTAMPTZ NULL`, `deleted_by UUID NULL` to
-  soft‑deletable tables; all default queries filter `deleted_at IS NULL`.
+**Cross‑project canonical sharing:** `canonical_urls` is **global** (fingerprint has
+no workspace) → the same page is one row, `total_uses` counts references. **Conflict
+detection** then scopes by workspace/project so tenants never see each other's rows
+(`❓4`).
+
+**Flow (canonical):** see §11.5. **Edge cases to confirm (`❓2`):** lowercase whole
+path? drop all query params? always strip trailing slash? — these change which URLs
+collapse together, so they're business decisions, not defaults.
 
 ---
 
-## 10. Final Recommended Database Structure
+## 13. Duplicate Detection Logic
 
-> Migrations continue from `0006` → `0007`, `0008`, … (one per sub‑phase to keep
-> them reviewable). All new tables: `workspace_id` FK (tenant scope),
-> `UUIDPrimaryKeyMixin` + `TimestampMixin`, native enums via `pg_enum`, JSONB for
-> flexible bags — **matching existing conventions**. Types below are indicative.
+**Principle (changed):** never skip. Store every row; detect sameness by
+fingerprint; group duplicates into a **conflict**; expose everywhere.
 
-### 10.1 Foundations (migration 0007)
+**The "same entry vs new duplicate" distinction (critical `❓3`):**
+- **Same sheet entry re‑synced** (key = `sheet_source_id + tab + sheet_row_ref`) →
+  **update in place** (no new row). Prevents row explosion on every sync.
+- **Different rows, same fingerprint** → **store separately**, group as duplicates.
 
-**`project_settings`** (1:1 with project)
-- `project_id` UUID FK→projects (unique), `workspace_id` UUID FK
-- `default_link_type_id` UUID FK→link_types NULL
-- `scoring_profile` String — `inherit_global | custom`
-- `index_expected` bool, `treat_sponsored_as_follow` bool (migrate from project)
-- `status_thresholds` JSONB (`{fail:<30, warn:<80}`) — configurable bands
-- `extra` JSONB
-- *Index:* unique(project_id)
+**Duplicate/conflict scenarios → how each is represented:**
 
-**`project_domains`** (1 project → N)
-- `id`, `workspace_id`, `project_id` FK
-- `domain` String(255) (registrable or platform host), `host_pattern` String NULL
-- `is_primary` bool
-- `deleted_at`, `deleted_by`
-- *Constraints:* unique(`project_id`,`domain`); partial unique(`project_id`) WHERE
-  `is_primary`; index(`workspace_id`,`domain`)
+| Scenario | Detection | Representation |
+|---|---|---|
+| Same raw URL | same canonical → same fingerprint | conflict member |
+| Different raw, same canonical | same fingerprint | conflict member |
+| Same fingerprint, same project | scope=`same_project` | conflict (same_project) |
+| Same fingerprint, different projects | scope=`cross_project` | conflict (cross_project) |
+| Same fingerprint, different users | scope=`cross_user` | conflict + assignment note |
+| Same fingerprint, different employee code | scope=`cross_user` | conflict, code recorded |
+| Same fingerprint, different target domain | conflict + `target_mismatch` flag | conflict member w/ flag |
+| Same source main domain, different page | NOT a duplicate (different fingerprint) | grouped only at domain level |
+| Competitor URL already in our backlinks | competitor fp ∈ our canonical_urls | `already_used` (comparison) |
+| Competitor domain exists, exact URL new | domain match, fp not in ours | `new_url_existing_domain` |
+| Same backlink re‑appears next sync | same‑entry key | update in place (no dup) |
+| Same fingerprint, different link type | conflict + `link_type_mismatch` | conflict member w/ flag |
+| User assignment changed | `assignment_history` (exists) | history event, not a conflict |
 
-**`link_types`** (workspace catalog)
-- `id`, `workspace_id`, `name` String(60), `slug`, `is_global` bool,
-  `is_active` bool, `description`, `default_value_weight` int (for opportunity
-  scoring), `deleted_at`,`deleted_by`
-- *Constraints:* unique(`workspace_id`,`slug`)
-- **Backfill:** seed from existing distinct `backlink_records.link_type` values.
+**Tables:** `canonical_urls`, `backlinks`(+`canonical_url_id`,`conflict_status`),
+`backlink_conflicts`(canonical_url_id, project_id, scope, resolution_status,
+detected_at, resolved_by/at), `backlink_conflict_members`(conflict_id, backlink_id).
+(Matches your ER diagram; `link_identity` is **superseded** by this — plan a
+migration that backfills `canonical_urls` from existing `source_url_normalized` and
+rebuilds conflicts.)
 
-**`employee_codes`**
-- `id`, `workspace_id`, `code` String(60), `label` String NULL, `is_active` bool,
-  `deleted_at`,`deleted_by`
-- *Constraints:* unique(`workspace_id`,`code`) `❓F`
-
-**`user_employee_mappings`** (user ↔ code ↔ sheet label, with history)
-- `id`, `workspace_id`, `user_id` UUID FK→users NULL (NULL = external/unmapped),
-  `employee_code_id` UUID FK→employee_codes NULL,
-  `sheet_user_label` String(200) NULL, `is_current` bool,
-  `effective_from` timestamptz, `effective_to` timestamptz NULL,
-  `created_by` UUID
-- *Index:* (`workspace_id`,`sheet_user_label`), (`employee_code_id`),
-  partial unique(`workspace_id`,`employee_code_id`) WHERE `is_current`
-
-**Soft‑delete columns** added to: `projects`, `sheet_sources`, `link_types`,
-`employee_codes`, `scoring` tables, competitor tables, `backlink_records`
-(optional). (`deleted_at`, `deleted_by`.)
-
-### 10.2 Sheets / link‑type mapping (migration 0008)
-
-**`google_sheet_project_tabs`** (1 sheet_source → N tabs)
-- `id`, `workspace_id`, `sheet_source_id` FK→sheet_sources, `gid` String (stable
-  tab id), `tab_name` String(200), `status` enum(`detected|mapped|needs_mapping|
-  missing|ignored`), `last_seen_at`, `row_count` int
-- *Constraints:* unique(`sheet_source_id`,`gid`); index(`sheet_source_id`)
-- > **Schema change to `sheet_sources`:** the current
-  `uq_sheet_sources_project` (one SheetSource per project) and the per‑tab unique
-  must be reconciled. 🟦 Keep `sheet_sources` = 1 per project (the spreadsheet);
-  move per‑tab state into `google_sheet_project_tabs`. The existing
-  `(workspace,spreadsheet,sheet_tab)` unique becomes redundant → drop or relax.
-
-**`google_sheet_subsheet_mappings`** (tab → link type + flags)
-- `id`, `workspace_id`, `tab_id` FK→google_sheet_project_tabs (unique),
-  `link_type_id` FK→link_types NULL, `import_enabled` bool, `qa_enabled` bool,
-  `is_active` bool, `ignored` bool, `created_by`
-- *Constraints:* unique(`tab_id`)
-
-### 10.3 Scoring (migration 0009)
-
-**`scoring_parameters`** (canonical parameter registry — seeded, rarely changes)
-- `id`, `key` String (e.g. `http_status`,`link_found`,`dofollow`,`indexed`,
-  `duplicate`,`domain_authority`,`robots`,`canonical`,`crawl_success`,`assigned`),
-  `display_name`, `category`, `value_kind` enum(`boolean|enum|numeric_band`),
-  `is_active`
-- *Constraints:* unique(`key`). **Workspace‑agnostic** (shared registry).
-
-**`scoring_rule_versions`** (immutable snapshot of a complete rule set)
-- `id`, `workspace_id`, `scope` enum(`global|link_type|project`),
-  `scope_ref_id` UUID NULL (link_type_id or project_id; NULL for global),
-  `link_type_id` UUID NULL (for project+link_type granularity),
-  `version` int, `is_latest` bool, `rules` JSONB (the full
-  parameter→weight/outcome map, frozen), `status_thresholds` JSONB,
-  `created_by`, `note`
-- *Constraints:* index(`workspace_id`,`scope`,`scope_ref_id`,`link_type_id`)
-  WHERE `is_latest`
-- > 🟦 **Recommendation:** model *all three levels* (global/link‑type/project) as
-  rows in **one** `scoring_rule_versions` table distinguished by `scope`, rather
-  than three near‑identical tables (`global_scoring_rules`,
-  `link_type_scoring_rules`, `project_scoring_rules`). This removes duplication and
-  makes the resolver a single query. (Your three proposed tables are presented as
-  the *logical* concept; the *physical* recommendation is one versioned table — see
-  §3 confirmations if you prefer three.)
-
-If you prefer the explicit three‑table form, the columns mirror the above per
-scope; either way each must carry `version`/`is_latest`/`rules` JSONB.
-
-**`crawl_results`** (extend): add `scoring_rule_version_id` UUID FK→
-scoring_rule_versions NULL. (Partitioned table — additive column is safe.)
-
-### 10.4 Source domains + Domain Authority (migration 0010)
-
-**`source_domains`** (our aggregate)
-- `id`, `workspace_id`, `project_id` UUID NULL (NULL = workspace‑wide rollup) —
-  🟦 recommend **per‑(workspace, domain_key)** primary aggregate + a per‑project
-  view via query, to avoid row explosion; confirm grain `❓`
-- `domain_key` String(255), `grouping` enum(`registrable|platform_host`),
-  `backlink_count` int, `indexed_count` int, `not_indexed_count` int,
-  `dofollow_count` int, `duplicate_count` int, `avg_score` numeric,
-  `link_type_distribution` JSONB, `last_recomputed_at`,
-  `domain_authority_id` UUID FK→domain_authority_results NULL
-- *Constraints:* unique(`workspace_id`,`domain_key`); index(`workspace_id`,
-  `domain_key`)
-
-**`backlink_records`** (extend): add `source_domain_id` UUID FK→source_domains
-NULL, indexed. (Backfill from existing `source_domain` string.)
-
-**`domain_authority_results`** (current DA per domain — merged source_domain_metrics)
-- `id`, `workspace_id` NULL (DA is domain‑intrinsic; 🟦 could be global cache),
-  `domain_key` String(255), `provider` String, `da` int NULL, `pa` int NULL,
-  `spam_score` int NULL, `global_rank` bigint NULL, `monthly_visits` bigint NULL,
-  `raw` JSONB, `fetched_at`, `expires_at`
-- *Constraints:* unique(`domain_key`,`provider`); index(`expires_at`)
-- > 🟦 Make DA a **workspace‑agnostic global cache** keyed by `(domain_key,
-  provider)` — DA for `forbes.com` is the same for every workspace, so don't refetch
-  per tenant. Confirm `❓`.
-
-**`domain_authority_history`** (append‑only)
-- `id`, `domain_key`, `provider`, `da`,`pa`,`spam_score`,`global_rank`,
-  `monthly_visits`, `captured_at`
-- *Index:* (`domain_key`,`captured_at`)
-
-### 10.5 Competitor / Market (migration 0011)
-
-**`competitor_sheets`**
-- `id`, `workspace_id`, `project_id` FK→projects, `name`, `source_kind`
-  enum(`file|google_sheet`), `spreadsheet_id`/`upload_key` String NULL,
-  `column_mapping` JSONB, `status`, `created_by`, `deleted_at`,`deleted_by`
-- *Index:* (`workspace_id`,`project_id`)
-
-**`competitor_sheet_imports`** (run log — or reuse `imports` with a kind flag)
-- `id`, `competitor_sheet_id` FK, `status`, `total_rows`, `valid_rows`,
-  `invalid_rows`, `new_domains`, `existing_domains`, `error`, timestamps
-
-**`competitor_backlinks`** (separate from our links)
-- `id`, `workspace_id`, `project_id`, `competitor_sheet_id` FK,
-  `source_page_url`, `source_url_normalized`, `source_domain_key`,
-  `competitor_source_domain_id` FK, `target_url` NULL, `anchor_text` NULL,
-  `rel` NULL, `link_type_id` FK→link_types NULL, `link_type_confidence`
-  enum(`high|low|none|confirmed`), `categorization_source`
-  enum(`inherited_single|inherited_majority|manual|none`),
-  `index_status` NULL, `qa_category` enum (see F17), timestamps
-- *Index:* (`competitor_sheet_id`), (`workspace_id`,`source_domain_key`)
-
-**`competitor_source_domains`**
-- `id`, `workspace_id`, `project_id`, `competitor_sheet_id` FK NULL,
-  `domain_key`, `grouping`, `url_count` int, `indexed_count` int,
-  `link_type_id` NULL, `link_type_confidence`, `domain_authority_id` FK NULL,
-  timestamps
-- *Constraints:* unique(`workspace_id`,`project_id`,`domain_key`)
-
-**`competitor_domain_comparisons`** (the insight bridge)
-- `id`, `workspace_id`, `project_id`, `competitor_source_domain_id` FK,
-  `our_source_domain_id` FK NULL, `category`
-  enum(`existing|new_opportunity|already_used_exact|needs_review`),
-  `our_link_count` int, `competitor_link_count` int, `our_indexed_pct` numeric,
-  `da` int NULL, `opportunity_score` numeric, `recommended_action` String,
-  `status` enum(`open|accepted|rejected|in_progress|done`),
-  `assigned_user_id` FK NULL, timestamps
-- *Index:* (`workspace_id`,`project_id`,`category`), (`opportunity_score`)
-
-### 10.6 Reports freeze (migration 0012)
-
-**`report_snapshots`** (true row‑level freeze)
-- `id`, `report_id` FK→reports, `row_index` int, `data` JSONB (the frozen row),
-  `created_at` — OR a single `snapshot_blob_key` pointing at object storage for
-  large reports. 🟦 For 1–2M scale, store the frozen file in object storage and
-  keep only metadata here (mirrors how `reports.file_key` already works), rather
-  than millions of JSONB rows. Confirm grain `❓`.
-
-### 10.7 Indexing & constraints summary
-
-- Every new table: index on `workspace_id`; tenant filter on every query.
-- Soft‑delete tables: composite index `(workspace_id, deleted_at)` or partial index
-  `WHERE deleted_at IS NULL` for hot paths.
-- Uniqueness: `project_domains(project_id,domain)`; `link_types(workspace_id,slug)`;
-  `employee_codes(workspace_id,code)`; `source_domains(workspace_id,domain_key)`;
-  `domain_authority_results(domain_key,provider)`;
-  `google_sheet_project_tabs(sheet_source_id,gid)`.
-- Partitioning: no new partitioned tables required; `domain_authority_history` and
-  `competitor_backlinks` grow but slowly/boundedly — revisit partitioning only if
-  competitor data approaches the millions (§13).
+**Resolution flow:** conflict starts `open` → user acknowledges/keeps‑one/ignores →
+`resolved_by`/`resolved_at` recorded → still visible in history. **Filters/reports:**
+`conflict_status`, `conflict_scope`, `resolution_status`, `is_duplicate` are all
+first‑class dimensions (§11A).
 
 ---
 
-## 11. Feature‑by‑Feature Implementation Plan
+## 14. Database Relationship Planning (before final schema)
 
-> Each block uses your required format. "FILES TO CHANGE" lists the real paths in
-> this repo. Tasks are ordered. Confirmations gating a feature are tagged.
+**Main entities:** workspaces (tenant) → projects → backlinks → canonical_urls
+(global) → source_domains → metrics (DA/Semrush/age) ; competitor_sheets →
+competitor_backlinks → competitor_source_domains → comparisons → opportunities ;
+scoring_rule_versions ; reports/snapshots ; jobs/audit.
 
----
+**Key relationships:**
+- `workspaces 1─N projects 1─N backlinks` (all carry `workspace_id`).
+- `backlinks N─1 canonical_urls` (global identity); `competitor_backlinks N─1
+  canonical_urls` (shared identity space → enables exact‑URL competitor match).
+- `canonical_urls N─1 source_domains` (a page belongs to one source domain).
+- `backlinks N─1 source_domains` (denormalised FK for fast domain analytics).
+- **M:N** `users ↔ workspaces` (`workspace_members`), `users ↔ projects`
+  (`project_members` / `user_projects`), `users ↔ employee_codes`
+  (`user_employee_mappings`, time‑boxed), `backlinks ↔ conflicts`
+  (`backlink_conflict_members`), `link_types ↔ projects` (enable).
+- `source_domains 1─N metric tables` (DA, Semrush, age) + history tables.
+- `source_domains` has **aggregate counter** children:
+  `source_domain_project_metrics`, `source_domain_workspace_metrics`.
+- `competitor_source_domains ↔ source_domains` via `competitor_domain_comparisons`
+  (the insight bridge).
+- `opportunities N─1 competitor_domain_comparisons`, `opportunities N─1 users`
+  (only when assigned).
 
-### FEATURE 1 — Project Settings with Main Domain
-
-**FEATURE GOAL:** Give each project a settings surface whose **main domain(s)**
-become the canonical target for that project's backlink QA, and which carry
-per‑project policy (scoring profile, status thresholds, schedule).
-
-**CURRENT PROJECT AREA AFFECTED:** `projects` model, link‑matching in
-`crawler/engine.py` + `qa/checks/links.py`, dedup key on `backlink_records`,
-reports & analytics that show "target."
-
-**USER ROLES AFFECTED:** Admin, Manager (edit); QA, Viewer (read).
-
-**BUSINESS LOGIC:**
-- `✅` A project has one primary main domain and optionally secondary domains
-  (`project_domains`). `❓A` confirm one‑vs‑many and matching semantics.
-- `🟦` Matching rule (recommended): a source page "has the backlink" if it links to
-  any URL whose registrable/platform domain ∈ project domains; the specific matched
-  URL is still recorded. Per‑row `target_url` becomes optional/secondary.
-- `✅` Changing the main domain is audited; old QA history stays linked to the crawl
-  that produced it (history immutable). A main‑domain change **does not** rewrite
-  past verdicts unless an explicit re‑match/re‑score is run.
-
-**USER FLOW:** Project → Settings tab → edit Main Domain(s) (add/remove/set
-primary) + policy → validate → save → optional "re‑match & re‑score now" prompt.
-(See flowchart §8.1.)
-
-**DATABASE CHANGES:** new `project_settings` (1:1), new `project_domains` (1:N),
-migrate `Project.treat_sponsored_as_follow`/policy into settings (keep column for
-back‑compat, read from settings). Soft‑delete cols on `projects`.
-
-**BACKEND CHANGES:** `project_settings_service.py`; extend `project_service`;
-new `api/v1/project_settings.py`; change link‑matching to consult project domains
-(behind a feature flag + `❓A`); `tasks.scoring.rescore_project` (shared with F8).
-
-**FRONTEND AND UX CHANGES:** new Settings desk with a Main Domains editor
-(chips + primary toggle), validation, and the re‑score confirmation modal.
-
-**FILES TO CHANGE:** `backend/app/models/project.py`, new
-`backend/app/models/project_settings.py`, new `backend/app/models/project_domain.py`,
-`backend/app/services/project_service.py`, new
-`backend/app/services/project_settings_service.py`,
-`backend/app/api/v1/project_settings.py`, `backend/app/main.py` (router mount),
-`backend/app/crawler/engine.py` (+`qa/checks/links.py`) for match authority,
-`backend/alembic/versions/0007_*.py`, `frontend/components/workspace-app.tsx`
-(+ new `components/desks/SettingsDesk.tsx`), `frontend/lib/api.ts`.
-
-**DEVELOPMENT TASKS:** 1) migration + models; 2) settings service + API (CRUD,
-validation, audit); 3) domains editor UI; 4) `❓A` decide matching semantics →
-implement behind flag; 5) re‑score job (after F8) ; 6) tests.
-
-**TESTING CHECKLIST:** create/update settings; add/remove domains; exactly‑one
-primary enforced; invalid domain rejected; duplicate domain rejected; warn on
-cross‑project domain reuse; audit row written on change; permission denied for
-Viewer/QA; matching uses new domains (when enabled); history preserved on change.
+**Cross‑cutting requirements:** soft delete (`deleted_at`/`deleted_by`) on
+user‑facing tables; audit on all mutations; versioning for scoring + reports;
+report snapshots (frozen rows); aggregate counters for ratios; JSON only for
+flexible settings/rule bodies (never for filterable fields).
 
 ---
 
-### FEATURE 2 — User and Employee Code Management
+## 15. Final Recommended Database Structure
 
-**FEATURE GOAL:** Manage app users + employee codes, and reconcile Google‑Sheet
-user labels/codes to internal users so reports work by real identity.
+> Conventions: `UUIDPrimaryKeyMixin` + `TimestampMixin`, `workspace_id` FK on all
+> tenant tables, native enums via `pg_enum`, migrations `0007+` (one per sub‑phase).
+> Global (domain‑intrinsic) tables omit `workspace_id`. Soft‑delete = `deleted_at`,
+> `deleted_by`. Types indicative.
 
-**CURRENT PROJECT AREA AFFECTED:** `users`/`workspace_members`, free‑text
-`assigned_user_label`/`employee_code` on backlinks, `assignment_history`,
-team management (`team_service`, `api/v1/team.py`).
+**Platform & tenancy**
+- `companies`(id, name) — optional `❓6`.
+- `workspaces`(+`company_id?`) — **exists**.
+- `workspace_members`(workspace_id, user_id, role, UNIQUE(ws,user)) — **exists**.
+- `users` — **exists**; `user_projects`(user_id, project_id, role) = existing
+  `project_members`.
 
-**USER ROLES AFFECTED:** Admin (full), Manager (assign within scope), others read.
+**Settings & catalogs**
+- `projects`(+ soft delete) — **exists**.
+- `project_settings`(project_id UNIQUE, scoring_profile, status_thresholds JSONB,
+  index_expected, …).
+- `project_domains`(project_id, domain, is_primary, UNIQUE(project,domain),
+  partial UNIQUE(project) WHERE is_primary).
+- `link_types`(workspace_id, name, slug, is_global, is_active, default_value_weight,
+  UNIQUE(ws,slug)).
+- `employee_codes`(workspace_id, code, is_active, UNIQUE(ws,code) `❓10`).
+- `user_employee_mappings`(workspace_id, user_id?, employee_code_id?,
+  sheet_user_label?, is_current, effective_from/to).
 
-**BUSINESS LOGIC:**
-- `✅` Manual add/edit user, assign/update employee code, active/inactive.
-- `❓F` code uniqueness scope + multi‑code/reassignment rules.
-- `🟦` Reconciliation: build distinct (label, code) set from backlinks; suggest
-  mappings (exact > code‑match > unmapped); admin confirms; optional backfill of
-  `backlink_records.assigned_user_id`.
+**Identity & links (the core)**
+- `canonical_urls`(id, **fingerprint CHAR(64) UNIQUE**, sample_url,
+  source_domain_id FK?, total_uses, first_seen_at, updated_at) — **global**.
+- `backlinks` (= today's `backlink_records`, extended): `canonical_url_id` FK,
+  `raw_url`(source), `target_canonical_url_id?`, `source_domain_id` FK,
+  `link_type_id` FK?, `assigned_user_id` FK?, `employee_code_id` FK?,
+  `qa_status`, `score`, `index_status`, `is_duplicate`, `conflict_status`,
+  `sheet_source_id?`, `tab_id?`, `sheet_row_ref?`, soft delete. **Drop** the old
+  `(project, src_norm, tgt_norm)` UNIQUE; replace with the same‑entry key
+  `UNIQUE(sheet_source_id, tab_id, sheet_row_ref)` (partial, where sheet‑sourced).
+- `backlink_assignments`(= `assignment_history`, extended with employee_code_id).
+- `backlink_conflicts`(id, canonical_url_id FK, project_id FK?, workspace_id, scope,
+  resolution_status, detected_at, resolved_by?, resolved_at?).
+- `backlink_conflict_members`(id, conflict_id FK, backlink_id FK, added_at,
+  UNIQUE(conflict_id, backlink_id)).
+- `backlink_qa_results`(= `crawl_results`, partitioned; + `scoring_rule_version_id`).
+- `backlink_qa_history`(= `backlink_history`, partitioned).
+- `index_check_results`(= `index_checks`).
 
-**USER FLOW:** Settings → Users & Codes → add/edit users, manage codes, review
-"unmapped sheet users," confirm mappings. (Flowchart §8.3.)
+**Source domains & metrics**
+- `source_domains`(id, workspace_id?, domain_key, grouping, registrable_domain,
+  UNIQUE(workspace?,domain_key)) — `❓` global vs per‑workspace grain.
+- `source_domain_project_metrics`(source_domain_id, project_id, backlink_count,
+  indexed_count, not_indexed_count, uncertain_count, total, dofollow_count,
+  duplicate_count, avg_score, link_type_distribution JSONB, last_recomputed_at,
+  UNIQUE(source_domain_id, project_id)).
+- `source_domain_workspace_metrics`(source_domain_id, workspace_id, …same…,
+  UNIQUE(source_domain_id, workspace_id)).
+- `source_domain_metric_history`(source_domain_id, captured_at, counts…) append‑only.
+- `domain_authority_results`(domain_key, provider, da, pa, fetched_at, expires_at,
+  raw JSONB, UNIQUE(domain_key, provider)) — **global**.
+- `domain_authority_history`(domain_key, provider, da, pa, captured_at).
+- `semrush_domain_metrics`(domain_key, authority_score, monthly_traffic,
+  keywords_count, fetched_at, expires_at, raw JSONB, UNIQUE(domain_key)) — global.
+- `semrush_domain_metric_history`(domain_key, authority_score, monthly_traffic,
+  keywords_count, captured_at).
+- `domain_age_results`(domain_key, created_date, age_days, provider, fetched_at,
+  UNIQUE(domain_key)) — global.
 
-**DATABASE CHANGES:** new `employee_codes`, `user_employee_mappings`; reuse
-`assignment_history`; optional `backlink_records.employee_code_id` FK (keep string
-too for sheet fidelity). Soft delete on codes.
+**Scoring**
+- `scoring_parameters`(key, display_name, value_kind, is_active) — seeded registry.
+- `scoring_rule_versions`(id, workspace_id?, scope[global|workspace|project|
+  link_type], scope_ref_id?, link_type_id?, version, is_latest, rules JSONB,
+  status_thresholds JSONB, created_by, note). *(One versioned table for all scopes —
+  `🟦`; the four logical tables `global/workspace/project/link_type_scoring_rules`
+  collapse into this `scope` column to avoid duplication; confirm `❓9`.)*
 
-**BACKEND CHANGES:** `employee_service.py`; extend `team_service`; new/extended
-`api/v1/users.py` (or `team.py`); reconciliation query + suggest endpoint.
+**Google Sheets**
+- `google_sheet_connections`(= `sheet_sources`, 1 per project spreadsheet).
+- `google_sheet_project_tabs`(sheet_connection_id, gid, tab_name, status,
+  UNIQUE(connection, gid)).
+- `google_sheet_subsheet_mappings`(tab_id UNIQUE, link_type_id?, import_enabled,
+  qa_enabled, is_active, ignored).
+- `google_sheet_exports`(report_id, spreadsheet_id, tab, range, exported_at, status).
 
-**FRONTEND AND UX CHANGES:** Users table (add/edit/active), Codes table, an
-"Unmapped sheet users" review queue with one‑click mapping.
+**Competitor / opportunity**
+- `competitor_sheets`(workspace_id, project_id, name, source_kind, spreadsheet_id?/
+  upload_key?, column_mapping JSONB, status, soft delete).
+- `competitor_sheet_imports`(competitor_sheet_id, status, total/valid/invalid/
+  new_domains/existing_domains, error, timestamps).
+- `competitor_backlinks`(workspace_id, project_id, competitor_sheet_id,
+  canonical_url_id FK, raw_url, source_domain_id FK, anchor?, rel?, link_type_id?,
+  link_type_confidence, categorization_source, auto_link_type_id?,
+  manual_link_type_id?, index_status?, qa_category).
+- `competitor_source_domains`(workspace_id, project_id, competitor_sheet_id?,
+  domain_key, url_count, indexed_count, link_type_id?, confidence,
+  UNIQUE(ws,project,domain_key)).
+- `competitor_domain_comparisons`(workspace_id, project_id,
+  competitor_source_domain_id, our_source_domain_id?, category, our_link_count,
+  competitor_link_count, our_indexed_pct, da, pa, semrush_as, opportunity_score,
+  recommended_action).
+- `competitor_link_type_predictions`(competitor_backlink_id, predicted_link_type_id,
+  confidence, source).
+- `opportunities`(workspace_id, project_id, competitor_domain_comparison_id?,
+  source_domain_key, link_type_id?, opportunity_score, status[open|accepted|
+  in_progress|done|rejected], created_by).
+- `opportunity_assignments`(opportunity_id, user_id, assigned_by, assigned_at).
 
-**FILES TO CHANGE:** new `backend/app/models/employee.py`,
-`backend/app/services/employee_service.py`, `backend/app/services/team_service.py`,
-`backend/app/api/v1/team.py` (or new `users.py`), `0007_*.py`,
-`frontend/components/workspace-app.tsx` (+ `TeamDesk`/new `UsersDesk`),
-`frontend/lib/api.ts`.
-
-**DEVELOPMENT TASKS:** 1) models+migration; 2) code CRUD + uniqueness (`❓F`);
-3) mapping CRUD + reconciliation suggest; 4) UI tables + review queue; 5) optional
-backfill job; 6) tests.
-
-**TESTING CHECKLIST:** add/edit user; assign/update code; duplicate code rejected
-per rule; deactivate user; map sheet label→user; reassign code (history kept);
-reports group correctly by mapped user vs raw label; permissions enforced.
-
----
-
-### FEATURE 3 — Project‑Level Scoring Settings
-
-**FEATURE GOAL:** Let a project override scoring per link type (e.g. Project A
-scores Web 2.0 differently), falling back to link‑type/global defaults.
-
-**CURRENT PROJECT AREA AFFECTED:** `qa/scoring.py` (severity model today),
-`qa/engine.py`, `crawl_results` (stores breakdown), reports/analytics.
-
-**USER ROLES AFFECTED:** Admin, Manager (edit project rules); others read.
-
-**BUSINESS LOGIC:** `❓B` model shape. `🟦` Resolution order: project+link_type →
-project+ANY → link_type(global) → global default; chosen version recorded on the
-crawl result (Flowchart §8.4). Project overrides are versioned snapshots.
-
-**DATABASE CHANGES:** `scoring_rule_versions` rows with `scope=project` (+ optional
-`link_type_id`); `crawl_results.scoring_rule_version_id`.
-
-**BACKEND CHANGES:** `scoring_rules_service.py` (resolver + CRUD + versioning);
-rewire `qa/engine.py` to use the resolver (after F8 lands the parameter model).
-
-**FRONTEND AND UX CHANGES:** Settings → Scoring → per‑link‑type override editor
-with "inherits global" indicators and a live preview ("a dofollow indexed Web 2.0
-link would score N").
-
-**FILES TO CHANGE:** new `backend/app/models/scoring.py`, new
-`backend/app/services/scoring_rules_service.py`, `backend/app/qa/engine.py`,
-`backend/app/qa/scoring.py`, `backend/app/api/v1/scoring.py`, `0009_*.py`,
-`frontend/components/workspace-app.tsx` (+ `ScoringDesk`), `frontend/lib/api.ts`.
-
-**DEVELOPMENT TASKS:** depends on F8; 1) project‑scope rule CRUD + versioning;
-2) resolver integration; 3) override UI + preview; 4) tests for fallback order.
-
-**TESTING CHECKLIST:** project rule overrides global; fallback chain correct;
-version pinned on crawl result; preview matches actual score; changing a rule
-creates a new version and does not alter past results; permissions.
-
----
-
-### FEATURE 4 — Global Backlink Type Scoring Settings
-
-**FEATURE GOAL:** Workspace‑wide default scoring per link type (Web 2.0, Profile,
-Guest Post, Blog Comment…), overridable per project (F3).
-
-**CURRENT PROJECT AREA AFFECTED:** same scoring stack as F3; `link_types` catalog.
-
-**USER ROLES AFFECTED:** Admin only (edit global) `❓J`; Manager read.
-
-**BUSINESS LOGIC:** `✅` global defaults per link type + a baseline default for
-unknown types; `🟦` versioned; new permission `MANAGE_SCORING` (Admin) and
-`EDIT_PROJECT_SCORING` (Manager+).
-
-**DATABASE CHANGES:** `scoring_rule_versions` rows with `scope=global` and
-`scope=link_type`; seed a sane baseline.
-
-**BACKEND CHANGES:** scoring service (shared with F3); new permissions in
-`core/rbac.py`; seed defaults in `db/seed.py`.
-
-**FRONTEND AND UX CHANGES:** Settings → Global Scoring (Admin), grid of
-link‑type × parameter weights with reset‑to‑default.
-
-**FILES TO CHANGE:** `backend/app/core/rbac.py`, `backend/app/db/seed.py`,
-`backend/app/services/scoring_rules_service.py`, `backend/app/api/v1/scoring.py`,
-`0009_*.py`, `frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) permissions; 2) global/link‑type rule CRUD+versioning;
-3) seed defaults; 4) Admin UI; 5) tests.
-
-**TESTING CHECKLIST:** only Admin edits global; link‑type default applies when no
-project override; baseline default for unknown type; versioning; seed present on
-fresh DB.
-
----
-
-### FEATURE 5 — Link Type Detection from Google Sheet Sub‑Sheets
-
-**FEATURE GOAL:** Detect all tabs in a project spreadsheet and treat tab names as
-link types.
-
-**CURRENT PROJECT AREA AFFECTED:** `integrations/google_sheets.py` (single‑tab
-today), `sheet_sync_service.py`, `sheet_sources` model.
-
-**USER ROLES AFFECTED:** Admin, Manager.
-
-**BUSINESS LOGIC:** `❓D` confirm tabs = link types. `✅` Enumerate worksheets;
-upsert `google_sheet_project_tabs` keyed by **gid** (stable across renames); new
-tab → `needs_mapping`; deleted tab → `missing` (don't delete imported links).
-
-**USER FLOW / FLOWCHART:** §8.2 (detection half).
-
-**DATABASE CHANGES:** new `google_sheet_project_tabs`; relax `sheet_sources` tab
-uniqueness (§10.2).
-
-**BACKEND CHANGES:** add `google_sheets.list_worksheets()` (returns name+gid);
-`sheet_tab_service.detect_tabs()`; call during sync.
-
-**FRONTEND AND UX CHANGES:** Sheets desk shows detected tabs + status badges.
-
-**FILES TO CHANGE:** `backend/app/integrations/google_sheets.py`, new
-`backend/app/services/sheet_tab_service.py`, `backend/app/services/sheet_sync_service.py`,
-new `backend/app/models/sheet_tab.py`, `backend/app/api/v1/sheets.py`, `0008_*.py`,
-`frontend/components/workspace-app.tsx` (SheetsDesk).
-
-**DEVELOPMENT TASKS:** 1) list_worksheets; 2) tabs model+migration; 3) detect on
-sync; 4) UI listing; 5) drift handling tests.
-
-**TESTING CHECKLIST:** detect N tabs; gid stable on rename; new tab flagged;
-deleted tab flagged missing without data loss; first‑worksheet default still works
-for legacy single‑tab sheets.
+**Reports / jobs / audit**
+- `reports`(+ extends today): `column_set` JSONB, `group_by` JSONB,
+  `scoring_rule_version_id?`, `output_target`.
+- `report_versions` = existing `version`/`is_latest` (keep).
+- `report_snapshots`(report_id, snapshot_blob_key OR rows JSONB) — `🟦` store frozen
+  file in object storage (local backend confirmed) keyed here.
+- `background_jobs`(id, workspace_id?, type, payload JSONB, status[queued|running|
+  done|failed], priority, run_after, attempts, max_attempts, locked_at, locked_by,
+  last_error, created_at) — **the Redis‑free queue** (§17).
+- `scheduled_jobs`(id, type, cron, payload JSONB, next_run_at, last_run_at,
+  is_active) — DB scheduler (replaces RedBeat).
+- `delete_audit_logs` / `activity_logs` = existing `audit_logs` (reuse; keep one
+  audit table with `action` enum).
+- `saved_filters`(workspace_id, user_id?, entity, name, definition JSONB, is_shared)
+  — §11A.
 
 ---
 
-### FEATURE 6 — Sub‑Sheet Selection with Checkboxes
+## 16. Indexing and Large Database Strategy
 
-**FEATURE GOAL:** Choose which tabs import / are QA‑checked / are active, and map
-each tab → link type.
+**The #1 rule:** every duplicate check, filter, sort, and join column is **indexed**.
+Without it, a 500K‑row fingerprint scan is ~8–15s; with a B‑tree it's <1ms (your
+benchmark is correct — a B‑tree on 500K rows is ~19 comparisons, ~log₂(n), and stays
+<2ms at 5M rows). The fingerprint index is the foundation of the whole design.
 
-**CURRENT PROJECT AREA AFFECTED:** sheet sync/import pipeline; backlink `link_type`.
+**Critical indexes (must‑have):**
+- `canonical_urls(fingerprint)` **UNIQUE** — the duplicate‑check index.
+- `backlinks(canonical_url_id)`, `backlinks(workspace_id)`,
+  `backlinks(project_id)`, `backlinks(source_domain_id)`,
+  `backlinks(link_type_id)`, `backlinks(assigned_user_id)`, `backlinks(qa_status)`,
+  `backlinks(index_status)`, `backlinks(created_at)`, `backlinks(is_duplicate)`,
+  `backlinks(conflict_status)`.
+- Composite/keyset (existing pattern): `backlinks(project_id, qa_status, score)`,
+  `backlinks(project_id, score, id)` (keyset pagination), partial
+  `backlinks(project_id, score) WHERE qa_status='FAIL'`.
+- Same‑entry unique: partial `UNIQUE(sheet_source_id, tab_id, sheet_row_ref)`.
+- `backlink_qa_results(backlink_id, crawled_at)`,
+  `backlink_qa_results(scoring_rule_version_id)`.
+- `source_domains(domain_key)` UNIQUE‑scoped; `source_domain_project_metrics
+  (source_domain_id, project_id)` UNIQUE; `…_workspace_metrics` UNIQUE.
+- `domain_authority_results(domain_key, provider)` UNIQUE;
+  `domain_authority_results(expires_at)` (refresh due); same for semrush/age.
+- `competitor_backlinks(project_id)`, `(canonical_url_id)`, `(source_domain_id)`;
+  `competitor_domain_comparisons(workspace_id, project_id, category)`,
+  `(opportunity_score)`.
+- `backlink_conflict_members(conflict_id)`, `(backlink_id)`;
+  `backlink_conflicts(canonical_url_id)`, `(workspace_id, resolution_status)`.
+- `background_jobs(status, run_after, priority)` (claim query),
+  `background_jobs(locked_at)`; `scheduled_jobs(next_run_at) WHERE is_active`.
+- Soft delete hot paths: partial indexes `… WHERE deleted_at IS NULL`.
+- GIN on array/JSONB filter columns (e.g. `tags`) — existing pattern.
 
-**USER ROLES AFFECTED:** Admin, Manager.
-
-**BUSINESS LOGIC:** `✅` only `import_enabled & is_active` tabs are synced;
-`qa_enabled` controls whether crawls run for that tab's links; tab→link_type
-mapping sets `backlink_records.link_type`(_id). Ignored/unmapped tabs skipped.
-
-**USER FLOW / FLOWCHART:** §8.2 (selection half).
-
-**DATABASE CHANGES:** new `google_sheet_subsheet_mappings`.
-
-**BACKEND CHANGES:** `sheet_tab_service.set_mappings()`; sync respects flags; set
-link type from mapping during import.
-
-**FRONTEND AND UX CHANGES:** per‑tab row with checkboxes (import/QA/active) +
-link‑type dropdown (with "create new type"); bulk select.
-
-**FILES TO CHANGE:** `backend/app/services/sheet_tab_service.py`,
-`backend/app/services/sheet_sync_service.py`,
-`backend/app/services/import_service.py` (apply tab link type),
-`backend/app/api/v1/sheets.py`, `0008_*.py`, `frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) mappings model; 2) selection API; 3) sync honoring flags;
-4) link‑type assignment on import; 5) UI; 6) tests.
-
-**TESTING CHECKLIST:** unchecked tab not imported; QA‑disabled tab not crawled;
-link type applied correctly; create‑new‑type from dropdown; toggling re‑sync picks
-up changes; ignored tab stays ignored.
-
----
-
-### FEATURE 7 — Dynamic Delete and Confirmation System
-
-**FEATURE GOAL:** Safe, audited, dependency‑aware deletes (soft delete + restore)
-across projects, sheets, tab mappings, users, codes, scoring rules, imported
-links, competitor sheets, market data.
-
-**CURRENT PROJECT AREA AFFECTED:** all delete paths (currently hard delete);
-`audit_logs`.
-
-**USER ROLES AFFECTED:** Admin, Manager (scoped) per entity permission.
-
-**BUSINESS LOGIC:** `❓I` scope/window. `🟦` soft delete + dependency preflight +
-typed confirmation for high‑impact + audit; restore window then audited purge.
-Project delete asks: archive (keep history) vs delete links+history.
-
-**USER FLOW / FLOWCHART:** §8.11.
-
-**DATABASE CHANGES:** `deleted_at`/`deleted_by` on soft‑deletable tables; reuse
-`audit_logs` (action=DELETE with dependent counts in `before`/`after`).
-
-**BACKEND CHANGES:** `delete_service.py` (preflight counts + soft delete + restore
-+ purge); add `?soft` semantics to existing delete endpoints; global query filter
-helper `deleted_at IS NULL`.
-
-**FRONTEND AND UX CHANGES:** shared `ConfirmDelete` modal (dependency preview,
-type‑to‑confirm), a "Recently deleted / Restore" view.
-
-**FILES TO CHANGE:** new `backend/app/services/delete_service.py`,
-`backend/app/services/project_service.py` + other services, all relevant
-`api/v1/*.py` delete endpoints, `0007_*.py` (soft‑delete cols),
-`frontend/components/workspace-app.tsx` (+ shared modal), `frontend/lib/api.ts`.
-
-**DEVELOPMENT TASKS:** 1) soft‑delete columns + query filters; 2) preflight counts;
-3) soft delete + audit; 4) restore + purge job; 5) confirm modal; 6) tests.
-
-**TESTING CHECKLIST:** preflight returns correct dependent counts; soft delete
-hides but preserves; restore works in window; purge after window; project archive
-keeps history; audit row complete; permission gating; no accidental cascade of
-unrelated data.
+**Large‑DB practices:**
+- **No ratio scans:** index/non‑index ratios read from
+  `source_domain_*_metrics.indexed_count/total` (e.g. 7 & 8 → 7/15) — never
+  `COUNT(*)` over backlinks. Counters updated transactionally on verdict change +
+  nightly reconcile (§11.20).
+- **Aggregate tables** for all dashboard metrics; **cursor/keyset pagination** for
+  every large grid; avoid `OFFSET` at depth.
+- **Partitioning:** keep month partitions on `backlink_qa_results` +
+  `backlink_qa_history` (exists, O(1) retention). Partition `competitor_backlinks`
+  and the `*_metric_history` tables by month **only if** they reach millions.
+- **Normalisation:** canonical URL stored once (not repeated per backlink); metrics
+  per domain (not per URL); JSON only for non‑filtered settings/rule bodies.
+- **Migrations:** additive, `IF NOT EXISTS`, one per sub‑phase; backfill jobs for
+  `canonical_urls`/`source_domains`/counters; reversible downgrades.
 
 ---
 
-### FEATURE 8 — Dynamic Parameter Scoring
+## 17. Async / Background Job Strategy (Redis‑free)
 
-**FEATURE GOAL:** Configurable per‑parameter weights/outcomes driving the score,
-the engine that F3/F4 configure.
+**Decision required `❓1`.** Two coherent options:
 
-**CURRENT PROJECT AREA AFFECTED:** `qa/scoring.py`, `qa/engine.py`, `qa/types.py`,
-`crawl_results.score_breakdown`, reports/analytics.
+- **Option A — Postgres‑backed queue (🟦 recommended for "no Redis"):**
+  - `background_jobs` table; producers `INSERT`; workers claim with
+    `SELECT … FROM background_jobs WHERE status='queued' AND run_after<=now()
+    ORDER BY priority, id FOR UPDATE SKIP LOCKED LIMIT N` → set `running` →
+    process → `done`/`failed` (with `attempts`, exponential `run_after` backoff).
+  - `scheduled_jobs` table polled every minute by one leader (advisory lock) to
+    enqueue due cron jobs — **replaces RedBeat**.
+  - **Pros:** zero Redis; jobs are transactional with data (no dual‑write);
+    auditable; survives restarts; scales with `SKIP LOCKED`. **Cons:** ~1s polling
+    latency (fine here); we own retry/visibility logic; a real rewrite of the
+    current Celery tasks into handlers.
+  - Robots cache + per‑domain rate limiter move to small DB tables (or in‑process
+    LRU); metric caches become the domain tables themselves.
+- **Option B — keep Celery, Redis only as transport, no Redis caching:** least
+  work; all caches move to DB; but Redis stays. Not "Redis‑free."
 
-**USER ROLES AFFECTED:** Admin/Manager configure; system applies.
-
-**BUSINESS LOGIC:** `❓B/C`. `🟦` Option B1: a fixed `scoring_parameters` registry;
-each rule version maps parameter → weight + outcome→points; score = normalised
-weighted sum; hard safety rules stay fixed; status bands configurable. The 32 QA
-checks still run and produce issues/evidence (they feed parameter outcomes).
-Re‑score job writes **new** crawl results, never mutates old ones.
-
-**USER FLOW / FLOWCHART:** §8.4.
-
-**DATABASE CHANGES:** `scoring_parameters` (seed); `scoring_rule_versions.rules`
-JSONB schema; `crawl_results.scoring_rule_version_id`.
-
-**BACKEND CHANGES:** new `qa/scoring_params.py` (registry + extractor:
-artifact+issues → outcomes); rewrite `score_issues` → `score_parameters` behind the
-resolver; `tasks/scoring.py` re‑score job on the (revived) `qa` queue.
-
-**FRONTEND AND UX CHANGES:** parameter‑weight editor (shared by F3/F4) with live
-preview + "re‑score project" action (audited, async, progress).
-
-**FILES TO CHANGE:** `backend/app/qa/engine.py`, `backend/app/qa/scoring.py`,
-new `backend/app/qa/scoring_params.py`, new `backend/app/workers/tasks/scoring.py`,
-`backend/app/workers/celery_app.py` (route to `qa`),
-`backend/app/services/scoring_rules_service.py`, `0009_*.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) `❓B` decide model; 2) parameter registry + extractor;
-3) resolver + scoring function; 4) pin version on results; 5) re‑score job; 6) UI
-preview; 7) extensive tests (golden cases).
-
-**TESTING CHECKLIST:** parameter weight changes alter score deterministically;
-normalisation to 0–100; hard‑fail rules still fire; band thresholds; rule‑version
-pinned; re‑score creates new results; old reports unchanged; preview == actual;
-performance on a large project.
+**Job types to model (either option):** crawl_batch, index_check, sheet_sync,
+metrics_fetch (moz/semrush/age), competitor_import, competitor_compare,
+rescore_project, aggregate_rebuild, report_generate, sheets_export, purge_deleted.
+All carry `workspace_id`, are **idempotent**, retry with backoff, isolate
+per‑item failures, and log to `activity_logs`. External‑call jobs (metrics, SERP)
+are **staggered** + rate‑limited to respect quotas.
 
 ---
 
-### FEATURE 9 — Source Main‑Domain Extraction (+ aggregate)
-
-**FEATURE GOAL:** Group every source URL under its source main domain and maintain
-an aggregate per domain.
-
-**CURRENT PROJECT AREA AFFECTED:** `normalize.py` (already extracts registrable
-domain), `backlink_records.source_domain` (already populated), import/crawl upsert.
-
-**USER ROLES AFFECTED:** all (read analytics).
-
-**BUSINESS LOGIC:** `❓E` registrable vs platform‑host grouping. `🟦` reuse
-`registrable_domain()`; add a `PLATFORM_HOST_LIST` for Web‑2.0 hosts grouped by
-full host; aggregate counts via scheduled recompute (avoid the LinkIdentity
-freshness trap, §2.3#4).
-
-**USER FLOW / FLOWCHART:** §8.5.
-
-**DATABASE CHANGES:** new `source_domains` aggregate; `backlink_records.
-source_domain_id` FK (backfill from existing string).
-
-**BACKEND CHANGES:** `source_domain_service.py` (extract grouping + recompute);
-hook into import/crawl upsert to set `source_domain_id`; beat job
-`recompute-source-domain-rollups`.
-
-**FRONTEND AND UX CHANGES:** none yet (F10 consumes it).
-
-**FILES TO CHANGE:** `backend/app/crawler/normalize.py` (platform‑host helper),
-new `backend/app/services/source_domain_service.py`,
-`backend/app/services/import_service.py` (+ result/crawl upsert),
-new `backend/app/models/source_domain.py`,
-new `backend/app/workers/tasks/source_domains.py`,
-`backend/app/workers/celery_app.py` (beat), `0010_*.py`.
-
-**DEVELOPMENT TASKS:** 1) grouping helper (`❓E`); 2) aggregate model+migration+
-backfill; 3) FK + upsert hook; 4) recompute job; 5) tests.
-
-**TESTING CHECKLIST:** `www.x.com` & `x.com` group together; Web‑2.0 hosts grouped
-per chosen rule; invalid URL excluded; counts correct after recompute; backfill
-populates FK for existing rows; rollup stays fresh after new imports.
-
----
-
-### FEATURE 10 — Source Main‑Domain Analytics Dashboard
-
-**FEATURE GOAL:** A dashboard listing source main domains with their analytics
-(totals, indexed %, link‑type mix, users, projects, QA/HTTP/rel summaries,
-duplicates, avg score, DA, crawl‑failure rate, trend).
-
-**CURRENT PROJECT AREA AFFECTED:** `analytics_service.py` (whitelist),
-`api/v1/analytics.py`, UI.
-
-**USER ROLES AFFECTED:** all (scoped).
-
-**BUSINESS LOGIC:** `✅` read `source_domains` + DA + (optional) history trend;
-add `source_domain` as an analytics **dimension** (whitelist) and a dedicated
-endpoint for the per‑domain drill‑down.
-
-**USER FLOW:** Source Domains desk → sortable/filterable table → click a domain →
-drill‑down with all metrics + its backlinks.
-
-**DATABASE CHANGES:** none beyond F9/F16 (reads aggregates).
-
-**BACKEND CHANGES:** extend `analytics_service.py` dimension map; new
-`api/v1/source_domains.py` (list + detail); reuse keyset pagination.
-
-**FRONTEND AND UX CHANGES:** new Source Domains desk (table + drill‑down),
-reusing existing helper components (`Metric`, `Status`, `IndexBadge`, `Th/Td`).
-
-**FILES TO CHANGE:** `backend/app/services/analytics_service.py`,
-`backend/app/services/source_domain_service.py`,
-new `backend/app/api/v1/source_domains.py`, `backend/app/main.py`,
-`frontend/components/workspace-app.tsx` (+ `SourceDomainsDesk`), `frontend/lib/api.ts`.
-
-**DEVELOPMENT TASKS:** 1) dimension + queries; 2) list/detail endpoints; 3) desk
-UI + drill‑down; 4) trend (if history available); 5) tests.
-
-**TESTING CHECKLIST:** percentages sum correctly; scope switch (company/project)
-works; sort/filter/pagination; drill‑down lists correct backlinks; DA shown when
-present, graceful "—" when absent; large‑volume performance.
-
----
-
-### FEATURE 11 — Market / Competitor Sheet Upload
-
-**FEATURE GOAL:** Upload competitor backlink sheets into a project (multiple per
-project), stored separately from our verified backlinks.
-
-**CURRENT PROJECT AREA AFFECTED:** import pipeline (reuse), storage, new
-competitor tables.
-
-**USER ROLES AFFECTED:** Admin, Manager, QA (import permission).
-
-**BUSINESS LOGIC:** `❓H` format/source. `🟦` support file + Google‑Sheet URL;
-reuse `import_parse`/`import_service` patterns; competitor data never mixes with
-`backlink_records`.
-
-**USER FLOW / FLOWCHART:** §8.6.
-
-**DATABASE CHANGES:** new `competitor_sheets`, `competitor_sheet_imports`,
-`competitor_backlinks`, `competitor_source_domains` (migration 0011).
-
-**BACKEND CHANGES:** `competitor_service.py` (upload+stage+normalize+persist);
-`tasks/competitors.py` (async import); reuse storage + normalize.
-
-**FRONTEND AND UX CHANGES:** Competitors desk → Upload (file/URL) + column map +
-progress.
-
-**FILES TO CHANGE:** new `backend/app/models/competitor.py`,
-new `backend/app/services/competitor_service.py`,
-new `backend/app/workers/tasks/competitors.py`,
-new `backend/app/api/v1/competitors.py`, `backend/app/main.py`, `0011_*.py`,
-`frontend/components/workspace-app.tsx` (+ `CompetitorsDesk`), `frontend/lib/api.ts`.
-
-**DEVELOPMENT TASKS:** 1) models+migration; 2) upload+parse+normalize; 3) async
-import job; 4) UI upload+mapping; 5) tests.
-
-**TESTING CHECKLIST:** CSV+XLSX+Sheet URL ingest; invalid rows counted not fatal;
-multiple sheets per project; competitor rows isolated from project backlinks;
-large sheet performance; permission gating.
-
----
-
-### FEATURE 12 — Competitor Sheet Mapping and Validation
-
-**FEATURE GOAL:** Map competitor columns to canonical fields and validate before
-analysis.
-
-**CURRENT PROJECT AREA AFFECTED:** competitor import; `import_parse.auto_map`.
-
-**USER ROLES AFFECTED:** Admin, Manager, QA.
-
-**BUSINESS LOGIC:** `✅` require a source URL column; auto‑map known headers; lenient
-on unknown columns (store raw); validation report (valid/invalid/new/existing
-domain counts).
-
-**USER FLOW:** after upload → mapping preview → validate → confirm → analyze.
-
-**DATABASE CHANGES:** `competitor_sheets.column_mapping` JSONB;
-`competitor_sheet_imports` counts.
-
-**BACKEND CHANGES:** reuse `import_parse`; competitor‑specific validators in
-`competitor_service`.
-
-**FRONTEND AND UX CHANGES:** mapping UI (reuse import preview pattern) + validation
-summary.
-
-**FILES TO CHANGE:** `backend/app/services/import_parse.py` (if extended),
-`backend/app/services/competitor_service.py`, `backend/app/api/v1/competitors.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) auto‑map + validators; 2) preview endpoint; 3) UI;
-4) tests.
-
-**TESTING CHECKLIST:** missing source‑URL column rejected; auto‑map common headers;
-unknown columns preserved; validation counts correct; re‑map and re‑validate.
-
----
-
-### FEATURE 13 — Existing vs New Source‑Domain Comparison
-
-**FEATURE GOAL:** Compare competitor source domains to our project's existing
-source domains; categorise EXISTING vs NEW_OPPORTUNITY with metrics + recommended
-action.
-
-**CURRENT PROJECT AREA AFFECTED:** `source_domains` (F9), competitor tables, DA.
-
-**USER ROLES AFFECTED:** Admin, Manager, QA (off‑page).
-
-**BUSINESS LOGIC / FLOWCHART:** §8.7. `✅` join on `domain_key`; EXISTING attaches
-our counts/indexed%/link‑types/score/DA/users; NEW attaches competitor URLs +
-estimated link type (F14) + DA + indexed%.
-
-**DATABASE CHANGES:** new `competitor_domain_comparisons`.
-
-**BACKEND CHANGES:** `competitor_service.compare()`; `tasks/competitors.compare`.
-
-**FRONTEND AND UX CHANGES:** Competitors desk → comparison view grouped by
-category with filters.
-
-**FILES TO CHANGE:** `backend/app/services/competitor_service.py`,
-`backend/app/workers/tasks/competitors.py`, `backend/app/api/v1/competitors.py`,
-new `backend/app/models/competitor.py` (comparison table), `0011_*.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) comparison model; 2) compare logic + job; 3) endpoints;
-4) UI grouping; 5) tests (edge: same domain different grouping rule).
-
-**TESTING CHECKLIST:** existing detected; new detected; counts/percent correct;
-recommended action set; re‑run idempotent; respects platform‑host grouping.
-
----
-
-### FEATURE 14 — Auto Link‑Type Categorisation
-
-**FEATURE GOAL:** Auto‑assign link type to competitor links by inheriting from our
-domain patterns; flag ambiguous/unknown; allow manual override.
-
-**CURRENT PROJECT AREA AFFECTED:** competitor links, `link_types`, our backlink
-link‑type distribution.
-
-**USER ROLES AFFECTED:** Admin, Manager, QA.
-
-**BUSINESS LOGIC / FLOWCHART:** §8.8. `✅` single known type → HIGH confidence;
-multiple → AMBIGUOUS (store candidates); unseen → UNKNOWN; manual override =
-confirmed; persist confidence + source.
-
-**DATABASE CHANGES:** `competitor_backlinks.link_type_id` + `link_type_confidence`
-+ `categorization_source`.
-
-**BACKEND CHANGES:** `competitor_service.categorize()` using our source‑domain →
-link‑type distribution.
-
-**FRONTEND AND UX CHANGES:** review queue for ambiguous/unknown with quick assign;
-confidence badges.
-
-**FILES TO CHANGE:** `backend/app/services/competitor_service.py`,
-`backend/app/api/v1/competitors.py`, `frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) distribution lookup; 2) categorise + persist; 3) override
-endpoint; 4) review UI; 5) tests.
-
-**TESTING CHECKLIST:** single‑type inherit; ambiguous flagged with candidates;
-unknown flagged; override persists + audited; confidence/source stored.
-
----
-
-### FEATURE 15 — Competitor Opportunity Reports
-
-**FEATURE GOAL:** Generate ranked opportunity reports (new vs existing domains)
-with DA, index, gap, and recommended action — as frozen snapshots, exportable.
-
-**CURRENT PROJECT AREA AFFECTED:** report worker (`tasks/reports.py`), reports
-model, competitor comparisons.
-
-**USER ROLES AFFECTED:** Admin, Manager, QA (export permission).
-
-**BUSINESS LOGIC / FLOWCHART:** §8.10. `✅` opportunity score = f(DA band, indexed%,
-our gap, link‑type value weight, competitor frequency); freeze rows at generation.
-
-**DATABASE CHANGES:** reuse `reports` (new `report_type` enum values:
-`COMPETITOR_OPPORTUNITY`); new `report_snapshots` for true freeze (§10.6).
-
-**BACKEND CHANGES:** extend report worker with competitor report types + snapshot
-writing; opportunity scoring in `competitor_service`.
-
-**FRONTEND AND UX CHANGES:** Competitors → Reports (build + download + versions),
-reusing ReportsDesk patterns.
-
-**FILES TO CHANGE:** `backend/app/models/enums.py` (ReportType),
-`backend/app/workers/tasks/reports.py`, `backend/app/services/report_service.py`,
-`backend/app/services/competitor_service.py`, `0012_*.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) report type + scoring; 2) snapshot freeze; 3) worker
-rows; 4) UI; 5) tests.
-
-**TESTING CHECKLIST:** ranking correct; new/existing grouping; snapshot frozen
-(unchanged after later data changes); formats CSV/XLSX/PDF; versioning.
-
----
-
-### FEATURE 16 — Domain Authority Checking Using RapidAPI Moz
-
-**FEATURE GOAL:** Fetch + cache DA per source/competitor main domain, with history,
-feeding scoring/analytics/opportunities.
-
-**CURRENT PROJECT AREA AFFECTED:** `integrations/site_metrics.py` (already supports
-Moz RapidAPI/official + Similarweb, Redis‑cached, disabled by default).
-
-**USER ROLES AFFECTED:** system (background); Admin configures provider.
-
-**BUSINESS LOGIC / FLOWCHART:** §8.9. `❓G` provider + budget. `🟦` reuse
-`site_metrics` provider abstraction; move storage to a DB table keyed by
-`(domain_key,provider)` + append history; refresh on TTL; degrade gracefully.
-
-**DATABASE CHANGES:** new `domain_authority_results` (current) +
-`domain_authority_history` (append‑only). `source_domains.domain_authority_id` FK.
-
-**BACKEND CHANGES:** `domain_authority_service.py` wrapping `site_metrics`;
-`tasks/domain_authority.py` (batched/staggered fetch, like `index.check`); beat
-`refresh-domain-authority-due`.
-
-**FRONTEND AND UX CHANGES:** DA shown in source‑domain + competitor views; provider
-config in Settings (key handling via env/`settings` table, never hardcoded — §
-golden rules).
-
-**FILES TO CHANGE:** `backend/app/integrations/site_metrics.py` (minor),
-new `backend/app/services/domain_authority_service.py`,
-new `backend/app/workers/tasks/domain_authority.py`,
-`backend/app/workers/celery_app.py`, new `backend/app/models/domain_authority.py`,
-`backend/app/core/config.py` (already has the knobs), `0010_*.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) DA tables+migration; 2) service over site_metrics;
-3) batched fetch job + cache TTL; 4) wire into source_domains; 5) tests (mock API).
-
-**TESTING CHECKLIST:** fetch + cache hit; TTL refresh; history appended; API
-failure non‑blocking; quota/backoff respected; global cache reused across
-workspaces (`❓G`); no key leakage.
-
----
-
-### FEATURE 17 — Competitor Link QA Categorisation
-
-**FEATURE GOAL:** Categorise competitor links for opportunity planning (existing
-domain / new domain / existing exact URL / new URL / type match / new opportunity /
-unknown / ambiguous / high‑value / low‑value / already used / needs review).
-
-**CURRENT PROJECT AREA AFFECTED:** competitor links, comparisons, DA.
-
-**USER ROLES AFFECTED:** Admin, Manager, QA (off‑page).
-
-**BUSINESS LOGIC:** `✅` derive category from comparison (F13) + auto‑type (F14) +
-DA + index + exact‑URL membership in our data; high/low value from DA band + link
-type value weight. `❓` confirm exact value thresholds.
-
-**DATABASE CHANGES:** `competitor_backlinks.qa_category` enum; reuse comparison
-table.
-
-**BACKEND CHANGES:** `competitor_service.categorize_qa()`.
-
-**FRONTEND AND UX CHANGES:** filters + grouping by category; review actions.
-
-**FILES TO CHANGE:** `backend/app/models/competitor.py` (enum),
-`backend/app/services/competitor_service.py`, `backend/app/api/v1/competitors.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) category enum + rules; 2) compute on import/compare;
-3) filters; 4) tests.
-
-**TESTING CHECKLIST:** each category assigned on representative inputs; exact‑URL
-already‑used detection; high/low value thresholds; needs‑review fallback.
-
----
-
-### FEATURE 18 — Off‑Page Team Workflow Dashboard
-
-**FEATURE GOAL:** A workflow board for the off‑page team to act on opportunities
-(open → accepted → in‑progress → done), with assignment and filters.
-
-**CURRENT PROJECT AREA AFFECTED:** comparisons, users, assignments.
-
-**USER ROLES AFFECTED:** Manager, QA (off‑page); Admin oversight.
-
-**BUSINESS LOGIC:** `✅` opportunities (from `competitor_domain_comparisons`) get a
-`status` + `assigned_user_id`; transitions audited; filter by status/DA/type/user.
-
-**USER FLOW:** Competitors → Off‑Page board → assign + move status → export.
-
-**DATABASE CHANGES:** `competitor_domain_comparisons.status` + `assigned_user_id`
-(already in §10.5).
-
-**BACKEND CHANGES:** `competitor_service` status transitions + assignment;
-endpoints.
-
-**FRONTEND AND UX CHANGES:** board/list with status columns, assignment, filters
-(reuse helper components; keep it list‑based for 1–2M scale, not drag‑heavy).
-
-**FILES TO CHANGE:** `backend/app/services/competitor_service.py`,
-`backend/app/api/v1/competitors.py`, `frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) status/assignment API; 2) board UI; 3) audit; 4) tests.
-
-**TESTING CHECKLIST:** assign opportunity; transition status; audit recorded;
-filter by user/status; permission gating; performance with many opportunities.
-
----
-
-### FEATURE 19 — Report Export to Google Sheets
-
-**FEATURE GOAL:** Export reports (incl. competitor opportunities) to a Google Sheet
-tab, reusing the existing write‑back mechanism.
-
-**CURRENT PROJECT AREA AFFECTED:** `google_sheets.write_back`, report worker,
-`reports.output_target` (already exists: `download|google_sheet`).
-
-**USER ROLES AFFECTED:** Admin, Manager (export permission); SA needs Editor.
-
-**BUSINESS LOGIC:** `❓H` target sheet/tab choice. `🟦` write to a dedicated results
-tab (new tab per export or fixed tab), never overwriting input columns (existing
-`write_back` already guarantees this for the gap‑column approach; for a *new tab*
-add `create_tab` support).
-
-**USER FLOW:** Report builder → output target = Google Sheet → choose spreadsheet/
-tab → generate → confirm (outward‑facing action → explicit confirm).
-
-**DATABASE CHANGES:** none (uses `reports.output_target`).
-
-**BACKEND CHANGES:** extend `google_sheets` with `write_table`/`create_tab`;
-report worker honours `output_target=google_sheet`.
-
-**FRONTEND AND UX CHANGES:** target selector in report builder + status.
-
-**FILES TO CHANGE:** `backend/app/integrations/google_sheets.py`,
-`backend/app/workers/tasks/reports.py`, `backend/app/services/report_service.py`,
-`frontend/components/workspace-app.tsx`.
-
-**DEVELOPMENT TASKS:** 1) write_table/create_tab; 2) worker branch; 3) UI; 4) tests
-(mock Sheets).
-
-**TESTING CHECKLIST:** export creates/updates tab; input columns untouched; large
-report chunked within API limits; SA‑permission error surfaced clearly; confirm
-prompt before send.
-
----
-
-### FEATURE 20 — Audit Logs and History Tracking
-
-**FEATURE GOAL:** Comprehensive, queryable audit/activity trail for all Phase‑8
-mutations (settings, scoring, mappings, deletes, competitor actions).
-
-**CURRENT PROJECT AREA AFFECTED:** `audit_logs` + `audit_service.record()`
-(already exist; under‑used).
-
-**USER ROLES AFFECTED:** Admin/Manager (view, per `VIEW_AUDIT_LOGS`).
-
-**BUSINESS LOGIC:** `✅` every create/update/delete/override/export records an audit
-row with before/after + correlation id + actor; surface a viewer UI (the audit API
-exists but has **no UI** today).
-
-**DATABASE CHANGES:** none (reuse `audit_logs`); ensure new services call
-`audit_service.record`.
-
-**BACKEND CHANGES:** add `record()` calls across new services; ensure
-`GET /audit-logs` filters (entity, actor, date).
-
-**FRONTEND AND UX CHANGES:** Audit viewer (filter + diff display) — new desk.
-
-**FILES TO CHANGE:** `backend/app/services/audit_service.py` (filters),
-`backend/app/api/v1/settings.py` (audit endpoint exists), all new services,
-`frontend/components/workspace-app.tsx` (+ `AuditDesk`).
-
-**DEVELOPMENT TASKS:** 1) standardise record() calls; 2) audit query filters;
-3) viewer UI; 4) tests.
-
-**TESTING CHECKLIST:** each mutation writes an audit row; before/after correct;
-filters work; permission gating; retention respected (`RETENTION_AUDIT_DAYS`).
+## 18. API Integration Strategy (Moz, Semrush, domain age)
+
+**Provider abstraction:** extend `integrations/site_metrics.py`'s pattern — a common
+interface `fetch(domain) -> MetricResult` per provider, selected by env, so
+providers are swappable.
+
+| Provider | Data | Env keys | Notes |
+|---|---|---|---|
+| **Moz (RapidAPI)** | DA, PA | `RAPIDAPI_KEY`, `MOZ_RAPIDAPI_HOST/ENDPOINT` (exist) | per source main domain |
+| **Semrush (RapidAPI)** `NEW` | Authority Score, monthly traffic, # keywords | `SEMRUSH_RAPIDAPI_HOST/ENDPOINT` (+ shared `RAPIDAPI_KEY`) | new provider module |
+| **Domain age** `NEW` | created date / age | `DOMAIN_AGE_PROVIDER` + key (whois/RapidAPI) | new provider module |
+
+**Rules (all `✅`):** keys **env‑only** via `config.py` (never hardcoded/committed;
+rotate any pasted key); **per‑domain, not per‑URL**; **DB‑cached** with TTL
+(`expires_at`) + history; **async background jobs**, staggered; **retry with
+backoff**; **graceful degrade** (missing metric → analytics still works, shows
+"—"); **cost guardrails** (daily cap per provider, batch limit) `❓8`; **fallback**
+provider order configurable. Metrics feed **scoring parameters** (DA/AS/traffic/age
+bands) and **competitor opportunity scoring**, and are **filterable/reportable**
+(§11A).
 
 ---
 
@@ -1699,7 +862,7 @@ filters work; permission gating; retention respected (`RETENTION_AUDIT_DAYS`).
 
 > **Non‑negotiable rule for Phase 8:** *Every* new field, entity, metric, status,
 > category, score, domain, user/code, link type, DA value, competitor attribute,
-> and date introduced by F1–F20 must be a **first‑class dynamic dimension** that is
+> and date introduced by F1–F38 must be a **first‑class dynamic dimension** that is
 > simultaneously **filterable, facetable (live counts), group‑by/pivotable,
 > sortable, a selectable report column, and a report filter** — across both the
 > Analytics surface and the Reports surface, for both company‑wide and
@@ -1791,13 +954,13 @@ making it DRY and dynamic).
   engine.
 - **True frozen snapshots:** a generated report stores `{filter_set, column_set,
   group_by, scoring_rule_version, generated_at}` + the frozen rows
-  (`report_snapshots`, §10.6) so re‑opening it always shows what it showed then —
-  regardless of later data/scoring changes (answers `❓C`).
+  (`report_snapshots`, §15.6) so re‑opening it always shows what it showed then —
+  regardless of later data/scoring changes (answers `❓9`).
 - **Report templates:** save a report definition (type + filters + columns +
-  schedule) for one‑click / recurring runs (recurring delivery is Phase 9, but the
-  **template** is defined here).
+  schedule) for one‑click / recurring runs (recurring delivery is a later phase, but
+  the **template** is defined here).
 - **Every export path:** CSV / XLSX / PDF (existing worker) **and** Google Sheets
-  (F19) work for **all** report types and column sets.
+  (F34) work for **all** report types and column sets.
 - **New report types (each fully filterable + column‑dynamic):**
   `SOURCE_DOMAIN_SUMMARY`, `LINK_TYPE_SUMMARY`, `USER_PERFORMANCE` (by employee
   code / app user), `SCORING_AUDIT` (which rule version scored what),
@@ -1826,10 +989,12 @@ making it DRY and dynamic).
 | `indexed` (bool/3‑state) | index_status | ✓ | ✓ | ✓ | – | ✓ | ✓ | select |
 | `http_status` / `http_band` | backlink.http_status | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | range+select |
 | `crawl_success` | derived | ✓ | ✓ | ✓ | – | ✓ | ✓ | toggle |
-| `duplicate_status` | backlink.duplicate_status | ✓ | ✓ | ✓ | – | ✓ | ✓ | select |
+| `duplicate_status` / `conflict_status` | backlink + conflicts | ✓ | ✓ | ✓ | – | ✓ | ✓ | select |
 | `sheet_tab` / `sheet_source` | google_sheet_project_tabs | ✓ | ✓ | ✓ | – | ✓ | ✓ | multiselect |
 | `source_domain` (catalog) | source_domains.id (replaces string) | ✓ | ✓ | ✓ | – | ✓ | ✓ | search+select |
 | `source_da` / `source_da_band` | domain_authority_results.da (join) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | range+band |
+| `semrush_as` / `monthly_traffic` / `keywords` | semrush_domain_metrics (join) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | range+band |
+| `domain_age` | domain_age_results (join) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | range |
 | `source_spam_score` | DA join | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | range |
 | `placement_date`,`last_checked`,`index_checked`,`created` | date cols | ✓ | – | ✓ | ✓ | ✓ | ✓ | daterange |
 | `is_deleted` (soft‑delete) | deleted_at | ✓ | – | – | – | – | ✓ | toggle (Admin) |
@@ -1838,24 +1003,23 @@ making it DRY and dynamic).
 
 | Dimension | F | Fc | G | S | RC | RF |
 |---|---|---|---|---|---|---|
-| `domain_key`, `grouping`(registrable/platform), `backlink_count`, `indexed_pct`, `dofollow_count`, `duplicate_count`, `avg_score`, `da/da_band`, `pa`, `spam`, `global_rank`, `monthly_visits`, `link_type_distribution`, `project_count`, `user_count`, `last_recomputed_at` | ✓ | ✓ (cat.) | ✓ | ✓ | ✓ | ✓ |
+| `domain_key`, `grouping`(registrable/platform), `backlink_count`, `indexed_pct`, `dofollow_count`, `duplicate_count`, `avg_score`, `da/da_band`, `pa`, `spam`, `semrush_as`, `monthly_traffic`, `keywords`, `domain_age`, `global_rank`, `link_type_distribution`, `project_count`, `user_count`, `last_recomputed_at` | ✓ | ✓ (cat.) | ✓ | ✓ | ✓ | ✓ |
 
 **Competitor engine (NEW parallel engine — physically separate tables):**
 
 | Dimension | F | Fc | G | S | RC | RF |
 |---|---|---|---|---|---|---|
-| `competitor_sheet`, `comparison_category`(existing/new/already_used/needs_review), `qa_category` (F17 enum), `opportunity_score`/`band`, `link_type`+`confidence`+`categorization_source`, `competitor_da`/`band`, `indexed_pct`, `url_count`, `opportunity_status`(open/accepted/in_progress/done), `assigned_offpage_user`, `is_new_domain`(bool), `our_link_count` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `competitor_sheet`, `comparison_category`(existing/new/already_used/needs_review), `qa_category` (F29 enum), `opportunity_score`/`band`, `link_type`+`confidence`+`categorization_source`, `competitor_da`/`band`, `semrush_as`, `indexed_pct`, `url_count`, `opportunity_status`(open/accepted/in_progress/done), `assigned_offpage_user`, `is_new_domain`(bool), `our_link_count` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ### 11A.6 Cross‑entity / relational filtering (the connections that are usually missed)
 
 The registry's `join` attribute enables filters that **span entities** — these must
 all work:
-- Filter **backlinks** by **source‑domain DA band** (join `source_domains` →
-  `domain_authority_results`).
+- Filter **backlinks** by **source‑domain DA / Semrush band** (join `source_domains`
+  → `domain_authority_results` / `semrush_domain_metrics`).
 - Filter/group **backlinks** by **employee code → mapped app user** (join
   `user_employee_mappings`).
-- Filter **backlinks** by **scoring rule version** / by **link‑type scoring
-  profile**.
+- Filter **backlinks** by **scoring rule version** / by **link‑type scoring profile**.
 - Filter **backlinks** by **project main domain** (join `project_domains`).
 - Filter **competitor opportunities** by **whether we already have links from that
   source domain** (join our `source_domains`) and by **our link type for it**.
@@ -1887,7 +1051,7 @@ all work:
 3. Make the report worker reuse the **same** filter builder + dynamic columns.
 4. Add `GET /dimensions` (per entity) for the UI.
 5. Add `saved_filters` + report templates.
-6. As each feature F1–F20 lands, it **adds its descriptors** (definition of done:
+6. As each feature F1–F38 lands, it **adds its descriptors** (definition of done:
    no feature is "done" until its fields appear in filter + facet + group‑by +
    report column + report filter, verified by a test).
 7. Build the source‑domain and competitor parallel engines on the same registry.
@@ -1911,7 +1075,7 @@ all work:
 - Large‑volume performance for filter+facet+group‑by over ~1–2M rows (indexes back
   every filterable/sortable dimension).
 
-> **Definition of Done update (applies to ALL of F1–F20):** a feature is not
+> **Definition of Done update (applies to ALL of F1–F38):** a feature is not
 > complete until each of its user‑meaningful fields is (a) in the dimension
 > registry, (b) usable as a filter + facet + group‑by + sort where sensible,
 > (c) selectable as a report column, (d) usable as a report filter, and (e) covered
@@ -1920,185 +1084,473 @@ all work:
 
 ---
 
-## 12. Testing Strategy
+## 19. Feature-by-Feature Implementation Plan
 
-**Framework:** existing `pytest` suite (87 tests today, run on the server in
-`backend/venv`). Keep the pattern: **pure‑logic unit tests** (no network/DB) +
-**service tests** (DB fixtures) + **API tests**. External calls (Sheets, Moz)
-**mocked** — never hit live providers in tests.
+> Compact entries in your required format. Shared mechanics live in §11A
+> (filtration/reports), §12 (canonical/fingerprint), §16 (indexing), §17 (jobs).
+> "Files" are real repo paths. Every feature's **Definition of Done includes §11A**
+> (its fields appear as filter + facet + group‑by + report column + report filter).
 
-**Per‑area checklists** (consolidated from each feature):
+### 19.0 Feature coverage map (v1 plan → this consolidated plan)
 
-- **Project settings / main domain:** validation, primary uniqueness, audit on
-  change, matching authority (flagged), history preservation.
-- **Main domain update:** re‑match/re‑score path creates new results, leaves old
-  intact.
-- **User/employee‑code mapping:** uniqueness, reassignment history, sheet‑label
-  reconciliation suggestions, report grouping.
-- **Link‑type sub‑sheet detection:** tab enumeration, gid‑stable rename, add/delete
-  drift, legacy single‑tab compatibility.
-- **Sub‑sheet checkbox selection:** import/QA/active flags honoured; link‑type
-  applied; create‑new‑type.
-- **Global scoring:** Admin‑only; baseline default; versioning.
-- **Project scoring override:** fallback order; version pinning; preview accuracy.
-- **Score calculation:** deterministic; normalisation; hard‑fail rules;
-  golden‑case fixtures; performance.
-- **Source URL normalisation:** reuse existing `test_normalize.py`; add
-  platform‑host cases (`❓E`).
-- **Source main‑domain extraction:** grouping, invalid exclusion, backfill,
-  rollup freshness.
-- **Competitor upload:** CSV/XLSX/Sheet, partial errors, isolation from project
-  links, multiple sheets.
-- **Competitor validation:** required column, auto‑map, unknown columns preserved.
-- **Existing vs new comparison:** detection accuracy, counts, idempotent re‑run.
-- **Auto link‑type categorisation:** single/ambiguous/unknown, override, confidence.
-- **Ambiguous categorisation:** candidates stored, surfaced in review queue.
-- **DA API integration:** mocked success/failure/quota, cache hit, TTL refresh,
-  history append, non‑blocking failure.
-- **DA cache:** global key reuse (`❓G`), no per‑tenant refetch.
-- **Competitor reports:** ranking, grouping, frozen snapshot immutability, formats.
-- **Google Sheets export:** tab create/update, input columns untouched, chunking,
-  SA‑permission error, confirm prompt.
-- **Delete confirmation:** preflight counts, type‑to‑confirm, audit.
-- **Soft delete:** hidden but preserved, restore in window, purge after window.
-- **Audit logs:** every mutation logged, before/after, filters, retention.
-- **Permission checks:** every new endpoint gated by the right `Permission`.
-- **Large data volume:** source‑domain analytics, competitor comparison, reports on
-  ~1–2M backlinks (use seeded volume fixtures).
-- **Async job failure & retry:** scoring re‑run, DA fetch, competitor import —
-  idempotency, `acks_late`, retry/backoff, partial‑failure isolation.
+> Proof the original 20‑feature plan is fully contained here: every v1 feature maps
+> to one or more features below. The remainder are v2 additions.
 
-**Regression:** the existing 87 tests must stay green at every sub‑phase boundary;
-add a CI gate `venv/bin/pytest -q` on the server before each deploy.
+| v1 feature | → here |
+|---|---|
+| 1. Project Settings with Main Domain | **F2** |
+| 2. User & Employee Code Management | **F3** |
+| 3. Project‑Level Scoring Settings | **F19** |
+| 4. Global Backlink Type Scoring | **F18** |
+| 5. Link Type Detection from Sub‑Sheets | **F6** |
+| 6. Sub‑Sheet Selection with Checkboxes | **F7** |
+| 7. Dynamic Delete & Confirmation | **F35** |
+| 8. Dynamic Parameter Scoring | **F17** |
+| 9. Source Main‑Domain Extraction | **F11** |
+| 10. Source Main‑Domain Analytics Dashboard | **F12 + F13** |
+| 11. Market / Competitor Sheet Upload | **F24** |
+| 12. Competitor Sheet Mapping & Validation | **F25** |
+| 13. Existing vs New Source‑Domain Comparison | **F27** |
+| 14. Auto Link‑Type Categorization | **F28** |
+| 15. Competitor Opportunity Reports | **F30 + F32** |
+| 16. Domain Authority via RapidAPI Moz | **F21** |
+| 17. Competitor Link QA Categorization | **F29** |
+| 18. Off‑Page Team Workflow Dashboard | **F31** |
+| 19. Report Export to Google Sheets | **F34** |
+| 20. Audit Logs & History Tracking | **F36** |
+
+**New in this consolidated plan (not in v1):** F1 multi‑workspace · F4 sheet main
+connection · F5 project/sub‑sheet sync · **F8 canonical+fingerprint (shipped)** ·
+**F9 conflict detection (shipped)** · F10 import‑without‑skipping · F14 aggregate
+index counters · F15 QA crawl (existing, extended) · F16 index check (existing,
+extended) · F20 link‑type scoring · F22 Semrush metrics · F23 domain age · F26
+competitor fingerprinting · F33 ERP dashboard filters · F37 large‑DB indexing · F38
+Redis‑free jobs.
+
+### — Sub‑phase 8.0: Platform —
+
+**FEATURE 38 — Background Jobs Without Redis**
+- **GOAL:** replace Redis‑based jobs with a Postgres‑backed queue + scheduler.
+- **AREA:** `workers/*`, `celery_app.py`, Redis usage.
+- **ROLES:** system.
+- **BUSINESS LOGIC:** §17 Option A (`❓1`); idempotent, retry/backoff, `SKIP LOCKED`.
+- **USER FLOW:** invisible; admins see a jobs status page.
+- **DB:** `background_jobs`, `scheduled_jobs`.
+- **BACKEND:** `core/jobs/` (enqueue/claim/scheduler); port tasks → handlers.
+- **FRONTEND/UX:** simple "Jobs" admin view (queued/running/failed + retry).
+- **FILES:** new `backend/app/core/jobs/*`, rework `backend/app/workers/*`,
+  `deploy/ecosystem.config.js` (worker = poller, drop beat/redbeat), `0007`.
+- **TASKS:** queue table+claim; scheduler; port each task; jobs UI; load test.
+- **TESTING:** concurrent claim no double‑run; retry/backoff; crash recovery;
+  scheduler fires once (leader lock); throughput at volume.
+
+**§11A — Dimension Registry (filtration + reports unification)** — see the full §11A
+section above: one descriptor → filter/facet/group‑by/report column/report filter/UI.
+**Build early**; every later feature registers descriptors.
+
+**FEATURE 1 — Multi‑Workspace / Company System**
+- **GOAL:** harden multi‑tenant isolation; add workspace switcher + optional company.
+- **AREA:** `Workspace`/`WorkspaceMember` (exist), `core/deps.py`, all queries.
+- **ROLES:** Admin (workspace/company), all (switch).
+- **BUSINESS LOGIC:** §9; workspace = isolation unit; optional `companies` parent.
+- **USER FLOW:** switch active workspace; create workspace/company.
+- **DB:** `companies?` (`❓6`), `workspaces.company_id?`; ensure every new table has
+  `workspace_id`.
+- **BACKEND:** `workspace_service`; switcher endpoint; isolation audit.
+- **FRONTEND/UX:** workspace switcher in top bar; company grouping.
+- **FILES:** `backend/app/services/team_service.py`/new `workspace_service.py`,
+  `backend/app/api/v1/auth.py`/`team.py`, `frontend/components/workspace-app.tsx`.
+- **TASKS:** switcher; optional company; isolation tests on every endpoint.
+- **TESTING:** no cross‑workspace leakage on any query; switch persists; RBAC.
+
+**FEATURE 36 — Audit Logs & History Tracking** — reuse `audit_logs` +
+`audit_service.record()`; add `record()` to every new mutation; build an Audit
+viewer UI (none today). DB: none. Files: all new services + new `AuditDesk`.
+Testing: every mutation logged with before/after; filters; retention.
+
+**FEATURE 35 — Safe Delete & Confirmation System** — soft delete + dependency
+preflight + typed confirm + restore + purge job. DB: `deleted_at`/`deleted_by` on
+user‑facing tables; reuse `audit_logs`. Backend: `delete_service`. Frontend: shared
+`ConfirmDelete` + "Recently deleted". `❓12`. Testing: preflight counts; restore;
+purge after window; project archive‑vs‑delete; no stray cascades.
+
+### — Sub‑phase 8.1: Identity core —
+
+**FEATURE 8 — URL Canonicalisation & Fingerprint System**
+- **GOAL:** one canonical identity + SHA‑256 fingerprint per URL.
+- **AREA:** `normalize.py` (reuse), import, crawl, duplicate, competitor.
+- **ROLES:** system.
+- **BUSINESS LOGIC:** §12; fingerprint = sha256(canonical); global `canonical_urls`.
+- **USER FLOW:** invisible; surfaced via duplicate/conflict views.
+- **DB:** `canonical_urls`(fingerprint UNIQUE); `backlinks.canonical_url_id`.
+- **BACKEND:** `canonical_service` (canonicalise + upsert); call before every store.
+- **FRONTEND/UX:** show canonical URL + fingerprint in link detail.
+- **FILES:** new `backend/app/services/canonical_service.py`, new
+  `backend/app/models/canonical_url.py`, `import_service.py`, `0008`.
+- **TASKS:** canonicaliser+hash; canonical_urls upsert; backfill from existing
+  `source_url_normalized`; confirm `❓2`.
+- **TESTING:** http/www/slash/utm/case/IDN collapse correctly; fingerprint stable;
+  unique index enforced; backfill correctness; <1ms lookup at volume.
+
+**FEATURE 9 — Duplicate & Conflict Detection System**
+- **GOAL:** detect same‑fingerprint duplicates; group as conflicts; expose.
+- **AREA:** duplicate logic (`link_identity` → superseded), filters/reports.
+- **ROLES:** Manager/QA (resolve), all (view).
+- **BUSINESS LOGIC:** §13 scenarios + scopes + resolution.
+- **USER FLOW:** Conflicts desk → review group → resolve/ignore.
+- **DB:** `backlink_conflicts`, `backlink_conflict_members`; `backlinks.
+  conflict_status`.
+- **BACKEND:** `conflict_service` (detect/group/resolve); migrate off `link_identity`.
+- **FRONTEND/UX:** Conflicts desk; conflict badges in grids.
+- **FILES:** new `backend/app/services/conflict_service.py`, new
+  `backend/app/models/conflict.py`, `0008`, `frontend/.../ConflictsDesk`.
+- **TASKS:** detection on insert; scope rules; resolution flow; backfill conflicts.
+- **TESTING:** each §13 scenario; scope correctness; no cross‑workspace leak (`❓4`);
+  resolution audited; filterable.
+
+**FEATURE 10 — Backlink Import Without Skipping Duplicates**
+- **GOAL:** stop skipping; store every row; flag duplicates/conflicts.
+- **AREA:** `import_service._process_row` (currently skips/merges).
+- **ROLES:** import users.
+- **BUSINESS LOGIC:** §13 same‑entry key (`sheet_source_id+tab+row_ref`, `❓3`);
+  re‑sync updates in place, distinct rows stored + conflicted.
+- **USER FLOW:** sheet sync now shows "N added, M duplicates flagged" (not skipped).
+- **DB:** drop `(project,src_norm,tgt_norm)` UNIQUE; add same‑entry partial UNIQUE.
+- **BACKEND:** rewrite dedup branch to insert+conflict instead of skip; keep
+  per‑sheet‑row idempotency.
+- **FRONTEND/UX:** import summary wording; duplicates visible.
+- **FILES:** `backend/app/services/import_service.py`,
+  `backend/app/services/sheet_sync_service.py`, `0008` (constraint change).
+- **TASKS:** same‑entry key; insert‑not‑skip; conflict hookup; migrate constraint.
+- **TESTING:** re‑sync no row explosion; genuine dupes stored + flagged; counts
+  correct; large import perf.
+
+**FEATURE 26 — Competitor Backlink Fingerprinting** — competitor URLs use the same
+`canonical_service` + shared `canonical_urls` (enables exact‑URL match vs ours). DB:
+`competitor_backlinks.canonical_url_id`. Files: `competitor_service.py`. Testing:
+competitor fp matches our fp for same page; isolation maintained.
+
+### — Sub‑phase 8.2: Foundations —
+
+**FEATURE 2 — Project Settings with Main Domains** — §11.2; `project_settings` +
+`project_domains` (1+; one primary); main‑domain matching `❓5`; audited change.
+Files: new models + `project_settings_service` + `project_settings.py` API +
+SettingsDesk + `0009`. Testing: validation; primary‑unique; matching; history kept.
+
+**FEATURE 3 — User & Employee Code Management** — §11.7; `employee_codes`,
+`user_employee_mappings`; reconcile sheet labels → users; `❓10`. Files:
+`employee_service`, `team.py`/`users.py`, `0009`, UsersDesk. Testing: uniqueness;
+reassignment history; mapping; reports by user/code.
+
+**FEATURE 4 — Google Sheet Main Connection** — reuse `sheet_sources`/main‑sheet
+discovery; surface connection config in UI; per‑workspace. Files:
+`sheet_sync_service.py`, `sheets.py`, SheetsDesk. Testing: main sheet read; bad URL
+handling; SA‑email display.
+
+**FEATURE 5 — Project Sheet & Sub‑Sheet Sync** — §11.4; `google_sheets.
+list_worksheets()` (new); `google_sheet_project_tabs` keyed by gid; drift handling.
+Files: `integrations/google_sheets.py`, `sheet_tab_service`, `0009`. Testing: detect
+tabs; rename via gid; delete→missing (no data loss); legacy single‑tab.
+
+**FEATURE 6 — Link Type Detection from Sub‑Sheets** — tab name → `link_types`
+catalog (create/map); inheritance global→workspace→project. DB: `link_types`,
+`google_sheet_subsheet_mappings`. Testing: tab→type mapping; unknown→create;
+applied to `backlinks.link_type_id`.
+
+**FEATURE 7 — Sub‑Sheet Selection with Checkboxes** — import/QA/active/ignore flags
+per tab; sync honours flags. Files: `sheet_tab_service`, `sheet_sync_service`,
+SheetsDesk. Testing: unchecked not imported; QA‑off not crawled; toggles re‑sync.
+
+### — Sub‑phase 8.3: Source‑domain intelligence —
+
+**FEATURE 11 — Source Main‑Domain Extraction** — §11.10; reuse
+`registrable_domain()` + platform‑host list (`❓7`); `source_domains` +
+`backlinks.source_domain_id` (backfill). Files: `source_domain_service`,
+`normalize.py`, `0010`. Testing: www/sub collapse; platform hosts; invalid excluded.
+
+**FEATURE 12 — Source Main‑Domain Global Analytics** — workspace/global dashboard
+from aggregate tables; new dimension in registry; drill‑down. Files:
+`analytics_service`, new `source_domains.py` API, SourceDomainsDesk. Testing: counts
+from aggregates (no scan); scope; pagination.
+
+**FEATURE 13 — Source Main‑Domain Project Analytics** — same, project‑scoped via
+`source_domain_project_metrics`. Testing: project totals; ratio from counters.
+
+**FEATURE 14 — Aggregate Metrics for Index/Non‑Index Ratios**
+- **GOAL:** ratios from stored counts (e.g. 7 indexed/8 not → 7/15), never scans.
+- **AREA:** index pipeline, dashboards.
+- **BUSINESS LOGIC:** §11.11/§11.20; transactional counter update on verdict change
+  + nightly reconcile.
+- **DB:** `source_domain_project_metrics`, `source_domain_workspace_metrics`,
+  `source_domain_metric_history`.
+- **BACKEND:** counter update in index/crawl persist; `aggregate_rebuild` job.
+- **FILES:** `source_domain_service`, `workers/...index`, `0010`.
+- **TESTING:** counters match facts after random ops; reconcile self‑heals drift;
+  ratio math; performance (O(1) read).
+
+**FEATURE 21 — Moz DA/PA via RapidAPI** — §18; reuse provider abstraction; store on
+`domain_authority_results` + history; async, cached, env keys. Testing: fetch/cache/
+TTL/history; failure non‑blocking; per‑domain not per‑URL.
+
+**FEATURE 22 — Semrush AS/Traffic/Keywords via RapidAPI** — §18; **new** Semrush
+provider; `semrush_domain_metrics` + history. Testing: same as 21 + field mapping.
+
+**FEATURE 23 — Domain Age Storage & Refresh** — §18; **new** domain‑age provider;
+`domain_age_results`; infrequent refresh. Testing: age computed; cache; fallback.
+
+**FEATURE 15 — Backlink QA Crawl System** *(exists)* — extend only to feed counters
+(F14) + versioned scoring (F17). No rebuild.
+
+**FEATURE 16 — Index / Non‑Index Checking System** *(exists)* — extend to update
+aggregate counters on verdict change (§11.9). No rebuild.
+
+### — Sub‑phase 8.4: Scoring —
+
+**FEATURE 17 — Dynamic Parameter Scoring** — §11.12; `scoring_parameters` +
+weighted model (`❓9`); extractor from artifact+issues+DA/Semrush/age; rule_version
+pinned on results; re‑score job. Files: `qa/engine.py`, `qa/scoring.py`, new
+`qa/scoring_params.py`, `scoring_rules_service`, `0011`. Testing: deterministic;
+normalisation; hard‑fail rules; version pin; old reports unchanged.
+
+**FEATURE 18 — Global Scoring Settings** — `scoring_rule_versions(scope=global/
+link_type)`; Admin‑only (`❓`); seed defaults. Testing: defaults apply; versioning.
+
+**FEATURE 19 — Workspace/Project Scoring Overrides** — `scope=workspace|project`;
+resolver fallback order. Testing: override precedence; fallback chain.
+
+**FEATURE 20 — Link‑Type‑Based Scoring** — `link_type_id` granularity in rule
+resolution. Testing: per‑type scoring; e.g. Web 2.0 nofollow OK, guest post not.
+
+### — Sub‑phase 8.5: Competitor + Reports —
+
+**FEATURE 24 — Competitor / Market Sheet Upload** — §11.13; file or Sheet URL;
+`competitor_sheets` + import run; separate storage. Files: `competitor_service`,
+`competitors.py`, jobs, `0012`, CompetitorsDesk. Testing: CSV/XLSX/URL; isolation;
+multiple per project.
+
+**FEATURE 25 — Competitor Sheet Mapping & Validation** — reuse `import_parse`
+auto‑map; require source URL; validation summary. Testing: missing col rejected;
+unknown cols preserved.
+
+**FEATURE 27 — Existing vs New Source‑Domain Comparison** — §11.14;
+`competitor_domain_comparisons`; fingerprint exact‑URL match (`already_used`). Files:
+`competitor_service`, jobs. Testing: existing/new/already_used correctness;
+idempotent.
+
+**FEATURE 28 — Auto Link‑Type Categorisation** — §11.15; inherit from our domain
+patterns; HIGH/AMBIGUOUS/UNKNOWN; store auto+manual+confidence+source. DB:
+`competitor_link_type_predictions`. Testing: single/ambiguous/unknown; override.
+
+**FEATURE 29 — Competitor Link QA Categorisation** — qa_category (existing/new/
+exact/opportunity/ambiguous/high‑low value/needs_review) from comparison + metrics.
+Testing: each category; thresholds.
+
+**FEATURE 30 — Competitor Opportunity Creation** — promote comparison → `opportunities`
+(no auto user creation); approve → assignable. DB: `opportunities`,
+`opportunity_assignments`. Testing: no auto users; promote+assign; audit.
+
+**FEATURE 31 — Off‑Page Team Opportunity Dashboard** — board (open→accepted→in
+progress→done) + assignment + filters (registry). Testing: transitions; assignment;
+perf at volume.
+
+**FEATURE 32 — Reports & Report Versioning** — extend reports: dynamic columns +
+group‑by + frozen `report_snapshots` + new report types (source‑domain, competitor,
+user‑performance, conflict, metrics). Files: `workers/.../reports.py`,
+`report_service`, `0012`. Testing: snapshot immutability; formats; versioning.
+
+**FEATURE 33 — ERP Dashboard Filters** — the full filter set (workspace→opportunity
+status→metric ranges) via the §11A registry; connected facets. Testing: every filter;
+combined facets; cross‑entity joins.
+
+**FEATURE 34 — Google Sheets Report Export** — §11.18; `write_table`/`create_tab`
+(new); `output_target=google_sheet`; never overwrite input cols; confirm
+(outward‑facing). DB: `google_sheet_exports`. Testing: tab create/update; chunking;
+SA perms; confirm prompt.
+
+**FEATURE 37 — Large DB Indexing & Query Optimisation** — apply §16 indexes; keyset
+pagination everywhere; aggregate reads; EXPLAIN‑verified hot queries. Testing:
+index‑hit (no seq scans on hot paths); pagination; volume benchmarks.
 
 ---
 
-## 13. Risk, Security, and Scalability Notes
+## 20. Testing Strategy
 
-**Highest risks (design‑gated):**
-1. **Scoring re‑architecture (F3/F4/F8).** Changing how scores compute can shift
-   every verdict. Mitigate: keep checks/evidence unchanged; pin `rule_version` on
-   each result; never mutate history; ship behind a flag; golden‑case tests;
-   explicit, audited re‑score action. **Do not start before `❓B`/`❓C`.**
-2. **Main‑domain matching semantics (F1).** Could change pass/fail for existing
-   links. Mitigate: feature flag, backfill plan, `❓A`.
-3. **Sheet sub‑sheet migration (F5/F6).** Relaxing `sheet_sources` uniqueness +
-   moving to per‑tab state risks orphaning data. Mitigate: additive migration, gid
-   keys, never delete imported links on tab loss.
+**Framework:** existing `pytest` (87 tests on the server). Keep three layers —
+**pure‑logic units** (canonicalisation, fingerprint, scoring, classification — no
+DB/network), **service tests** (DB fixtures), **API tests**. **All external calls
+(Sheets, Moz, Semrush, domain age, SERP) mocked** — never hit live providers in CI.
 
-**Security (honor existing golden rules):**
-- All new provider keys (Moz/RapidAPI) **env‑only** via `config.py`; if runtime
-  config is wanted, use the encrypted `settings` table (`is_secret`) — never
-  hardcode, never commit. Tell the user to rotate any key pasted in chat.
-- Competitor uploads are **untrusted input**: validate, size‑cap, never crawl
-  competitor URLs without the existing **SSRF guard**; treat competitor source
-  URLs as data, not fetch targets, unless QA is explicitly requested.
-- Google Sheets export is **outward‑facing** — require explicit confirm; SA stays
-  least‑privilege (Editor only where write‑back is on).
-- Every new endpoint behind the correct RBAC `Permission`; new perms
-  `MANAGE_SCORING`, `EDIT_PROJECT_SCORING`, `MANAGE_COMPETITORS` (Admin/Manager).
-- Soft delete + audit gives an undo/forensic trail; prod destructive SQL stays
-  gated (no manual mutations).
+**Checklists by area:**
+- **Workspace isolation:** every endpoint filters by `workspace_id`; switching;
+  no cross‑tenant rows; RBAC per workspace.
+- **Project settings / main domain:** validation; primary‑unique; matching (`❓5`);
+  history preserved on change.
+- **Users / employee codes:** uniqueness (`❓10`); reassignment history; sheet‑label
+  reconciliation; reports by user/code.
+- **Sheet sync / sub‑sheets:** tab detection (gid‑stable rename, add, delete);
+  checkbox import/QA/active; link‑type assignment.
+- **Canonicalisation:** http→https, strip www, slash, utm/tracking, case, IDN,
+  encoded, invalid → all behave per confirmed `❓2` rules.
+- **Fingerprint:** deterministic; collisions impossible (sha256); unique index;
+  backfill correctness.
+- **Duplicate / conflict:** every §13 scenario; **import does NOT skip**; re‑sync
+  idempotent (no row explosion); scopes; resolution; cross‑workspace off (`❓4`).
+- **Source domain:** extraction/grouping (`❓7`); aggregate counters correct after
+  random insert/delete/verdict‑change; **reconcile self‑heals drift**.
+- **Index/non‑index ratio:** from counters only (no scan); math (7/15) exact.
+- **Scoring:** deterministic; normalisation; hard‑fail rules; version pin; override
+  precedence (project→workspace→link‑type→global); old reports unchanged.
+- **Metrics (Moz/Semrush/age):** mocked success/failure/quota; cache hit; TTL
+  refresh; history append; per‑domain (not per‑URL); non‑blocking failure;
+  cost‑cap respected.
+- **Competitor:** upload (file/URL); validation; fingerprint match vs ours;
+  existing/new/already_used; auto link‑type (single/ambiguous/unknown + override);
+  opportunity create (no auto users) + assign.
+- **Reports:** dynamic columns; group‑by; **frozen snapshot immutability**;
+  versioning; CSV/XLSX/PDF/Sheets export; SA‑perm errors.
+- **Filtration/reports parity (§11A):** every registered dimension filters
+  identically in Analytics and Reports; **coverage test** fails CI if a reportable
+  field lacks a descriptor.
+- **Background jobs:** concurrent claim no double‑run; retry/backoff; crash
+  recovery; scheduler fires once; throughput at volume.
+- **Delete:** preflight counts; soft delete hides/preserves; restore; purge; audit.
+- **Large volume:** seed ~1–2M backlinks → filter/facet/group‑by/report perf;
+  index‑hit (no seq scans on hot paths); keyset pagination.
 
-**Scalability (target ~1–2M backlinks):**
-- **Aggregates over scans:** source‑domain + competitor analytics read **rollup**
-  tables refreshed by scheduled jobs, not live `COUNT(*)` over millions of rows.
-- **Keyset pagination** (existing pattern) for all new large grids.
-- **DA as a global cache** keyed by domain (not per tenant) — `forbes.com` is fetched
-  once. Staggered fetch + TTL + backoff to respect quotas/cost.
-- **Competitor data isolated** in its own tables → never bloats the hot
-  `backlink_records` path; partition `competitor_backlinks`/`domain_authority_
-  history` by month **only if** they grow into the millions.
-- **Rollup freshness:** learn from the LinkIdentity rollup gap (§2.3#4) — use a
-  scheduled recompute (idempotent) and/or DB triggers; expose `last_recomputed_at`.
-- **Background jobs:** reuse the dead `qa` queue for re‑scoring; isolate heavy
-  external calls (DA, competitor import) on their own queues so a flood doesn't
-  starve crawling.
-- **Frontend:** split new desks out of the 2,210‑line `workspace-app.tsx` to keep
-  bundle/maintenance sane.
-
-**Ops:** investigate the `api` process's ~300 restarts before adding heavy
-endpoints; confirm real storage backend (MinIO vs local) before report‑snapshot
-work; one migration per sub‑phase for reviewable, reversible deploys.
+**Gate:** the 87 existing tests stay green at every sub‑phase boundary; run
+`venv/bin/pytest -q` on the server before each deploy.
 
 ---
 
-## 14. Final Recommended Roadmap
+## 21. Risk, Security, and Scalability Notes
 
-### 14.1 Best recommended development sequence
-1. **8.1 Foundations** — F20 audit scaffolding → F7 safe‑delete framework →
-   F1 project settings + main domain → F2 users/employee codes.
-2. **8.2 Link‑type & sheets** — F5 sub‑sheet detection → F6 tab selection → finalize
-   `link_types` catalog (backfill from existing data).
-3. **8.3 Scoring** — (after `❓B/❓C`) F8 parameter engine → F4 global → F3 project
-   override → re‑score job.
-4. **8.4 Source‑domain intel** — F9 aggregate → F16 DA → F10 dashboard.
-5. **8.5 Competitor/market** — F11 upload → F12 map/validate → F13 compare →
-   F14 auto‑type → F17 QA categorise → F15 reports → F18 off‑page board →
-   F19 Sheets export.
+**Top risks (design‑gated):**
+1. **Redis‑free re‑architecture (F38):** replacing Celery is the single biggest
+   change. Mitigate: build the Postgres queue behind the existing task interface,
+   port one task at a time, run both briefly in parallel, load‑test `SKIP LOCKED`.
+   **Confirm `❓1` first.**
+2. **Dedup model change (F8–F10):** dropping the unique constraint + storing dupes
+   changes row counts and every dedup assumption. Mitigate: additive migration,
+   backfill `canonical_urls`/conflicts, same‑entry key to prevent re‑sync explosion,
+   extensive tests.
+3. **Scoring re‑arch (F17–F20):** changes verdicts. Mitigate: pin rule_version,
+   never mutate history, golden‑case tests, feature flag.
+4. **Counter drift (F14):** wrong counters = wrong ratios. Mitigate: transactional
+   updates + nightly reconcile + a "counters vs facts" test.
 
-### 14.2 Minimum Viable Phase (ship first, lowest risk, high value)
-**MVP = 8.1 + 8.2 + F9 + F16 + F10** (foundations, real link types from sub‑sheets,
-source‑domain analytics with DA). Delivers: configurable project settings, true
-link‑type catalog, safe deletes, and a source‑domain intelligence dashboard —
-**without** touching the scoring engine or building the competitor subsystem.
-Each piece is independently deployable and reversible.
+**Security (golden rules upheld):**
+- All provider keys (Moz, Semrush, domain age, proxy, Sheets SA) **env‑only** via
+  `config.py`; never hardcoded/committed; rotate any key pasted in chat. Optional
+  runtime config uses the encrypted `settings` table.
+- Competitor uploads are **untrusted**: validate, size‑cap; do **not** crawl
+  competitor URLs without the **SSRF guard**; treat them as data unless QA is
+  explicitly requested.
+- Sheets export is **outward‑facing** → explicit confirm; SA least‑privilege.
+- Every endpoint behind the right RBAC `Permission`; new perms `MANAGE_SCORING`,
+  `MANAGE_COMPETITORS`, `MANAGE_WORKSPACE_SETTINGS`.
+- Soft delete + audit = undo + forensics; prod destructive SQL stays gated.
+- **No cross‑workspace data leakage** — enforced isolation tests (`❓4`).
 
-### 14.3 Full future roadmap (beyond Phase 8)
-- **Phase 9:** scheduled report delivery (email/Sheets digest) + finish alert
-  digest/quiet‑hours + in‑app admin for integrations/audit.
-- **Phase 10:** client portal + read‑only scoped API tokens (clients see their own
-  backlinks/opportunities).
-- **Phase 11:** trend/time‑series analytics (DA over time, indexed% over time),
-  competitor tracking deltas (new links competitors gained since last upload).
-- **Phase 12:** ops — GitHub remote + one‑command deploy + Postgres PITR backups;
-  optional Playwright render pool for SPA sources.
+**Scalability (1–2M+ backlinks):**
+- Fingerprint B‑tree = O(log n) dedup (the foundation). Aggregate tables = O(1)
+  ratios. Keyset pagination everywhere. Metrics per domain (not per URL). Month
+  partitions on QA history (exists). Competitor + history tables partition‑ready.
+- DB‑backed queue scales horizontally with `SKIP LOCKED`; external‑call jobs
+  staggered + capped. No Redis to operate/scale.
+- Frontend desks split out of the monolith file; data via the registry endpoints.
 
-### 14.4 Questions that MUST be answered before development starts
-> (Restated from §3 — development of the dependent feature is blocked until each is
-> resolved.)
+**Ops:** investigate `api` restarts; one migration per sub‑phase; backfill jobs for
+canonical_urls/source_domains/counters; reversible downgrades; `pg_dump`/PITR
+backups (DB is the single source of truth).
 
-1. **(A) Main domain:** one or many per project? Does it **replace** or
-   **supplement** per‑row target for matching? → blocks F1, F9, F13.
-2. **(B) Scoring model:** weighted‑parameter (B1) or configurable severity (B2)? Do
-   status bands become configurable? → blocks F3/F4/F8.
-3. **(C) Freeze semantics:** re‑score history on rule change, or keep versioned and
-   frozen? → blocks F8/F15/F19 + report design.
-4. **(D) Sheet layout:** are link types separate **tabs** or a **column**? Can you
-   share a sample (anonymised) project spreadsheet? → blocks F5/F6.
-5. **(E) Domain grouping:** registrable domain only, or platform‑host grouping for
-   Web‑2.0 (`*.blogspot.com`, `medium.com/@user`)? → blocks F9, F13, F14.
-6. **(F) Employee codes:** uniqueness scope; multiple codes per user; reassignment
-   allowed? → blocks F2.
-7. **(G) DA provider & budget:** which provider (Moz RapidAPI / Moz official /
-   Similarweb) and monthly quota/cost ceiling? Global cache OK? → blocks F16.
-8. **(H) Competitor sheets:** column format; file vs Google‑Sheet URL; export target
-   tab behaviour? → blocks F11/F12/F19.
-9. **(I) Delete policy:** which entities soft‑delete; restore window length; project
-   delete = archive‑keep‑history vs delete‑all? → blocks F7.
-10. **(J) Permissions:** Admin‑only global scoring? Manager scope for project
-    scoring/competitors? → blocks F3/F4 RBAC.
-11. **(Ops) Storage backend:** is prod really MinIO (PM2 shows it) vs `local` in
-    docs? → blocks F15 report snapshots / F11 uploads.
-12. **(K) Filtration model:** confirm the **registry‑driven dynamic dimension**
-    approach (§11A) — one declaration drives filters + facets + group‑by + report
-    columns + report filters + UI, keeping the injection‑safe whitelist. Do you
-    also want **OR filter groups** (not just AND)? → blocks the §11A unification
-    that every feature depends on.
-13. **(L) Saved filters / report templates:** scope = **per‑user** or **shared
-    workspace‑wide** (or both)? → blocks `saved_filters` + report templates.
+---
 
-> **Note:** §11A makes "everything filterable + reportable" a **definition‑of‑done
-> rule** for every feature F1–F20. Confirming **K** early is high‑leverage: it
-> removes the analytics/report filter duplication that currently exists and ensures
-> no new field is ever disconnected from Filtration or Reports.
+## 22. Final Recommended Roadmap
+
+### 22.1 Best recommended development sequence
+**8.0 Platform** (Redis‑free queue, dimension registry, workspace hardening, audit,
+safe delete) → **8.1 Identity core** (canonical + fingerprint + conflicts +
+no‑skip import) → **8.2 Foundations** (project settings/main domain, users/codes,
+sheets/sub‑sheets/link types) → **8.3 Source‑domain intel** (extraction, aggregate
+counters, Moz + Semrush + domain age) → **8.4 Scoring** (dynamic, versioned) →
+**8.5 Competitor + Reports** (upload→compare→categorise→opportunity→board; ERP
+reports + Sheets export).
+
+### 22.2 Minimum Viable Phase (ship first — highest value, controlled risk)
+**MVP = 8.0 (cache‑only Redis removal, Option B) + 8.1 (canonical + fingerprint +
+store‑don't‑skip duplicates + conflicts) + 8.3 source‑domain analytics with Moz +
+Semrush + domain age + aggregate counters.**
+Delivers: correct duplicate handling, a true source‑domain intelligence dashboard
+with authority/traffic/age, and fast ratios — **without** the full Celery→Postgres
+rewrite (defer to a later sub‑phase), the scoring re‑arch, or the competitor engine.
+Each piece deploys independently and reversibly.
+
+### 22.3 Full future roadmap (beyond this phase)
+- Scheduled report delivery (email/Sheets digest) + alert digest/quiet hours.
+- Client portal + read‑only scoped API tokens.
+- Trend/time‑series (DA/AS/traffic/indexed% over time); competitor‑gain deltas
+  between uploads.
+- Full Celery→Postgres queue cutover (if MVP used Option B).
+- GitHub remote + one‑command deploy + PITR backups; optional Playwright render pool.
+
+### 22.4 Database Index Checklist (must exist before go‑live)
+- [ ] `canonical_urls(fingerprint)` **UNIQUE** ← the duplicate‑check index
+- [ ] `backlinks(canonical_url_id)`, `(workspace_id)`, `(project_id)`,
+      `(source_domain_id)`, `(link_type_id)`, `(assigned_user_id)`, `(qa_status)`,
+      `(index_status)`, `(created_at)`, `(is_duplicate)`, `(conflict_status)`
+- [ ] `backlinks(project_id, qa_status, score)` + keyset `(project_id, score, id)`
+- [ ] partial `UNIQUE(sheet_source_id, tab_id, sheet_row_ref)` (same‑entry)
+- [ ] `backlink_qa_results(backlink_id, crawled_at)`, `(scoring_rule_version_id)`
+- [ ] `source_domains(domain_key)`; `source_domain_project_metrics(source_domain_id,
+      project_id)` UNIQUE; `…_workspace_metrics` UNIQUE
+- [ ] `domain_authority_results(domain_key, provider)` UNIQUE + `(expires_at)`;
+      `semrush_domain_metrics(domain_key)` UNIQUE + `(expires_at)`;
+      `domain_age_results(domain_key)` UNIQUE
+- [ ] `competitor_backlinks(project_id)`, `(canonical_url_id)`, `(source_domain_id)`
+- [ ] `competitor_domain_comparisons(workspace_id, project_id, category)`,
+      `(opportunity_score)`
+- [ ] `backlink_conflicts(canonical_url_id)`, `(workspace_id, resolution_status)`;
+      `backlink_conflict_members(conflict_id)`, `(backlink_id)`
+- [ ] `background_jobs(status, run_after, priority)`, `(locked_at)`;
+      `scheduled_jobs(next_run_at) WHERE is_active`
+- [ ] partial `… WHERE deleted_at IS NULL` on soft‑delete hot paths
+- [ ] GIN on `tags`/JSONB filter columns
+- [ ] `reports(project_id)`, `(workspace_id, report_type) WHERE is_latest`
+
+### 22.5 Questions that MUST be answered before development starts
+1. **Redis scope** — cache‑only removal (keep Celery broker) or full Postgres
+   queue? (`❓1`)
+2. **Canonical rule** — lowercase whole path? drop all params or only tracking?
+   always strip trailing slash? (`❓2`)
+3. **Same‑entry key** — `sheet_source_id+tab+row_ref` to define "update vs new
+   duplicate"? (`❓3`)
+4. **Conflict scope** — within workspace/project only, or ever cross‑workspace?
+   (`❓4`)
+5. **Main domain matching** — replace vs validate per‑row target; one vs many
+   primary? (`❓5`)
+6. **Company layer** — workspace = company, or a `companies` parent? (`❓6`)
+7. **Domain grouping** — collapse Web‑2.0 subdomains or keep per‑subdomain? (`❓7`)
+8. **Metrics providers & budget** — confirm Moz + Semrush (RapidAPI endpoints/plans)
+   + domain‑age provider + monthly quota/cost caps. (`❓8`)
+9. **Scoring model & freeze** — weighted‑parameter vs severity; re‑score history or
+   keep frozen? (`❓9`)
+10. **Employee codes** — uniqueness; multiple per user; reassignable? (`❓10`)
+11. **Sheet layout** — confirm tabs = link types, same columns; sample sheet? (`❓11`)
+12. **Delete policy** — entities; restore window; project archive vs delete‑all?
+    (`❓12`)
+13. **Saved filters/templates scope** — per‑user vs shared workspace? (`❓13`)
 
 ---
 
 ### Document status
-This is a **planning document only** — no production code was written. Items are
-tagged `✅ CONFIRMED` / `🟦 RECOMMENDED` / `❓ NEEDS CONFIRMATION`. Once the 11
-questions above are answered, sub‑phase **8.1** can begin immediately (it has no
-blocking confirmations except the soft‑delete scope **I**, which only affects F7's
-restore window, not its structure).
+**Consolidated Phase 8 plan — v1 + v2 merged; no feature dropped** (coverage map in
+§19.0). Logic is tagged `✅ CONFIRMED` / `🟦 RECOMMENDED` / `❓ NEEDS CONFIRMATION`.
+Implementation is **underway** (delivered live: F8 canonical/fingerprint, F9 conflict
+detection); remaining features follow §6. It incorporates: canonical/fingerprint
+identity, store‑don't‑skip duplicates + conflicts, the dynamic filtration & reporting
+registry (§11A), Moz + Semrush + domain‑age metrics per source domain, aggregate
+index/non‑index counters, multi‑workspace/company hardening, Redis‑free caching +
+background jobs, and large‑DB indexing.
+
+
 
