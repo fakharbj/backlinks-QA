@@ -94,6 +94,44 @@ export type EmployeeOverview = {
   app_users: AppUser[];
 };
 
+export type SourceDomain = {
+  id: string;
+  domain_key: string;
+  grouping: string;
+  backlink_count: number;
+  indexed_count: number;
+  not_indexed_count: number;
+  uncertain_count: number;
+  unchecked_count: number;
+  indexed_pct: number;
+  not_indexed_pct: number;
+  dofollow_count: number;
+  nofollow_count: number;
+  dofollow_pct: number;
+  duplicate_count: number;
+  avg_score: number | null;
+  project_count: number;
+  user_count: number;
+  link_type_distribution: Record<string, number>;
+  last_recomputed_at: string | null;
+};
+
+export type SourceDomainBacklink = {
+  id: string;
+  project_name: string | null;
+  source_page_url: string;
+  target_url: string;
+  status: string | null;
+  score: number | null;
+  link_type: string | null;
+  index_status: string | null;
+  assigned_user_label: string | null;
+};
+
+export type SourceDomainDetail = SourceDomain & {
+  backlinks: SourceDomainBacklink[];
+};
+
 export type Dashboard = {
   totals: {
     total: number;

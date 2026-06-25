@@ -19,7 +19,12 @@ from app.crawler.normalize import normalize_url
 from app.models.backlink import BacklinkRecord
 from app.models.link_identity import AssignmentHistory
 from app.models.user import User, WorkspaceMember
-from app.services import canonical_service, conflict_service, duplicate_service
+from app.services import (
+    canonical_service,
+    conflict_service,
+    duplicate_service,
+    source_domain_service,
+)
 from app.services.catalog_helpers import resolve_campaign, resolve_vendor
 from app.models.enums import (
     ImportRowStatus,
@@ -132,6 +137,8 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     # Group same-page backlinks (by canonical fingerprint) into conflict records so
     # stored duplicates surface in the Duplicates tab / filters (Phase 8 F10).
     await conflict_service.detect_for_canonicals(db, imp.workspace_id, dirty_canonicals)
+    # Refresh source-domain aggregates so dashboards/ratios stay current (F11/F14).
+    await source_domain_service.recompute(db, imp.workspace_id)
 
     imp.status = (
         ImportStatus.COMPLETED if imp.error_rows == 0 else ImportStatus.PARTIAL

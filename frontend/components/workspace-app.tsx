@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   Filter,
   Gauge,
+  Globe,
   History,
   Layers,
   Link2,
@@ -61,12 +62,14 @@ import {
   Role,
   SheetConfig,
   SheetSource,
+  SourceDomain,
+  SourceDomainDetail,
   SiteMetrics,
   TeamMember,
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -179,6 +182,7 @@ export function WorkspaceApp() {
             <Backlinks token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "conflicts" ? <ConflictsDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "domains" ? <SourceDomainsDesk token={token} onNotice={setNotice} /> : null}
           {tab === "imports" ? (
             <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -285,6 +289,7 @@ function TopBar({
     ["analytics", "Analytics", BarChart3],
     ["backlinks", "Backlinks", Link2],
     ["conflicts", "Duplicates", Layers],
+    ["domains", "Source Domains", Globe],
     ["imports", "Imports", Upload],
     ["sheets", "Sheets", Sheet],
     ["alerts", "Alerts", Bell],
@@ -1483,6 +1488,197 @@ function ReportGroup({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SourceDomainsDesk({
+  token,
+  onNotice
+}: {
+  token: string | null;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("backlinks");
+
+  const domains = useQuery({
+    queryKey: ["source-domains", token, sort, search],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<SourceDomain[]>(
+        `/source-domains?sort=${sort}&order=desc&search=${encodeURIComponent(search)}`,
+        { token }
+      )
+  });
+  const recompute = useMutation({
+    mutationFn: () => api<SourceDomain[]>("/source-domains/recompute", { token, method: "POST" }),
+    onSuccess: () => {
+      onNotice("Source-domain metrics refreshed");
+      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-muted">
+          Every backlink grouped by its source website. Ratios are read from stored counts — no full
+          scans.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className="h-9 w-44 rounded-md border border-line bg-white px-3 text-sm"
+            placeholder="Search domain…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <select
+            className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+            value={sort}
+            onChange={(event) => setSort(event.target.value)}
+          >
+            <option value="backlinks">Most backlinks</option>
+            <option value="indexed">Most indexed</option>
+            <option value="avg_score">Avg score</option>
+            <option value="duplicates">Most duplicates</option>
+            <option value="domain">Domain A–Z</option>
+          </select>
+          <button
+            onClick={() => recompute.mutate()}
+            className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black"
+          >
+            {recompute.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            Recompute
+          </button>
+        </div>
+      </div>
+      <section className="rounded-lg border border-line bg-panel">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-field text-left text-xs uppercase text-muted">
+              <tr>
+                <Th>Source domain</Th>
+                <Th>Backlinks</Th>
+                <Th>Indexed</Th>
+                <Th>Dofollow</Th>
+                <Th>Dupes</Th>
+                <Th>Avg score</Th>
+                <Th>Projects</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(domains.data || []).map((d) => (
+                <SourceDomainRow key={d.id} d={d} token={token} />
+              ))}
+            </tbody>
+          </table>
+          {!domains.isLoading && !domains.data?.length ? (
+            <Empty label="No source domains yet — click Recompute (or import some backlinks)." />
+          ) : null}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }) {
+  const [open, setOpen] = useState(false);
+  const detail = useQuery({
+    queryKey: ["source-domain", token, d.id],
+    enabled: Boolean(token && open),
+    queryFn: () => api<SourceDomainDetail>(`/source-domains/${d.id}`, { token })
+  });
+  const dist = Object.entries(d.link_type_distribution || {});
+  return (
+    <>
+      <tr className="cursor-pointer hover:bg-field/40" onClick={() => setOpen(!open)}>
+        <Td>
+          <div className="flex items-center gap-2">
+            {open ? (
+              <ChevronUp className="h-4 w-4 shrink-0 text-muted" />
+            ) : (
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted" />
+            )}
+            <span className="font-medium text-ink">{d.domain_key}</span>
+          </div>
+        </Td>
+        <Td>{d.backlink_count}</Td>
+        <Td>
+          <span className="font-medium text-ink">{d.indexed_pct}%</span>{" "}
+          <span className="text-xs text-muted">
+            ({d.indexed_count}/{d.indexed_count + d.not_indexed_count})
+          </span>
+        </Td>
+        <Td>{d.dofollow_pct}%</Td>
+        <Td>{d.duplicate_count}</Td>
+        <Td>{d.avg_score ?? "—"}</Td>
+        <Td>{d.project_count}</Td>
+      </tr>
+      {open ? (
+        <tr>
+          <td colSpan={7} className="bg-field/30 px-4 py-3">
+            <div className="grid gap-4 md:grid-cols-[260px_1fr]">
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted">Index status</div>
+                <div className="mt-1 text-sm text-ink">
+                  {d.indexed_count} indexed · {d.not_indexed_count} not · {d.uncertain_count} uncertain
+                  · {d.unchecked_count} unchecked
+                </div>
+                <div className="mt-3 text-xs font-semibold uppercase text-muted">Link types</div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {dist.length ? (
+                    dist.map(([k, v]) => (
+                      <span key={k} className="rounded border border-line bg-white px-2 py-0.5 text-xs">
+                        {k}: {v}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs text-muted">—</span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted">Backlinks on this domain</div>
+                {detail.isLoading ? (
+                  <div className="p-3 text-sm text-muted">Loading…</div>
+                ) : (
+                  <div className="mt-1 max-h-64 overflow-auto rounded border border-line">
+                    <table className="w-full text-xs">
+                      <thead className="bg-field text-left uppercase text-muted">
+                        <tr>
+                          <Th>Project</Th>
+                          <Th>Source page</Th>
+                          <Th>User</Th>
+                          <Th>Status</Th>
+                          <Th>Idx</Th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-line">
+                        {(detail.data?.backlinks || []).map((b) => (
+                          <tr key={b.id}>
+                            <Td>{b.project_name || "—"}</Td>
+                            <Td>
+                              <span className="block max-w-[240px] truncate" title={b.source_page_url}>
+                                {b.source_page_url}
+                              </span>
+                            </Td>
+                            <Td>{b.assigned_user_label || "—"}</Td>
+                            <Td>{b.status ? <Status value={b.status} /> : "—"}</Td>
+                            <Td>{b.index_status || "—"}</Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
 

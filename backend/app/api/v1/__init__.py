@@ -18,6 +18,7 @@ from app.api.v1 import (
     reports,
     settings,
     sheets,
+    source_domains,
     team,
 )
 
@@ -37,4 +38,5 @@ api_router.include_router(reports.router)
 api_router.include_router(alerts.router)
 api_router.include_router(settings.router)
 api_router.include_router(sheets.router)
+api_router.include_router(source_domains.router)
 api_router.include_router(team.router)
