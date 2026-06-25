@@ -13,6 +13,7 @@ import {
   Filter,
   Gauge,
   History,
+  Layers,
   Link2,
   Loader2,
   LogOut,
@@ -45,6 +46,8 @@ import {
   AssignmentEvent,
   BacklinkDetail,
   BacklinkRow,
+  ConflictGroup,
+  ConflictSummary,
   Dashboard,
   Page,
   Project,
@@ -57,7 +60,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "imports" | "sheets" | "alerts" | "reports" | "team";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "imports" | "sheets" | "alerts" | "reports" | "team";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -169,6 +172,7 @@ export function WorkspaceApp() {
           {tab === "backlinks" ? (
             <Backlinks token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
+          {tab === "conflicts" ? <ConflictsDesk token={token} onNotice={setNotice} /> : null}
           {tab === "imports" ? (
             <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -270,6 +274,7 @@ function TopBar({
     ["overview", "Overview", Gauge],
     ["analytics", "Analytics", BarChart3],
     ["backlinks", "Backlinks", Link2],
+    ["conflicts", "Duplicates", Layers],
     ["imports", "Imports", Upload],
     ["sheets", "Sheets", Sheet],
     ["alerts", "Alerts", Bell],
@@ -1463,6 +1468,201 @@ function ReportGroup({
               ))}
             </div>
           ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ConflictsDesk({
+  token,
+  onNotice
+}: {
+  token: string | null;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [statusFilter, setStatusFilter] = useState<string>("open");
+
+  const summary = useQuery({
+    queryKey: ["conflict-summary", token],
+    enabled: Boolean(token),
+    queryFn: () => api<ConflictSummary>("/conflicts/summary", { token })
+  });
+  const conflicts = useQuery({
+    queryKey: ["conflicts", token, statusFilter],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<ConflictGroup[]>(
+        `/conflicts${statusFilter ? `?status=${statusFilter}` : ""}`,
+        { token }
+      )
+  });
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["conflicts"] });
+    queryClient.invalidateQueries({ queryKey: ["conflict-summary"] });
+  };
+  const rebuild = useMutation({
+    mutationFn: () => api<ConflictSummary>("/conflicts/rebuild", { method: "POST", token }),
+    onSuccess: (s) => {
+      onNotice(`Duplicate scan complete — ${s.total} group(s) found`);
+      refresh();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const resolve = useMutation({
+    mutationFn: (v: { id: string; status: string }) =>
+      api<ConflictSummary>(`/conflicts/${v.id}/resolve`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ resolution_status: v.status })
+      }),
+    onSuccess: () => {
+      onNotice("Conflict updated");
+      refresh();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const s = summary.data;
+  return (
+    <section className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Duplicate groups" value={s?.total ?? 0} icon={Layers} tone="ink" />
+        <Metric label="Open" value={s?.open ?? 0} icon={AlertTriangle} tone="ember" />
+        <Metric label="Cross-project" value={s?.by_scope?.cross_project ?? 0} icon={Link2} tone="plum" />
+        <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean" />
+      </div>
+
+      <section className="rounded-lg border border-line bg-panel">
+        <div className="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Duplicate &amp; conflict groups</h2>
+            <p className="mt-0.5 text-xs text-muted">
+              Backlinks pointing at the same page (matched by URL fingerprint), grouped for review.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="open">Open</option>
+              <option value="resolved">Resolved</option>
+              <option value="ignored">Ignored</option>
+              <option value="">All</option>
+            </select>
+            <button
+              onClick={() => rebuild.mutate()}
+              className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black"
+            >
+              {rebuild.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Scan for duplicates
+            </button>
+          </div>
+        </div>
+        <div className="divide-y divide-line">
+          {(conflicts.data || []).map((conflict) => (
+            <ConflictRow
+              key={conflict.id}
+              conflict={conflict}
+              onResolve={(status) => resolve.mutate({ id: conflict.id, status })}
+            />
+          ))}
+          {!conflicts.isLoading && !conflicts.data?.length ? (
+            <Empty label="No duplicate groups — every backlink is unique by fingerprint." />
+          ) : null}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function ConflictRow({
+  conflict,
+  onResolve
+}: {
+  conflict: ConflictGroup;
+  onResolve: (status: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <button onClick={() => setOpen(!open)} className="flex min-w-0 items-start gap-2 text-left">
+          {open ? (
+            <ChevronUp className="mt-1 h-4 w-4 shrink-0 text-muted" />
+          ) : (
+            <ChevronDown className="mt-1 h-4 w-4 shrink-0 text-muted" />
+          )}
+          <div className="min-w-0">
+            <div className="truncate font-medium text-ink">
+              {conflict.canonical_url || "(unknown URL)"}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+              <span className="rounded border border-line bg-field px-2 py-0.5 font-semibold">
+                {conflict.member_count} backlinks
+              </span>
+              <span className="rounded border border-violet-200 bg-violet-50 px-2 py-0.5 font-semibold text-plum">
+                {conflict.scope.replaceAll("_", " ")}
+              </span>
+              {conflict.fingerprint ? (
+                <span className="font-mono text-[11px]">{conflict.fingerprint.slice(0, 12)}…</span>
+              ) : null}
+            </div>
+          </div>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Status value={conflict.resolution_status} />
+          {conflict.resolution_status !== "resolved" ? (
+            <button
+              onClick={() => onResolve("resolved")}
+              className="rounded border border-line bg-white px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+            >
+              Resolve
+            </button>
+          ) : (
+            <button
+              onClick={() => onResolve("open")}
+              className="rounded border border-line bg-white px-2 py-1 text-xs font-medium text-muted transition hover:bg-field"
+            >
+              Reopen
+            </button>
+          )}
+        </div>
+      </div>
+      {open ? (
+        <div className="mt-3 overflow-x-auto rounded-md border border-line">
+          <table className="w-full text-sm">
+            <thead className="bg-field text-left text-xs uppercase text-muted">
+              <tr>
+                <Th>Project</Th>
+                <Th>Target</Th>
+                <Th>User</Th>
+                <Th>Type</Th>
+                <Th>Status</Th>
+                <Th>Score</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {conflict.members.map((m) => (
+                <tr key={m.backlink_id}>
+                  <Td>{m.project_name || "—"}</Td>
+                  <Td>
+                    <span className="block max-w-[280px] truncate" title={m.target_url}>
+                      {m.target_url}
+                    </span>
+                  </Td>
+                  <Td>{m.assigned_user_label || "—"}</Td>
+                  <Td>{m.link_type || "—"}</Td>
+                  <Td>{m.status ? <Status value={m.status} /> : "—"}</Td>
+                  <Td>{m.score ?? "—"}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : null}
     </div>

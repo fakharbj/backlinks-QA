@@ -4,6 +4,7 @@ from app.models.alerts import AlertRule, Notification  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.backlink import BacklinkRecord  # noqa: F401
 from app.models.canonical_url import CanonicalUrl  # noqa: F401
+from app.models.conflict import BacklinkConflict, BacklinkConflictMember  # noqa: F401
 from app.models.crawl import BacklinkIssue, BacklinkHistory, CrawlJob, CrawlResult  # noqa: F401,E501
 from app.models.enums import (  # noqa: F401
     HistoryEventType,

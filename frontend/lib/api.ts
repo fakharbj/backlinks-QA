@@ -17,6 +17,38 @@ export type Project = {
   created_at: string;
 };
 
+export type ConflictMember = {
+  backlink_id: string;
+  project_id: string | null;
+  project_name: string | null;
+  source_page_url: string;
+  target_url: string;
+  status: string | null;
+  score: number | null;
+  assigned_user_label: string | null;
+  link_type: string | null;
+};
+
+export type ConflictGroup = {
+  id: string;
+  canonical_url: string | null;
+  fingerprint: string | null;
+  project_id: string | null;
+  scope: string;
+  resolution_status: string;
+  member_count: number;
+  detected_at: string | null;
+  created_at: string | null;
+  members: ConflictMember[];
+};
+
+export type ConflictSummary = {
+  total: number;
+  open: number;
+  resolved: number;
+  by_scope: Record<string, number>;
+};
+
 export type Dashboard = {
   totals: {
     total: number;
