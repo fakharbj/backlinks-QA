@@ -224,6 +224,40 @@ export type Dashboard = {
     severity: string | null;
     created_at: string;
   }>;
+  // Project-dashboard-only sections (empty for the company view).
+  is_project: boolean;
+  link_type_breakdown: Array<{
+    link_type: string;
+    total: number;
+    pass_count: number;
+    fail_count: number;
+    avg_score: number | null;
+  }>;
+  trends: Array<{ date: string; added: number; removed: number; score_changed: number }>;
+  top_source_domains: Array<{
+    source_domain: string;
+    total: number;
+    pass_count: number;
+    fail_count: number;
+    indexed_pct: number | null;
+  }>;
+  recent_regressions: Array<{
+    backlink_id: string;
+    source_page_url: string;
+    event_type: string;
+    severity: string | null;
+    field: string | null;
+    old_value: string | null;
+    new_value: string | null;
+    created_at: string;
+  }>;
+  assigned_user_stats: Array<{
+    assigned_user_label: string;
+    total: number;
+    pass_count: number;
+    fail_count: number;
+    avg_score: number | null;
+  }>;
 };
 
 export type BacklinkRow = {

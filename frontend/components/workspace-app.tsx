@@ -567,6 +567,116 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
           </div>
         </section>
       </div>
+
+      {stats?.is_project ? (
+        <div className="space-y-5">
+          <div className="grid gap-5 lg:grid-cols-2">
+            <section className="rounded-lg border border-line bg-panel">
+              <SectionTitle title="By link type" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-field text-xs uppercase text-muted">
+                    <tr><Th>Link type</Th><Th>Total</Th><Th>Pass</Th><Th>Fail</Th><Th>Avg</Th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {(stats.link_type_breakdown || []).map((r) => (
+                      <tr key={r.link_type} className="hover:bg-field/60">
+                        <Td><span className="font-medium text-ink">{r.link_type}</span></Td>
+                        <Td>{r.total}</Td>
+                        <Td><span className="text-ocean">{r.pass_count}</span></Td>
+                        <Td><span className="text-danger">{r.fail_count}</span></Td>
+                        <Td>{r.avg_score ?? "-"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!(stats.link_type_breakdown || []).length ? <Empty label="No link types" /> : null}
+              </div>
+            </section>
+            <section className="rounded-lg border border-line bg-panel">
+              <SectionTitle title="Team performance" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-field text-xs uppercase text-muted">
+                    <tr><Th>User</Th><Th>Total</Th><Th>Pass %</Th><Th>Fail</Th><Th>Avg</Th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {(stats.assigned_user_stats || []).map((r) => (
+                      <tr key={r.assigned_user_label} className="hover:bg-field/60">
+                        <Td><span className="font-medium text-ink">{r.assigned_user_label}</span></Td>
+                        <Td>{r.total}</Td>
+                        <Td>{pct(r.pass_count, r.total)}</Td>
+                        <Td><span className="text-danger">{r.fail_count}</span></Td>
+                        <Td>{r.avg_score ?? "-"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!(stats.assigned_user_stats || []).length ? <Empty label="No assignments" /> : null}
+              </div>
+            </section>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <section className="rounded-lg border border-line bg-panel">
+              <SectionTitle title="Activity (14 days)" />
+              <div className="space-y-1 p-4">
+                {(stats.trends || []).map((t) => (
+                  <div key={t.date} className="flex items-center gap-3 text-xs">
+                    <span className="w-16 text-muted">{t.date.slice(5)}</span>
+                    <span className="text-ocean">+{t.added} added</span>
+                    <span className="text-danger">-{t.removed} lost</span>
+                    <span className="text-muted">{t.score_changed} score Δ</span>
+                  </div>
+                ))}
+                {!(stats.trends || []).length ? <Empty label="No recent activity" /> : null}
+              </div>
+            </section>
+            <section className="rounded-lg border border-line bg-panel">
+              <SectionTitle title="Top source domains" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-field text-xs uppercase text-muted">
+                    <tr><Th>Domain</Th><Th>Links</Th><Th>Pass</Th><Th>Fail</Th><Th>Indexed %</Th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {(stats.top_source_domains || []).map((r) => (
+                      <tr key={r.source_domain} className="hover:bg-field/60">
+                        <Td><span className="break-all text-ink">{r.source_domain}</span></Td>
+                        <Td>{r.total}</Td>
+                        <Td><span className="text-ocean">{r.pass_count}</span></Td>
+                        <Td><span className="text-danger">{r.fail_count}</span></Td>
+                        <Td>{r.indexed_pct != null ? `${r.indexed_pct}%` : "-"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!(stats.top_source_domains || []).length ? <Empty label="No source domains" /> : null}
+              </div>
+            </section>
+          </div>
+
+          <section className="rounded-lg border border-line bg-panel">
+            <SectionTitle title="Recent regressions (high severity)" />
+            <div className="divide-y divide-line">
+              {(stats.recent_regressions || []).map((r) => (
+                <div key={`${r.backlink_id}-${r.created_at}`} className="p-3">
+                  <div className="truncate text-sm font-medium text-ink">{r.source_page_url}</div>
+                  <div className="mt-1 flex items-center justify-between text-xs text-muted">
+                    <span>
+                      {r.event_type}
+                      {r.field ? ` · ${r.field}` : ""}
+                      {r.old_value != null ? `: ${r.old_value} → ${r.new_value}` : ""}
+                    </span>
+                    <Severity value={r.severity || "INFO"} />
+                  </div>
+                </div>
+              ))}
+              {!(stats.recent_regressions || []).length ? <Empty label="No regressions" /> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

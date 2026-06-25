@@ -23,12 +23,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import AuthContext
 from app.schemas.dashboard import (
+    AssignedUserStat,
     DashboardResponse,
     DomainFailure,
     IssueTotals,
+    LinkTypeBreakdown,
     LostWindow,
     RecentChange,
+    RecentRegression,
     StatusTotals,
+    TopSourceDomain,
+    TrendPoint,
     VendorFailure,
 )
 
@@ -111,10 +116,110 @@ async def build_dashboard(
     vendors = await _top_vendors(db, ctx, project_id)
     recent = await _recent_changes(db, ctx, project_id)
 
+    # Deeper, project-specific sections (only for a single-project dashboard).
+    extra: dict = {}
+    if project_id is not None:
+        extra = dict(
+            is_project=True,
+            link_type_breakdown=await _link_type_breakdown(db, ctx, project_id),
+            trends=await _trends(db, ctx, project_id),
+            top_source_domains=await _top_source_domains(db, ctx, project_id),
+            recent_regressions=await _recent_regressions(db, ctx, project_id),
+            assigned_user_stats=await _assigned_user_stats(db, ctx, project_id),
+        )
+
     return DashboardResponse(
         totals=totals, issues=issues, lost=lost,
         top_failing_domains=domains, top_vendors_by_failure=vendors, recent_changes=recent,
+        **extra,
     )
+
+
+async def _link_type_breakdown(db, ctx, project_id) -> list[LinkTypeBreakdown]:
+    where, params = _scope_clause(ctx, project_id)
+    eff = _effective()
+    sql, _ = _bind(
+        f"""
+        SELECT coalesce(nullif(link_type, ''), '(none)') AS link_type,
+               count(*)                                  AS total,
+               count(*) FILTER (WHERE {eff} = 'PASS')    AS pass_count,
+               count(*) FILTER (WHERE {eff} = 'FAIL')    AS fail_count,
+               round(avg(score) FILTER (WHERE score IS NOT NULL), 1) AS avg_score
+        FROM backlink_records WHERE {where}
+        GROUP BY 1 ORDER BY total DESC LIMIT 30
+        """,
+        params,
+    )
+    return [LinkTypeBreakdown(**m) for m in (await db.execute(sql, params)).mappings().all()]
+
+
+async def _trends(db, ctx, project_id, days: int = 14) -> list[TrendPoint]:
+    where, params = _scope_clause(ctx, project_id)
+    params["since"] = datetime.now(timezone.utc) - timedelta(days=days)
+    sql, _ = _bind(
+        f"""
+        SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD')       AS date,
+               count(*) FILTER (WHERE event_type = 'link_added')          AS added,
+               count(*) FILTER (WHERE event_type = 'link_removed')        AS removed,
+               count(*) FILTER (WHERE event_type = 'score_changed')       AS score_changed
+        FROM backlink_history WHERE {where} AND created_at >= :since
+        GROUP BY 1 ORDER BY 1 ASC
+        """,
+        params,
+    )
+    return [TrendPoint(**m) for m in (await db.execute(sql, params)).mappings().all()]
+
+
+async def _top_source_domains(db, ctx, project_id) -> list[TopSourceDomain]:
+    where, params = _scope_clause(ctx, project_id)
+    eff = _effective()
+    sql, _ = _bind(
+        f"""
+        SELECT source_domain,
+               count(*)                                AS total,
+               count(*) FILTER (WHERE {eff} = 'PASS')  AS pass_count,
+               count(*) FILTER (WHERE {eff} = 'FAIL')  AS fail_count,
+               round(100.0 * count(*) FILTER (WHERE index_status = 'indexed')
+                     / nullif(count(*), 0), 1)         AS indexed_pct
+        FROM backlink_records WHERE {where} AND source_domain IS NOT NULL
+        GROUP BY source_domain ORDER BY total DESC LIMIT 10
+        """,
+        params,
+    )
+    return [TopSourceDomain(**m) for m in (await db.execute(sql, params)).mappings().all()]
+
+
+async def _recent_regressions(db, ctx, project_id) -> list[RecentRegression]:
+    where, params = _scope_clause(ctx, project_id, prefix="h")
+    sql, _ = _bind(
+        f"""
+        SELECT h.backlink_id, b.source_page_url, h.event_type, h.severity,
+               h.field, h.old_value, h.new_value, h.created_at
+        FROM backlink_history h JOIN backlink_records b ON b.id = h.backlink_id
+        WHERE {where} AND h.severity IN ('CRITICAL', 'HIGH')
+        ORDER BY h.created_at DESC LIMIT 15
+        """,
+        params,
+    )
+    return [RecentRegression(**m) for m in (await db.execute(sql, params)).mappings().all()]
+
+
+async def _assigned_user_stats(db, ctx, project_id) -> list[AssignedUserStat]:
+    where, params = _scope_clause(ctx, project_id)
+    eff = _effective()
+    sql, _ = _bind(
+        f"""
+        SELECT coalesce(nullif(assigned_user_label, ''), '(unassigned)') AS assigned_user_label,
+               count(*)                                  AS total,
+               count(*) FILTER (WHERE {eff} = 'PASS')    AS pass_count,
+               count(*) FILTER (WHERE {eff} = 'FAIL')    AS fail_count,
+               round(avg(score) FILTER (WHERE score IS NOT NULL), 1) AS avg_score
+        FROM backlink_records WHERE {where}
+        GROUP BY 1 ORDER BY total DESC LIMIT 30
+        """,
+        params,
+    )
+    return [AssignedUserStat(**m) for m in (await db.execute(sql, params)).mappings().all()]
 
 
 async def _lost_window(
