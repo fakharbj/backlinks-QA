@@ -1168,7 +1168,9 @@ function ReportsDesk({
   });
 
   // Group reports into version stacks by (type + project) — the same scope the
-  // backend uses for is_latest — so each card shows "Latest" + its older versions.
+  // backend uses for versioning. Sort each stack newest-first by time (robust even
+  // for older rows imported before versioning existed); the card derives a clean
+  // sequential version number from position so the history always reads v1..vN.
   const groups = useMemo(() => {
     const map = new Map<string, Report[]>();
     for (const r of reports.data || []) {
@@ -1177,7 +1179,7 @@ function ReportsDesk({
       map.get(key)!.push(r);
     }
     const arr = [...map.values()].map((rs) =>
-      rs.slice().sort((a, b) => (b.version ?? 1) - (a.version ?? 1))
+      rs.slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     );
     arr.sort(
       (a, b) => new Date(b[0].created_at).getTime() - new Date(a[0].created_at).getTime()
@@ -1394,6 +1396,9 @@ function ReportGroup({
   const [open, setOpen] = useState(false);
   const latest = versions[0];
   const older = versions.slice(1);
+  // Clean sequential version numbers from position: newest = highest.
+  const total = versions.length;
+  const displayV = (i: number) => total - i;
 
   return (
     <div className="rounded-lg border border-line bg-panel">
@@ -1405,15 +1410,9 @@ function ReportGroup({
             <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-ink">
               {latest.project_name || "All projects"}
             </span>
-            {latest.is_latest !== false ? (
-              <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
-                Latest · v{latest.version ?? 1}
-              </span>
-            ) : (
-              <span className="rounded bg-field px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
-                v{latest.version ?? 1}
-              </span>
-            )}
+            <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+              Latest · v{displayV(0)}
+            </span>
           </div>
           <div className="mt-1 text-xs text-muted">
             {latest.row_count ?? "—"} links · {(latest.format || "").toUpperCase()} ·{" "}
@@ -1445,10 +1444,10 @@ function ReportGroup({
           </button>
           {open ? (
             <div className="divide-y divide-line border-t border-line">
-              {older.map((r) => (
+              {older.map((r, i) => (
                 <div key={r.id} className="flex items-center justify-between gap-3 px-4 py-2">
                   <div className="flex items-center gap-2 text-xs text-muted">
-                    <span className="rounded bg-field px-1.5 py-0.5 font-semibold">v{r.version ?? 1}</span>
+                    <span className="rounded bg-field px-1.5 py-0.5 font-semibold">v{displayV(i + 1)}</span>
                     <span>
                       {r.row_count ?? "—"} links · {(r.format || "").toUpperCase()} · {formatDate(r.created_at)}
                     </span>
