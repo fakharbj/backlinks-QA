@@ -3633,7 +3633,7 @@ function AnalyticsDesk({ token }: { token: string | null }) {
                 Backlinks in “{
                   (() => {
                     const g = (q.data?.groups || []).find((x) => String(x.key) === drillKey);
-                    return (g && (String(g.label) || String(g.key))) || drillKey;
+                    return (g && ((g.label && String(g.label)) || String(g.key))) || drillKey;
                   })()
                 }”
               </h4>

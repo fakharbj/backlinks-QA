@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ValidationAppError
@@ -176,6 +176,15 @@ async def save_version(
     """Create the next immutable version for a scope, retiring the previous latest."""
     _validate_scope(scope, scope_ref_id)
     ws = None if scope == "global" else workspace_id
+
+    # Serialize the retire-prior + insert-next-version sequence per scope so two
+    # concurrent saves can't both compute the same version / both set is_latest
+    # (NULL scope_ref makes a DB partial-unique index unreliable). Transaction-scoped
+    # advisory lock releases on commit.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": f"scoring:{scope}:{scope_ref_id}:{ws}"},
+    )
 
     base = select(ScoringRuleVersion).where(ScoringRuleVersion.scope == scope)
     base = base.where(

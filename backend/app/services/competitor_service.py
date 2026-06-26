@@ -19,7 +19,18 @@ from app.core.deps import AuthContext
 from app.core.errors import NotFoundError, ValidationAppError
 from app.crawler.normalize import normalize_url
 from app.models.competitor import CompetitorBacklink, CompetitorSheet, CompetitorSourceDomain
+from app.models.project import Project
 from app.services import canonical_service
+
+
+async def _ensure_project(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> None:
+    """Validate the project belongs to the caller's workspace (assert_project is a
+    no-op for unrestricted admins, so we must check ownership explicitly — mirrors
+    project_settings_service._ensure_project)."""
+    project = await db.get(Project, project_id)
+    if project is None or project.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Project not found")
+    ctx.assert_project(project_id)
 
 
 def _parse_rows(raw_text: str) -> list[tuple[str, str | None, str | None]]:
@@ -50,7 +61,7 @@ async def ingest(
     name: str,
     raw_text: str,
 ) -> CompetitorSheet:
-    ctx.assert_project(project_id)
+    await _ensure_project(db, ctx, project_id)
     parsed = _parse_rows(raw_text)
     if not parsed:
         raise ValidationAppError("No competitor URLs found. Paste one source URL per line.")
@@ -108,7 +119,7 @@ async def recompute_domains(
                        round(100.0 * count(*) FILTER (WHERE index_status = 'indexed')
                              / nullif(count(*), 0), 1) AS indexed_pct
                 FROM backlink_records
-                WHERE project_id = :pid AND source_domain IS NOT NULL
+                WHERE workspace_id = :ws AND project_id = :pid AND source_domain IS NOT NULL
                 GROUP BY source_domain
             )
             INSERT INTO competitor_source_domains
@@ -143,7 +154,7 @@ async def recompute_domains(
 
 
 async def list_sheets(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> list[CompetitorSheet]:
-    ctx.assert_project(project_id)
+    await _ensure_project(db, ctx, project_id)
     return list(
         (
             await db.execute(
@@ -158,7 +169,7 @@ async def list_sheets(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID)
 async def list_domains(
     db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, *, category: str | None = None, limit: int = 500
 ) -> list[CompetitorSourceDomain]:
-    ctx.assert_project(project_id)
+    await _ensure_project(db, ctx, project_id)
     stmt = select(CompetitorSourceDomain).where(
         CompetitorSourceDomain.workspace_id == ctx.workspace_id,
         CompetitorSourceDomain.project_id == project_id,
@@ -172,7 +183,7 @@ async def list_domains(
 
 
 async def summary(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> dict:
-    ctx.assert_project(project_id)
+    await _ensure_project(db, ctx, project_id)
     row = (
         await db.execute(
             text(

@@ -99,14 +99,21 @@ async def rescore(
     total = changed = 0
     score_delta_sum = 0
     transitions: dict[str, int] = {}
+    # All records sharing a (project, link_type) resolve to the same rule set —
+    # cache it so a large rescore doesn't re-run the scope-chain queries per row.
+    ruleset_cache: dict[tuple, object] = {}
     for rec in records:
         cr = await _latest_result(db, rec.id)
         if cr is None or not cr.issues:
             continue
         issues = [i for i in (_issue_from_dict(d) for d in cr.issues) if i is not None]
-        ruleset = await scoring_config_service.resolve(
-            db, workspace_id, rec.project_id, rec.link_type_id
-        )
+        cache_key = (rec.project_id, rec.link_type_id)
+        ruleset = ruleset_cache.get(cache_key)
+        if ruleset is None:
+            ruleset = await scoring_config_service.resolve(
+                db, workspace_id, rec.project_id, rec.link_type_id
+            )
+            ruleset_cache[cache_key] = ruleset
         score, _ = score_issues(issues, ruleset=ruleset, signals=_signals(rec))
         status = classify(_artifact_from_result(cr), issues, score, bands=ruleset.bands)
 
