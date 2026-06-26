@@ -137,6 +137,35 @@ export type RescoreResult = {
   transitions: Record<string, number>;
 };
 
+export type CompetitorSheet = {
+  id: string;
+  name: string;
+  source_kind: string;
+  status: string;
+  total_rows: number;
+  domain_count: number;
+  new_domains: number;
+  existing_domains: number;
+  created_at: string;
+};
+
+export type CompetitorDomain = {
+  id: string;
+  domain_key: string;
+  url_count: number;
+  category: string;
+  our_link_count: number;
+  our_indexed_pct: number | null;
+  is_new: boolean;
+};
+
+export type CompetitorSummary = {
+  domains: number;
+  new_opportunities: number;
+  existing: number;
+  competitor_links: number;
+};
+
 export type SourceDomain = {
   id: string;
   domain_key: string;

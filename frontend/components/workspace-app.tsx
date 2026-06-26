@@ -26,6 +26,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Star,
+  Swords,
   Trash2,
   Upload,
   UserCog,
@@ -51,6 +52,8 @@ import {
   AssignmentEvent,
   BacklinkDetail,
   BacklinkRow,
+  CompetitorDomain,
+  CompetitorSummary,
   ConflictGroup,
   ConflictSummary,
   Dashboard,
@@ -73,7 +76,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "scoring" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "scoring" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -190,6 +193,9 @@ export function WorkspaceApp() {
           ) : null}
           {tab === "conflicts" ? <ConflictsDesk token={token} onNotice={setNotice} /> : null}
           {tab === "domains" ? <SourceDomainsDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "competitors" ? (
+            <CompetitorDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+          ) : null}
           {tab === "imports" ? (
             <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -292,7 +298,8 @@ const NAV_GROUPS: Array<{ label: string; items: Array<[Tab, string, NavIcon]> }>
     items: [
       ["backlinks", "Backlinks", Link2],
       ["conflicts", "Duplicates", Layers],
-      ["domains", "Source Domains", Globe]
+      ["domains", "Source Domains", Globe],
+      ["competitors", "Competitors", Swords]
     ]
   },
   { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet]] },
@@ -1220,6 +1227,141 @@ function ImportDesk({
           Queue import
         </button>
       </div>
+    </section>
+  );
+}
+
+function CompetitorDesk({
+  token,
+  projectId,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [pasted, setPasted] = useState("");
+  const [cat, setCat] = useState("");
+
+  const summary = useQuery({
+    queryKey: ["competitor-summary", token, projectId],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () => api<CompetitorSummary>(`/competitors/summary?project_id=${projectId}`, { token })
+  });
+  const domains = useQuery({
+    queryKey: ["competitor-domains", token, projectId, cat],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () =>
+      api<CompetitorDomain[]>(
+        `/competitors/domains?project_id=${projectId}${cat ? `&category=${cat}` : ""}`,
+        { token }
+      )
+  });
+  const ingest = useMutation({
+    mutationFn: () =>
+      api<{ id: string }>("/competitors/ingest", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ project_id: projectId, name: name || "Competitor upload", text: pasted })
+      }),
+    onSuccess: () => {
+      onNotice("Competitor links analyzed");
+      setPasted("");
+      queryClient.invalidateQueries({ queryKey: ["competitor-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  if (!projectId) return <Empty label="Select a project to analyze competitor backlinks." />;
+
+  const s = summary.data;
+  return (
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Competitor analysis</h2>
+        <p className="text-sm text-muted">
+          Paste a competitor&apos;s backlink source URLs (one per line; optional “, anchor, rel”). We
+          group them by domain and flag which domains you don&apos;t have yet — your outreach opportunities.
+        </p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        <Metric label="Domains" value={s?.domains ?? 0} icon={Globe} tone="ink" />
+        <Metric label="New opportunities" value={s?.new_opportunities ?? 0} icon={Star} tone="ocean" />
+        <Metric label="Already have" value={s?.existing ?? 0} icon={CheckCircle2} tone="plum" />
+        <Metric label="Competitor links" value={s?.competitor_links ?? 0} icon={Link2} tone="ink" />
+      </div>
+
+      <section className="rounded-lg border border-line bg-panel p-4">
+        <SectionTitle title="Upload competitor links" flush />
+        <div className="space-y-3 pt-3">
+          <Field label="Name (optional)" value={name} onChange={setName} />
+          <textarea
+            value={pasted}
+            onChange={(e) => setPasted(e.target.value)}
+            rows={6}
+            placeholder={"https://blog.example.com/post-linking-to-competitor\nhttps://directory.example.com/listing, brand anchor, dofollow"}
+            className="w-full rounded-md border border-line p-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          />
+          <button
+            onClick={() => ingest.mutate()}
+            disabled={ingest.isPending || !pasted.trim()}
+            className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+          >
+            {ingest.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            Analyze
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-line bg-panel">
+        <div className="flex items-center justify-between border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">Competitor source domains</h3>
+          <select
+            value={cat}
+            onChange={(e) => setCat(e.target.value)}
+            className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+          >
+            <option value="">All</option>
+            <option value="new_opportunity">New opportunities</option>
+            <option value="existing">Already have</option>
+          </select>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr><Th>Domain</Th><Th>Status</Th><Th>Competitor links</Th><Th>Our links</Th><Th>Indexed %</Th></tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(domains.data || []).map((d) => (
+                <tr key={d.id} className="hover:bg-field/60">
+                  <Td>
+                    <a href={`https://${d.domain_key}`} target="_blank" rel="noreferrer" className="text-ocean hover:underline">
+                      {d.domain_key}
+                    </a>
+                  </Td>
+                  <Td>
+                    {d.category === "new_opportunity" ? (
+                      <span className="rounded bg-ocean/10 px-2 py-0.5 text-xs font-medium text-ocean">Opportunity</span>
+                    ) : (
+                      <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-muted">Have it</span>
+                    )}
+                  </Td>
+                  <Td>{d.url_count}</Td>
+                  <Td>{d.our_link_count}</Td>
+                  <Td>{d.our_indexed_pct != null ? `${d.our_indexed_pct}%` : "-"}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!domains.isLoading && !(domains.data || []).length ? (
+            <Empty label="No competitor data yet — paste some links above." />
+          ) : null}
+        </div>
+      </section>
     </section>
   );
 }
