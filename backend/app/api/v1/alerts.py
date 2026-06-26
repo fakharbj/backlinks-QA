@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
@@ -57,15 +58,38 @@ async def delete_rule(
 
 @router.get("/notifications", response_model=list[NotificationOut])
 async def list_notifications(
-    ctx: AuthCtx, db: ReadSession, unread_only: bool = False
+    ctx: AuthCtx,
+    db: ReadSession,
+    unread_only: bool = False,
+    severity: str | None = Query(None),
+    status: str | None = Query(None),
+    project_id: uuid.UUID | None = Query(None),
+    since: datetime | None = Query(None),
+    limit: int = Query(100),
+    offset: int = Query(0),
 ) -> list[NotificationOut]:
-    items = await alert_service.list_notifications(db, ctx, unread_only=unread_only)
+    items = await alert_service.list_notifications(
+        db, ctx, unread_only=unread_only, severity=severity, status=status,
+        project_id=project_id, since=since, limit=limit, offset=offset,
+    )
     return [NotificationOut.model_validate(n) for n in items]
+
+
+@router.get("/notifications/stats")
+async def notification_stats(ctx: AuthCtx, db: ReadSession) -> dict:
+    return await alert_service.notification_stats(db, ctx)
 
 
 @router.get("/notifications/unread-count")
 async def unread_count(ctx: AuthCtx, db: ReadSession) -> dict:
     return {"count": await alert_service.unread_count(db, ctx)}
+
+
+@router.post("/notifications/read-all", response_model=Message)
+async def mark_all_read(ctx: AuthCtx, db: DbSession) -> Message:
+    n = await alert_service.mark_all_read(db, ctx)
+    await db.commit()
+    return Message(message=f"Marked {n} as read")
 
 
 @router.post("/notifications/{notification_id}/read", response_model=Message)

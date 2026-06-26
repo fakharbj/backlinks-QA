@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, time, timedelta, timezone
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import AuthContext
@@ -104,32 +104,84 @@ async def _get_rule(db: AsyncSession, ctx: AuthContext, rule_id: uuid.UUID) -> A
 
 
 # ── Notifications ─────────────────────────────────────────────────────────────────
-async def list_notifications(
-    db: AsyncSession, ctx: AuthContext, *, unread_only: bool = False, limit: int = 50
-) -> list[Notification]:
-    stmt = select(Notification).where(
+def _notif_scope(ctx: AuthContext):
+    """Base predicates: workspace + in-app + project access."""
+    preds = [
         Notification.workspace_id == ctx.workspace_id,
         Notification.channel == NotificationChannel.IN_APP,
-    )
+    ]
     if ctx.allowed_project_ids is not None:
-        stmt = stmt.where(Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
+        preds.append(Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
+    return preds
+
+
+async def list_notifications(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    unread_only: bool = False,
+    severity: str | None = None,
+    status: str | None = None,
+    project_id: uuid.UUID | None = None,
+    since: datetime | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Notification]:
+    stmt = select(Notification).where(*_notif_scope(ctx))
     if unread_only:
         stmt = stmt.where(Notification.status != NotificationStatus.READ)
-    stmt = stmt.order_by(Notification.created_at.desc()).limit(limit)
+    if status:
+        try:
+            stmt = stmt.where(Notification.status == NotificationStatus(status))
+        except ValueError:
+            pass
+    if severity:
+        try:
+            stmt = stmt.where(Notification.severity == Severity(severity))
+        except ValueError:
+            pass
+    if project_id is not None:
+        ctx.assert_project(project_id)
+        stmt = stmt.where(Notification.project_id == project_id)
+    if since is not None:
+        stmt = stmt.where(Notification.created_at >= since)
+    stmt = stmt.order_by(Notification.created_at.desc()).limit(max(1, min(limit, 500))).offset(max(0, offset))
     return list((await db.execute(stmt)).scalars().all())
 
 
 async def unread_count(db: AsyncSession, ctx: AuthContext) -> int:
-    from sqlalchemy import func
-
     stmt = select(func.count(Notification.id)).where(
-        Notification.workspace_id == ctx.workspace_id,
-        Notification.channel == NotificationChannel.IN_APP,
-        Notification.status != NotificationStatus.READ,
+        *_notif_scope(ctx), Notification.status != NotificationStatus.READ
     )
-    if ctx.allowed_project_ids is not None:
-        stmt = stmt.where(Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
     return int((await db.execute(stmt)).scalar_one())
+
+
+async def notification_stats(db: AsyncSession, ctx: AuthContext) -> dict:
+    """Headline counts for the notification center (total, unread, by severity/status)."""
+    total = int((await db.execute(select(func.count(Notification.id)).where(*_notif_scope(ctx)))).scalar_one())
+    unread = await unread_count(db, ctx)
+    by_severity: dict[str, int] = {}
+    rows = (
+        await db.execute(
+            select(Notification.severity, func.count(Notification.id))
+            .where(*_notif_scope(ctx))
+            .group_by(Notification.severity)
+        )
+    ).all()
+    for sev, n in rows:
+        by_severity[sev.value if sev is not None else "INFO"] = int(n)
+    return {"total": total, "unread": unread, "by_severity": by_severity}
+
+
+async def mark_all_read(db: AsyncSession, ctx: AuthContext) -> int:
+    stmt = (
+        update(Notification)
+        .where(*_notif_scope(ctx), Notification.status != NotificationStatus.READ)
+        .values(status=NotificationStatus.READ, read_at=datetime.now(timezone.utc))
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    return int(result.rowcount or 0)
 
 
 async def mark_read(db: AsyncSession, ctx: AuthContext, notification_id: uuid.UUID) -> None:

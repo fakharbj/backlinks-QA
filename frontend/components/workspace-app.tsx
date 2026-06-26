@@ -1234,6 +1234,55 @@ function AlertsDesk({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
+
+  // ── Notification center ────────────────────────────────────────────────
+  type Notif = {
+    id: string; project_id: string | null; backlink_id: string | null;
+    channel: string; status: string; severity: string | null;
+    title: string; body: string | null; created_at: string; read_at: string | null;
+  };
+  const [fSeverity, setFSeverity] = useState("");
+  const [fStatus, setFStatus] = useState("");
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const notifQS = () => {
+    const p = new URLSearchParams();
+    if (fSeverity) p.set("severity", fSeverity);
+    if (fStatus) p.set("status", fStatus);
+    if (unreadOnly) p.set("unread_only", "true");
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  };
+  const notifs = useQuery({
+    queryKey: ["notifications", token, fSeverity, fStatus, unreadOnly],
+    enabled: Boolean(token),
+    queryFn: () => api<Notif[]>(`/notifications${notifQS()}`, { token })
+  });
+  const stats = useQuery({
+    queryKey: ["notification-stats", token],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ total: number; unread: number; by_severity: Record<string, number> }>(
+        "/notifications/stats",
+        { token }
+      )
+  });
+  const refreshNotif = () => {
+    queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    queryClient.invalidateQueries({ queryKey: ["notification-stats"] });
+  };
+  const markRead = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/notifications/${id}/read`, { token, method: "POST" }),
+    onSuccess: refreshNotif
+  });
+  const markAll = useMutation({
+    mutationFn: () => api<{ message: string }>("/notifications/read-all", { token, method: "POST" }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      refreshNotif();
+    }
+  });
+
+  // ── Rule management ────────────────────────────────────────────────────
   const [name, setName] = useState("Critical backlink regressions");
   const [minSeverity, setMinSeverity] = useState("HIGH");
   const alerts = useQuery({
@@ -1248,7 +1297,7 @@ function AlertsDesk({
         method: "POST",
         body: JSON.stringify({
           name,
-          project_id: projectId,
+          project_id: projectId || null,
           min_severity: minSeverity,
           event_types: [],
           channels: ["in_app"],
@@ -1263,52 +1312,138 @@ function AlertsDesk({
   });
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[420px_1fr]">
-      <form
-        className="rounded-lg border border-line bg-panel p-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          create.mutate();
-        }}
-      >
-        <SectionTitle title="New Rule" flush />
-        <div className="space-y-3 pt-3">
-          <Field label="Name" value={name} onChange={setName} />
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold uppercase text-muted">Severity</span>
-            <select
-              className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm"
-              value={minSeverity}
-              onChange={(event) => setMinSeverity(event.target.value)}
-            >
-              <option>CRITICAL</option>
-              <option>HIGH</option>
-              <option>MEDIUM</option>
-              <option>LOW</option>
-            </select>
-          </label>
-          <button className="flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white">
-            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
-            Save rule
-          </button>
-        </div>
-      </form>
+    <section className="space-y-5">
       <section className="rounded-lg border border-line bg-panel">
-        <SectionTitle title="Alert Rules" />
-        <div className="divide-y divide-line">
-          {(alerts.data || []).map((rule) => (
-            <div key={rule.id} className="flex items-center justify-between gap-3 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Notifications</h2>
+            <p className="text-sm text-muted">
+              {stats.data?.unread ?? 0} unread of {stats.data?.total ?? 0}
+              {Object.entries(stats.data?.by_severity || {}).length ? " · " : ""}
+              {Object.entries(stats.data?.by_severity || {})
+                .map(([k, v]) => `${k} ${v}`)
+                .join(" · ")}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={fSeverity}
+              onChange={(e) => setFSeverity(e.target.value)}
+              className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+            >
+              <option value="">All severities</option>
+              {["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <select
+              value={fStatus}
+              onChange={(e) => setFStatus(e.target.value)}
+              className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+            >
+              <option value="">All statuses</option>
+              {["pending", "sent", "failed", "read"].map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setUnreadOnly((v) => !v)}
+              className={clsx(
+                "h-9 rounded-md border px-3 text-sm font-medium",
+                unreadOnly ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:bg-field"
+              )}
+            >
+              Unread only
+            </button>
+            <button
+              onClick={() => markAll.mutate()}
+              disabled={markAll.isPending}
+              className="flex h-9 items-center gap-2 rounded-md border border-line px-3 text-sm font-medium text-ink hover:bg-field"
+            >
+              {markAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Mark all read
+            </button>
+          </div>
+        </div>
+        <div className="max-h-[460px] divide-y divide-line overflow-y-auto">
+          {(notifs.data || []).map((n) => (
+            <div
+              key={n.id}
+              className={clsx("flex items-start justify-between gap-3 p-3", n.status !== "read" && "bg-ocean/5")}
+            >
               <div className="min-w-0">
-                <div className="truncate font-medium text-ink">{rule.name}</div>
-                <div className="mt-1 text-xs text-muted">
-                  {rule.channels.join(", ")} / {rule.dedup_window_minutes}m dedup
+                <div className="flex items-center gap-2">
+                  <Severity value={n.severity || "INFO"} />
+                  <span className="truncate text-sm font-medium text-ink">{n.title}</span>
                 </div>
+                {n.body ? <div className="mt-1 break-words text-xs text-muted">{n.body}</div> : null}
+                <div className="mt-1 text-xs text-muted">{formatDate(n.created_at)} · {n.status}</div>
               </div>
-              <Severity value={rule.min_severity} />
+              {n.status !== "read" ? (
+                <button
+                  onClick={() => markRead.mutate(n.id)}
+                  className="shrink-0 text-xs font-medium text-ocean hover:underline"
+                >
+                  Mark read
+                </button>
+              ) : null}
             </div>
           ))}
-          {!alerts.isLoading && !alerts.data?.length ? <Empty label="No alert rules yet" /> : null}
+          {!notifs.isLoading && !(notifs.data || []).length ? <Empty label="No notifications" /> : null}
         </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[420px_1fr]">
+        <form
+          className="rounded-lg border border-line bg-panel p-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            create.mutate();
+          }}
+        >
+          <SectionTitle title="New alert rule" flush />
+          <div className="space-y-3 pt-3">
+            <Field label="Name" value={name} onChange={setName} />
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold uppercase text-muted">Minimum severity</span>
+              <select
+                className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm"
+                value={minSeverity}
+                onChange={(event) => setMinSeverity(event.target.value)}
+              >
+                <option>CRITICAL</option>
+                <option>HIGH</option>
+                <option>MEDIUM</option>
+                <option>LOW</option>
+              </select>
+            </label>
+            <p className="text-xs text-muted">
+              {projectId ? "Scoped to the selected project." : "Applies across all projects."}
+            </p>
+            <button className="flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white">
+              {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
+              Save rule
+            </button>
+          </div>
+        </form>
+        <section className="rounded-lg border border-line bg-panel">
+          <SectionTitle title="Alert rules" />
+          <div className="divide-y divide-line">
+            {(alerts.data || []).map((rule) => (
+              <div key={rule.id} className="flex items-center justify-between gap-3 p-4">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-ink">{rule.name}</div>
+                  <div className="mt-1 text-xs text-muted">
+                    {rule.channels.join(", ")} · {rule.dedup_window_minutes}m dedup
+                    {rule.is_active ? "" : " · paused"}
+                  </div>
+                </div>
+                <Severity value={rule.min_severity} />
+              </div>
+            ))}
+            {!alerts.isLoading && !alerts.data?.length ? <Empty label="No alert rules yet" /> : null}
+          </div>
+        </section>
       </section>
     </section>
   );
