@@ -65,6 +65,20 @@ def _duplicate_status(v):
     return ("b.duplicate_status = :duplicate_status", {"duplicate_status": v})
 
 
+def _date_clause(lhs_op: str, key: str, v, *, next_day: bool = False):
+    """Build a date comparison with a real ``date`` param (asyncpg rejects strings).
+    ``next_day`` implements an inclusive end-of-day upper bound."""
+    from datetime import date, timedelta
+
+    try:
+        d = date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+    if next_day:
+        d = d + timedelta(days=1)
+    return (f"{lhs_op} :{key}", {key: d})
+
+
 _FILTERS: dict[str, Callable] = {
     "project_id": lambda v: ("b.project_id = :project_id", {"project_id": v}),
     "assigned_user_label": _eq("b.assigned_user_label", "assigned_user_label"),
@@ -89,12 +103,16 @@ _FILTERS: dict[str, Callable] = {
     "link_found": lambda v: ("b.link_found = :link_found", {"link_found": bool(v)}),
     "tag": lambda v: ("b.tags @> ARRAY[:tag]", {"tag": str(v)}),
     "search": _ilike_search,
-    "checked_from": lambda v: ("b.last_checked_at >= :checked_from::timestamptz", {"checked_from": str(v)}),
-    "checked_to": lambda v: ("b.last_checked_at <= :checked_to::timestamptz", {"checked_to": str(v)}),
-    "created_from": lambda v: ("b.created_at >= :created_from::timestamptz", {"created_from": str(v)}),
-    "created_to": lambda v: ("b.created_at <= :created_to::timestamptz", {"created_to": str(v)}),
-    "sheet_from": lambda v: ("b.sheet_created_date >= :sheet_from::date", {"sheet_from": str(v)}),
-    "sheet_to": lambda v: ("b.sheet_created_date <= :sheet_to::date", {"sheet_to": str(v)}),
+    # NOTE: bare bind names + real ``date`` params — a `::` cast directly after a
+    # bind name defeats SQLAlchemy text() parsing (`:p::t` binds nothing), and
+    # asyncpg requires date/datetime objects, not strings. "to" bounds include
+    # the whole end day. Invalid dates → builder returns None → filter skipped.
+    "checked_from": lambda v: _date_clause("b.last_checked_at >=", "checked_from", v),
+    "checked_to": lambda v: _date_clause("b.last_checked_at <", "checked_to", v, next_day=True),
+    "created_from": lambda v: _date_clause("b.created_at >=", "created_from", v),
+    "created_to": lambda v: _date_clause("b.created_at <", "created_to", v, next_day=True),
+    "sheet_from": lambda v: _date_clause("b.sheet_created_date >=", "sheet_from", v),
+    "sheet_to": lambda v: _date_clause("b.sheet_created_date <=", "sheet_to", v),
 }
 
 # ── Whitelisted group/facet dimensions: key → (key_expr, label_expr, extra_join) ──

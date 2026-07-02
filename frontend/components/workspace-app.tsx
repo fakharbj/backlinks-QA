@@ -18,6 +18,7 @@ import {
   Link2,
   Loader2,
   LogOut,
+  Moon,
   Play,
   Plus,
   RefreshCw,
@@ -26,6 +27,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Star,
+  Sun,
   Swords,
   Trash2,
   Upload,
@@ -86,9 +88,63 @@ export function WorkspaceApp() {
   const queryClient = useQueryClient();
   const [token, setToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
-  const [activeProjectId, setActiveProjectId] = useState<string>("");
-  const [tab, setTab] = useState<Tab>("overview");
+  const [activeProjectId, setActiveProjectIdState] = useState<string>("");
+  const [tab, setTabState] = useState<Tab>("overview");
   const [notice, setNotice] = useState<string>("");
+
+  // ── Context persistence ───────────────────────────────────────────────
+  // The URL (?project&tab) is the source of truth so refresh, deep links and
+  // Back/Forward all keep context; localStorage restores it on bare visits.
+  const syncUrl = (project: string, nextTab: Tab, push: boolean) => {
+    const q = new URLSearchParams(window.location.search);
+    if (project) q.set("project", project);
+    else q.delete("project");
+    q.set("tab", nextTab);
+    const url = `${window.location.pathname}?${q.toString()}`;
+    if (push) window.history.pushState(null, "", url);
+    else window.history.replaceState(null, "", url);
+    try {
+      localStorage.setItem("ls_project", project);
+      localStorage.setItem("ls_tab", nextTab);
+    } catch {
+      /* private mode */
+    }
+  };
+
+  const setTab = (next: Tab) => {
+    setTabState(next);
+    syncUrl(activeProjectId, next, true);
+  };
+
+  const setActiveProjectId = (next: string) => {
+    // Entering/leaving project context: keep the tab if the new nav has it,
+    // otherwise land on the dashboard.
+    const nextTab = navTabs(Boolean(next)).includes(tab) ? tab : "overview";
+    setActiveProjectIdState(next);
+    setTabState(nextTab);
+    syncUrl(next, nextTab, true);
+  };
+
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const p = q.get("project") ?? localStorage.getItem("ls_project") ?? "";
+    const rawTab = q.get("tab") ?? localStorage.getItem("ls_tab");
+    const t: Tab = isTab(rawTab) && navTabs(Boolean(p)).includes(rawTab) ? rawTab : "overview";
+    setActiveProjectIdState(p);
+    setTabState(t);
+    syncUrl(p, t, false);
+
+    const onPop = () => {
+      const qq = new URLSearchParams(window.location.search);
+      const pp = qq.get("project") || "";
+      const tt = qq.get("tab");
+      setActiveProjectIdState(pp);
+      setTabState(isTab(tt) && navTabs(Boolean(pp)).includes(tt) ? tt : "overview");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     loadTokens();
@@ -99,7 +155,7 @@ export function WorkspaceApp() {
     const onExpired = () => {
       setToken(null);
       setRefreshToken(null);
-      setActiveProjectId("");
+      setActiveProjectIdState("");
       queryClient.clear();
       setNotice("Session expired — please sign in again.");
     };
@@ -141,7 +197,15 @@ export function WorkspaceApp() {
     clearTokens();
     setToken(null);
     setRefreshToken(null);
-    setActiveProjectId("");
+    setActiveProjectIdState("");
+    setTabState("overview");
+    try {
+      localStorage.removeItem("ls_project");
+      localStorage.removeItem("ls_tab");
+    } catch {
+      /* ignore */
+    }
+    window.history.replaceState(null, "", window.location.pathname);
     queryClient.clear();
   }
 
@@ -173,7 +237,7 @@ export function WorkspaceApp() {
           </div>
         </aside>
         <section className="min-w-0 flex-1 space-y-5">
-          <MobileNav activeTab={tab} onTab={setTab} />
+          <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} />
           <div className="lg:hidden">
             <ProjectPanel
               token={token}
@@ -187,7 +251,7 @@ export function WorkspaceApp() {
           {tab === "overview" ? (
             <Overview token={token} projectId={activeProjectId} />
           ) : null}
-          {tab === "analytics" ? <AnalyticsDesk token={token} /> : null}
+          {tab === "analytics" ? <AnalyticsDesk token={token} projectId={activeProjectId} /> : null}
           {tab === "backlinks" ? (
             <Backlinks token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -246,7 +310,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
 
   return (
     <main className="grid min-h-screen place-items-center px-5">
-      <section className="w-full max-w-[460px] rounded-lg border border-line bg-panel p-6 shadow-sm">
+      <section className="w-full max-w-[460px] rounded-xl border border-line bg-panel shadow-card p-6 shadow-sm">
         <div className="mb-5 flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold uppercase text-ocean">LinkSentinel</p>
@@ -271,8 +335,8 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
           ) : null}
           <Field label="Email" type="email" value={email} onChange={setEmail} />
           <Field label="Password" type="password" value={password} onChange={setPassword} />
-          {error ? <p className="rounded bg-red-50 p-2 text-sm text-danger">{error}</p> : null}
-          <button className="flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black">
+          {error ? <p className="rounded bg-danger/10 p-2 text-sm text-danger">{error}</p> : null}
+          <button className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
             {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             {mode === "login" ? "Sign in" : "Create account"}
           </button>
@@ -290,8 +354,13 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
 }
 
 type NavIcon = typeof Gauge;
+type NavGroup = { label: string; items: Array<[Tab, string, NavIcon]> };
 
-const NAV_GROUPS: Array<{ label: string; items: Array<[Tab, string, NavIcon]> }> = [
+// ── Context-aware navigation (enterprise SaaS pattern) ─────────────────────
+// Company context = the full workspace/admin surface. Selecting a project
+// switches the ENTIRE nav to project-scoped items only — workspace admin
+// (Team, Employees, Sheets config) disappears until you exit the project.
+const WORKSPACE_NAV: NavGroup[] = [
   { label: "Monitor", items: [["overview", "Overview", Gauge], ["analytics", "Analytics", BarChart3]] },
   {
     label: "Backlinks",
@@ -315,20 +384,80 @@ const NAV_GROUPS: Array<{ label: string; items: Array<[Tab, string, NavIcon]> }>
   }
 ];
 
+const PROJECT_NAV: NavGroup[] = [
+  {
+    label: "Project",
+    items: [
+      ["overview", "Dashboard", Gauge],
+      ["backlinks", "Backlinks", Link2],
+      ["conflicts", "Duplicates", Layers],
+      ["domains", "Source Domains", Globe],
+      ["competitors", "Competitors", Swords]
+    ]
+  },
+  { label: "Ingest", items: [["imports", "Imports", Upload]] },
+  {
+    label: "Insights",
+    items: [
+      ["analytics", "Analytics", BarChart3],
+      ["reports", "Reports", FileSpreadsheet],
+      ["alerts", "Alerts", Bell]
+    ]
+  },
+  {
+    label: "Configure",
+    items: [["scoring", "Scoring", SlidersHorizontal], ["settings", "Settings", Settings]]
+  }
+];
+
+const navGroups = (inProject: boolean): NavGroup[] => (inProject ? PROJECT_NAV : WORKSPACE_NAV);
+const navTabs = (inProject: boolean): Tab[] =>
+  navGroups(inProject).flatMap((g) => g.items.map(([id]) => id));
+const ALL_TAB_IDS = new Set<string>([...navTabs(false), ...navTabs(true)]);
+const isTab = (v: string | null): v is Tab => Boolean(v) && ALL_TAB_IDS.has(v as string);
+
+function ThemeToggle() {
+  const [dark, setDark] = useState(false);
+  useEffect(() => {
+    setDark(document.documentElement.classList.contains("dark"));
+  }, []);
+  const toggle = () => {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    try {
+      localStorage.setItem("ls-theme", next ? "dark" : "light");
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <button
+      onClick={toggle}
+      title={dark ? "Switch to light" : "Switch to dark"}
+      aria-label="Toggle theme"
+      className="grid h-9 w-9 place-items-center rounded-xl border border-line bg-panel shadow-card text-muted transition hover:bg-field hover:text-ink"
+    >
+      {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+    </button>
+  );
+}
+
 function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => void }) {
   return (
-    <header className="sticky top-0 z-20 border-b border-line bg-white/95 backdrop-blur">
+    <header className="sticky top-0 z-20 border-b border-line bg-panel/70 backdrop-blur-xl">
       <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-3">
         <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-ink text-white">
+          <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-white shadow-soft">
             <Activity className="h-5 w-5" />
           </div>
           <div>
-            <div className="text-base font-semibold text-ink">LinkSentinel</div>
-            <div className="text-xs text-muted">Backlink QA operations</div>
+            <div className="text-base font-bold tracking-tight text-ink">LinkSentinel</div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted">Backlink QA operations</div>
           </div>
         </div>
         <div className="flex gap-2">
+          <ThemeToggle />
           <IconButton label="Refresh" onClick={onRefresh} icon={RefreshCw} />
           <IconButton label="Log out" onClick={onLogout} icon={LogOut} />
         </div>
@@ -363,28 +492,47 @@ function Sidebar({
         onSelect={onSelect}
         onNotice={onNotice}
       />
-      <nav className="rounded-lg border border-line bg-panel p-2">
-        {NAV_GROUPS.map((group) => (
+      {activeProjectId ? (
+        <div className="flex items-center justify-between rounded-xl border border-ocean/30 bg-ocean/10 px-3 py-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-ocean">
+            Project context
+          </span>
+          <button
+            onClick={() => onSelect("")}
+            className="text-xs font-medium text-ocean hover:underline"
+          >
+            Exit
+          </button>
+        </div>
+      ) : null}
+      <nav className="rounded-xl border border-line bg-panel p-2 shadow-card">
+        {navGroups(Boolean(activeProjectId)).map((group) => (
           <div key={group.label} className="mb-1 last:mb-0">
             <div className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
               {group.label}
             </div>
             <div className="space-y-0.5">
-              {group.items.map(([id, label, Icon]) => (
-                <button
-                  key={id}
-                  onClick={() => onTab(id)}
-                  className={clsx(
-                    "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition",
-                    activeTab === id
-                      ? "bg-ink text-white"
-                      : "text-muted hover:bg-field hover:text-ink"
-                  )}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {label}
-                </button>
-              ))}
+              {group.items.map(([id, label, Icon]) => {
+                const active = activeTab === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => onTab(id)}
+                    className={clsx(
+                      "group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition",
+                      active
+                        ? "bg-ocean/10 font-semibold text-ocean"
+                        : "font-medium text-muted hover:bg-field hover:text-ink"
+                    )}
+                  >
+                    {active ? (
+                      <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-ocean" />
+                    ) : null}
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -393,17 +541,25 @@ function Sidebar({
   );
 }
 
-function MobileNav({ activeTab, onTab }: { activeTab: Tab; onTab: (tab: Tab) => void }) {
+function MobileNav({
+  activeTab,
+  onTab,
+  inProject
+}: {
+  activeTab: Tab;
+  onTab: (tab: Tab) => void;
+  inProject: boolean;
+}) {
   return (
-    <nav className="flex gap-1 overflow-x-auto rounded-lg border border-line bg-panel p-1 scrollbar-thin lg:hidden">
-      {NAV_GROUPS.flatMap((g) => g.items).map(([id, label, Icon]) => (
+    <nav className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel p-1 shadow-card scrollbar-thin lg:hidden">
+      {navGroups(inProject).flatMap((g) => g.items).map(([id, label, Icon]) => (
         <button
           key={id}
           onClick={() => onTab(id)}
           title={label}
           className={clsx(
-            "flex h-9 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-medium transition",
-            activeTab === id ? "bg-ink text-white" : "text-muted hover:bg-field hover:text-ink"
+            "flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium transition",
+            activeTab === id ? "bg-ocean/10 font-semibold text-ocean" : "text-muted hover:bg-field hover:text-ink"
           )}
         >
           <Icon className="h-4 w-4" />
@@ -459,13 +615,13 @@ function ProjectPanel({
   });
 
   return (
-    <section className="rounded-lg border border-line bg-panel p-4">
+    <section className="rounded-xl border border-line bg-panel shadow-card p-4">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase text-muted">Project</h2>
         <Plus className="h-4 w-4 text-ocean" />
       </div>
       <select
-        className="mb-4 h-10 w-full rounded-md border border-line bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+        className="mb-4 h-10 w-full rounded-md border border-line bg-panel px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
         value={activeProjectId}
         onChange={(event) => onSelect(event.target.value)}
       >
@@ -488,7 +644,7 @@ function ProjectPanel({
           <Field label="Client" value={client} onChange={setClient} />
           <Field label="Target domain" value={domain} onChange={setDomain} />
           <div className="flex gap-2">
-            <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white hover:bg-teal-800">
+            <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
               {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               Create
             </button>
@@ -545,7 +701,7 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
         <Metric label="Avg score" value={stats?.totals.avg_score ?? "-"} icon={Gauge} tone="ink" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
-        <section className="rounded-lg border border-line bg-panel">
+        <section className="rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Issue Mix" />
           <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
             <Issue label="Nofollow" value={stats?.issues.nofollow_count ?? 0} />
@@ -556,7 +712,7 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
             <Issue label="Link missing" value={stats?.issues.link_missing_count ?? 0} />
           </div>
         </section>
-        <section className="rounded-lg border border-line bg-panel">
+        <section className="rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Recent Changes" />
           <div className="divide-y divide-line">
             {(stats?.recent_changes || []).slice(0, 8).map((item) => (
@@ -578,7 +734,7 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
       {stats?.is_project ? (
         <div className="space-y-5">
           <div className="grid gap-5 lg:grid-cols-2">
-            <section className="rounded-lg border border-line bg-panel">
+            <section className="rounded-xl border border-line bg-panel shadow-card">
               <SectionTitle title="By link type" />
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
@@ -600,7 +756,7 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
                 {!(stats.link_type_breakdown || []).length ? <Empty label="No link types" /> : null}
               </div>
             </section>
-            <section className="rounded-lg border border-line bg-panel">
+            <section className="rounded-xl border border-line bg-panel shadow-card">
               <SectionTitle title="Team performance" />
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
@@ -625,21 +781,44 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
           </div>
 
           <div className="grid gap-5 lg:grid-cols-2">
-            <section className="rounded-lg border border-line bg-panel">
+            <section className="rounded-xl border border-line bg-panel shadow-card">
               <SectionTitle title="Activity (14 days)" />
-              <div className="space-y-1 p-4">
-                {(stats.trends || []).map((t) => (
-                  <div key={t.date} className="flex items-center gap-3 text-xs">
-                    <span className="w-16 text-muted">{t.date.slice(5)}</span>
-                    <span className="text-ocean">+{t.added} added</span>
-                    <span className="text-danger">-{t.removed} lost</span>
-                    <span className="text-muted">{t.score_changed} score Δ</span>
+              <div className="space-y-2 p-4">
+                {(() => {
+                  const trends = stats.trends || [];
+                  const max = Math.max(1, ...trends.map((t) => t.added + t.removed + t.score_changed));
+                  return trends.map((t) => {
+                    const total = t.added + t.removed + t.score_changed;
+                    return (
+                      <div key={t.date} className="flex items-center gap-3 text-xs">
+                        <span className="w-12 shrink-0 text-muted">{t.date.slice(5)}</span>
+                        <span className="flex h-2.5 flex-1 overflow-hidden rounded-full bg-field">
+                          <span className="h-full bg-ocean" style={{ width: `${(t.added / max) * 100}%` }} />
+                          <span className="h-full bg-danger" style={{ width: `${(t.removed / max) * 100}%` }} />
+                          <span className="h-full bg-ember/60" style={{ width: `${(t.score_changed / max) * 100}%` }} />
+                        </span>
+                        <span
+                          className="w-32 shrink-0 text-right text-muted"
+                          title={`${t.added} added · ${t.removed} lost · ${t.score_changed} score changes`}
+                        >
+                          +{t.added} / −{t.removed} / Δ{t.score_changed}
+                        </span>
+                      </div>
+                    );
+                  });
+                })()}
+                {(stats.trends || []).length ? (
+                  <div className="flex gap-3 pt-1 text-[10px] uppercase tracking-wide text-muted">
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-ocean" /> Added</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-danger" /> Lost</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-ember/60" /> Score Δ</span>
                   </div>
-                ))}
-                {!(stats.trends || []).length ? <Empty label="No recent activity" /> : null}
+                ) : (
+                  <Empty label="No recent activity" />
+                )}
               </div>
             </section>
-            <section className="rounded-lg border border-line bg-panel">
+            <section className="rounded-xl border border-line bg-panel shadow-card">
               <SectionTitle title="Top source domains" />
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
@@ -663,7 +842,7 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
             </section>
           </div>
 
-          <section className="rounded-lg border border-line bg-panel">
+          <section className="rounded-xl border border-line bg-panel shadow-card">
             <SectionTitle title="Recent regressions (high severity)" />
             <div className="divide-y divide-line">
               {(stats.recent_regressions || []).map((r) => (
@@ -701,15 +880,60 @@ function Backlinks({
   const [status, setStatus] = useState("");
   const [dupFilter, setDupFilter] = useState("");
   const [indexFilter, setIndexFilter] = useState("");
+  const [rel, setRel] = useState("");
+  const [linkType, setLinkType] = useState("");
+  const [issueLabel, setIssueLabel] = useState("");
+  const [sort, setSort] = useState("score");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const linkTypes = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+
+  const clearFilters = () => {
+    setStatus("");
+    setDupFilter("");
+    setIndexFilter("");
+    setRel("");
+    setLinkType("");
+    setIssueLabel("");
+    setSearch("");
+  };
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, issueLabel, debouncedSearch]
+    .filter(Boolean).length;
+
+  // One-click QA presets — each toggles the underlying filter, so they compose.
+  const chips: Array<[string, boolean, () => void]> = [
+    ["Failing", status === "FAIL", () => setStatus(status === "FAIL" ? "" : "FAIL")],
+    ["Needs review", status === "NEEDS_MANUAL_REVIEW", () => setStatus(status === "NEEDS_MANUAL_REVIEW" ? "" : "NEEDS_MANUAL_REVIEW")],
+    ["Link missing", issueLabel === "LINK_MISSING", () => setIssueLabel(issueLabel === "LINK_MISSING" ? "" : "LINK_MISSING")],
+    ["Nofollow", rel === "nofollow", () => setRel(rel === "nofollow" ? "" : "nofollow")],
+    ["Not indexed", indexFilter === "not_indexed", () => setIndexFilter(indexFilter === "not_indexed" ? "" : "not_indexed")],
+    ["Duplicates", dupFilter === "duplicate", () => setDupFilter(dupFilter === "duplicate" ? "" : "duplicate")]
+  ];
+
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: "50", with_total: "true" });
     if (projectId) params.set("project_id", projectId);  // omit → all projects
     if (status) params.set("status", status);
     if (dupFilter) params.set("duplicate_status", dupFilter);
     if (indexFilter) params.set("index_status", indexFilter);
+    if (rel) params.set("rel", rel);
+    if (linkType) params.set("link_type", linkType);
+    if (issueLabel) params.set("issue_label", issueLabel);
+    if (debouncedSearch) params.set("search", debouncedSearch);
+    if (sort) params.set("sort", sort);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, issueLabel, debouncedSearch, sort]);
   const backlinks = useQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -740,15 +964,68 @@ function Backlinks({
   });
 
   return (
-    <section className="rounded-lg border border-line bg-panel">
-      <div className="flex flex-col gap-3 border-b border-line p-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-ink">Backlinks</h2>
-          <p className="text-sm text-muted">{backlinks.data?.total ?? 0} records</p>
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="border-b border-line p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Backlinks</h2>
+            <p className="text-sm text-muted">
+              {backlinks.data?.total ?? 0} records
+              {activeFilterCount ? ` · ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""}` : ""}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => indexCheck.mutate()}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+              title="Check whether source pages are indexed by Google (via proxy)"
+            >
+              {indexCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
+              Check index
+            </button>
+            <button
+              onClick={() => recheck.mutate()}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+            >
+              {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Recheck
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
+
+        {/* One-click QA presets */}
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          {chips.map(([label, active, toggle]) => (
+            <button
+              key={label}
+              onClick={toggle}
+              className={clsx(
+                "h-7 rounded-full border px-3 text-xs font-medium transition",
+                active
+                  ? "border-ocean bg-ocean/10 text-ocean"
+                  : "border-line text-muted hover:border-ocean/40 hover:text-ink"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          {activeFilterCount ? (
+            <button onClick={clearFilters} className="ml-1 text-xs font-medium text-ocean hover:underline">
+              Clear all
+            </button>
+          ) : null}
+        </div>
+
+        {/* Full filter row */}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search URL or anchor…"
+            className="h-9 w-56 rounded-xl border border-line bg-panel shadow-card px-3 text-sm focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          />
           <select
-            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
             value={status}
             onChange={(event) => setStatus(event.target.value)}
           >
@@ -761,7 +1038,28 @@ function Backlinks({
             <option value="PENDING">Pending</option>
           </select>
           <select
-            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
+            value={rel}
+            onChange={(event) => setRel(event.target.value)}
+          >
+            <option value="">Any rel</option>
+            <option value="dofollow">Dofollow</option>
+            <option value="nofollow">Nofollow</option>
+            <option value="sponsored">Sponsored</option>
+            <option value="ugc">UGC</option>
+          </select>
+          <select
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
+            value={linkType}
+            onChange={(event) => setLinkType(event.target.value)}
+          >
+            <option value="">All link types</option>
+            {(linkTypes.data || []).map((lt) => (
+              <option key={lt.id} value={lt.name}>{lt.name}</option>
+            ))}
+          </select>
+          <select
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
             value={dupFilter}
             onChange={(event) => setDupFilter(event.target.value)}
           >
@@ -773,7 +1071,7 @@ function Backlinks({
             <option value="unique">Unique only</option>
           </select>
           <select
-            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
             value={indexFilter}
             onChange={(event) => setIndexFilter(event.target.value)}
           >
@@ -783,21 +1081,15 @@ function Backlinks({
             <option value="uncertain">Index uncertain</option>
             <option value="unchecked">Index unchecked</option>
           </select>
-          <button
-            onClick={() => indexCheck.mutate()}
-            className="flex h-9 items-center gap-2 rounded-md border border-line px-3 text-sm font-semibold text-ink hover:bg-field"
-            title="Check whether source pages are indexed by Google (via proxy)"
+          <select
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
+            value={sort}
+            onChange={(event) => setSort(event.target.value)}
           >
-            {indexCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
-            Check index
-          </button>
-          <button
-            onClick={() => recheck.mutate()}
-            className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white hover:bg-black"
-          >
-            {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Recheck
-          </button>
+            <option value="score">Sort: worst score first</option>
+            <option value="last_checked_at">Sort: recently checked</option>
+            <option value="created_at">Sort: newest</option>
+          </select>
         </div>
       </div>
       <div className="overflow-x-auto scrollbar-thin">
@@ -828,7 +1120,7 @@ function Backlinks({
                   <Url value={row.source_page_url} />
                   {row.is_duplicate ? (
                     <span
-                      className="mt-0.5 mr-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700"
+                      className="mt-0.5 mr-1 inline-block rounded bg-ember/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ember"
                       title={row.duplicate_status || "duplicate"}
                     >
                       {(row.duplicate_status || "duplicate").replace("dup_", "").replace(/_/g, " ")}
@@ -918,12 +1210,12 @@ function BacklinkDetailDrawer({
 
   const data = detail.data;
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-ink/30" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
       <aside
-        className="h-full w-full max-w-[680px] overflow-y-auto bg-white shadow-xl scrollbar-thin"
+        className="h-full w-full max-w-[680px] overflow-y-auto bg-panel shadow-xl scrollbar-thin"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="sticky top-0 flex items-center justify-between border-b border-line bg-white px-5 py-4">
+        <div className="sticky top-0 flex items-center justify-between border-b border-line bg-panel px-5 py-4">
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold text-ink">Backlink detail</h2>
             <p className="truncate text-xs text-muted">{data?.source_page_url}</p>
@@ -931,7 +1223,7 @@ function BacklinkDetailDrawer({
           <div className="flex items-center gap-2">
             <button
               onClick={() => recheck.mutate()}
-              className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white hover:bg-black"
+              className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
             >
               {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Recheck
@@ -1121,7 +1413,7 @@ function OverrideForm({
       }}
     >
       <select
-        className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+        className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
         value={status}
         onChange={(event) => setStatus(event.target.value)}
       >
@@ -1131,7 +1423,7 @@ function OverrideForm({
         <option value="NEEDS_MANUAL_REVIEW">Review</option>
       </select>
       <input
-        className="h-9 flex-1 rounded-md border border-line bg-white px-3 text-sm"
+        className="h-9 flex-1 rounded-md border border-line bg-panel px-3 text-sm"
         placeholder="Reason (required)"
         value={note}
         onChange={(event) => setNote(event.target.value)}
@@ -1204,24 +1496,24 @@ function ImportDesk({
 
   if (!projectId) {
     return (
-      <section className="rounded-lg border border-line bg-panel p-8 text-center text-sm text-muted">
+      <section className="rounded-xl border border-line bg-panel shadow-card p-8 text-center text-sm text-muted">
         Select a project (top-left) to import links into it.
       </section>
     );
   }
 
   return (
-    <section className="rounded-lg border border-line bg-panel">
+    <section className="rounded-xl border border-line bg-panel shadow-card">
       <SectionTitle title="Paste Import" />
       <div className="space-y-3 p-4">
         <textarea
-          className="min-h-[260px] w-full rounded-md border border-line bg-white p-3 font-mono text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          className="min-h-[260px] w-full rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ocean/20"
           value={text}
           onChange={(event) => setText(event.target.value)}
         />
         <button
           onClick={() => submit.mutate()}
-          className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white hover:bg-teal-800"
+          className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
         >
           {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
           Queue import
@@ -1295,7 +1587,7 @@ function CompetitorDesk({
         <Metric label="Competitor links" value={s?.competitor_links ?? 0} icon={Link2} tone="ink" />
       </div>
 
-      <section className="rounded-lg border border-line bg-panel p-4">
+      <section className="rounded-xl border border-line bg-panel shadow-card p-4">
         <SectionTitle title="Upload competitor links" flush />
         <div className="space-y-3 pt-3">
           <Field label="Name (optional)" value={name} onChange={setName} />
@@ -1309,7 +1601,7 @@ function CompetitorDesk({
           <button
             onClick={() => ingest.mutate()}
             disabled={ingest.isPending || !pasted.trim()}
-            className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+            className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
           >
             {ingest.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
             Analyze
@@ -1317,13 +1609,13 @@ function CompetitorDesk({
         </div>
       </section>
 
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-3">
           <h3 className="text-sm font-semibold text-ink">Competitor source domains</h3>
           <select
             value={cat}
             onChange={(e) => setCat(e.target.value)}
-            className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+            className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
           >
             <option value="">All</option>
             <option value="new_opportunity">New opportunities</option>
@@ -1347,7 +1639,7 @@ function CompetitorDesk({
                     {d.category === "new_opportunity" ? (
                       <span className="rounded bg-ocean/10 px-2 py-0.5 text-xs font-medium text-ocean">Opportunity</span>
                     ) : (
-                      <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-muted">Have it</span>
+                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted">Have it</span>
                     )}
                   </Td>
                   <Td>{d.url_count}</Td>
@@ -1455,7 +1747,7 @@ function AlertsDesk({
 
   return (
     <section className="space-y-5">
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">
           <div>
             <h2 className="text-base font-semibold text-ink">Notifications</h2>
@@ -1471,7 +1763,7 @@ function AlertsDesk({
             <select
               value={fSeverity}
               onChange={(e) => setFSeverity(e.target.value)}
-              className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+              className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
             >
               <option value="">All severities</option>
               {["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].map((s) => (
@@ -1481,7 +1773,7 @@ function AlertsDesk({
             <select
               value={fStatus}
               onChange={(e) => setFStatus(e.target.value)}
-              className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+              className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
             >
               <option value="">All statuses</option>
               {["pending", "sent", "failed", "read"].map((s) => (
@@ -1537,7 +1829,7 @@ function AlertsDesk({
 
       <section className="grid gap-5 xl:grid-cols-[420px_1fr]">
         <form
-          className="rounded-lg border border-line bg-panel p-4"
+          className="rounded-xl border border-line bg-panel shadow-card p-4"
           onSubmit={(event) => {
             event.preventDefault();
             create.mutate();
@@ -1549,7 +1841,7 @@ function AlertsDesk({
             <label className="block">
               <span className="mb-1 block text-xs font-semibold uppercase text-muted">Minimum severity</span>
               <select
-                className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm"
+                className="h-10 w-full rounded-md border border-line bg-panel px-3 text-sm"
                 value={minSeverity}
                 onChange={(event) => setMinSeverity(event.target.value)}
               >
@@ -1562,13 +1854,13 @@ function AlertsDesk({
             <p className="text-xs text-muted">
               {projectId ? "Scoped to the selected project." : "Applies across all projects."}
             </p>
-            <button className="flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white">
+            <button className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white">
               {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
               Save rule
             </button>
           </div>
         </form>
-        <section className="rounded-lg border border-line bg-panel">
+        <section className="rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Alert rules" />
           <div className="divide-y divide-line">
             {(alerts.data || []).map((rule) => (
@@ -1655,6 +1947,37 @@ function ReportsDesk({
       else delete n[k];
       return n;
     });
+
+  // Saved report templates (type + filters + format), reusable in one click.
+  type ReportTemplate = { name: string; type: string; format: string; filters: Record<string, string> };
+  const [templates, setTemplates] = useState<ReportTemplate[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ls_report_templates") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [templateName, setTemplateName] = useState("");
+  const persistTemplates = (next: ReportTemplate[]) => {
+    setTemplates(next);
+    try {
+      localStorage.setItem("ls_report_templates", JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+  const saveTemplate = () => {
+    const name = templateName.trim();
+    if (!name) return;
+    persistTemplates([...templates.filter((t) => t.name !== name), { name, type, format, filters }]);
+    setTemplateName("");
+    onNotice(`Template “${name}” saved`);
+  };
+  const applyTemplate = (t: ReportTemplate) => {
+    setType(t.type);
+    setFormat(t.format);
+    setFilters(t.filters);
+  };
 
   // Reuse the analytics engine to drive the report filter dropdowns + a live count.
   const facets = useQuery({
@@ -1749,7 +2072,7 @@ function ReportsDesk({
   return (
     <section className="space-y-4">
       {/* ── Builder ─────────────────────────────────────────────── */}
-      <div className="rounded-lg border border-line bg-panel">
+      <div className="rounded-xl border border-line bg-panel shadow-card">
         <div className="border-b border-line p-4">
           <h2 className="text-base font-semibold text-ink">Build a report</h2>
           <p className="text-sm text-muted">
@@ -1760,6 +2083,26 @@ function ReportsDesk({
         </div>
 
         <div className="space-y-4 p-4">
+          {templates.length ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Templates</span>
+              {templates.map((t) => (
+                <span key={t.name} className="inline-flex items-center gap-1 rounded-full border border-line bg-field px-2.5 py-1 text-xs">
+                  <button onClick={() => applyTemplate(t)} className="font-medium text-ink hover:text-ocean">
+                    {t.name}
+                  </button>
+                  <button
+                    onClick={() => persistTemplates(templates.filter((x) => x.name !== t.name))}
+                    aria-label={`Delete template ${t.name}`}
+                    className="text-muted hover:text-danger"
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
           {/* Step 1 — type */}
           <div>
             <div className="mb-1.5 text-xs font-semibold uppercase text-muted">1 · What to report</div>
@@ -1769,10 +2112,10 @@ function ReportsDesk({
                   key={t.value}
                   onClick={() => setType(t.value)}
                   className={clsx(
-                    "rounded-md border p-3 text-left transition",
+                    "rounded-lg border p-3 text-left transition",
                     type === t.value
-                      ? "border-ocean bg-teal-50 ring-1 ring-ocean/30"
-                      : "border-line bg-white hover:border-ocean/40"
+                      ? "border-ocean bg-ocean/10 ring-1 ring-ocean/30"
+                      : "border-line bg-panel hover:border-ocean/40"
                   )}
                 >
                   <div className="text-sm font-semibold text-ink">{t.label}</div>
@@ -1785,7 +2128,7 @@ function ReportsDesk({
           {/* Step 2 — which links (scope + filters + live count) */}
           <div>
             <div className="mb-1.5 text-xs font-semibold uppercase text-muted">2 · Which links</div>
-            <div className="rounded-md border border-line bg-white p-3">
+            <div className="rounded-md border border-line bg-panel p-3">
               <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
                 <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-ink">
                   Scope: {projectId ? "selected project" : "🏢 all projects"}
@@ -1801,7 +2144,7 @@ function ReportsDesk({
                   return (
                     <select
                       key={dim}
-                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
                       value={filters[key] || ""}
                       onChange={(e) => setFilter(key, e.target.value)}
                     >
@@ -1814,6 +2157,22 @@ function ReportsDesk({
                     </select>
                   );
                 })}
+                <label className="flex items-center gap-1 text-xs text-muted">
+                  Checked
+                  <input
+                    type="date"
+                    value={filters.checked_from || ""}
+                    onChange={(e) => setFilter("checked_from", e.target.value)}
+                    className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+                  />
+                  –
+                  <input
+                    type="date"
+                    value={filters.checked_to || ""}
+                    onChange={(e) => setFilter("checked_to", e.target.value)}
+                    className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+                  />
+                </label>
                 {Object.keys(filters).length ? (
                   <button
                     onClick={() => setFilters({})}
@@ -1837,24 +2196,42 @@ function ReportsDesk({
                     onClick={() => setFormat(f.value)}
                     title={f.hint}
                     className={clsx(
-                      "rounded-md border px-3 py-2 text-sm transition",
+                      "rounded-lg border px-3 py-2 text-sm transition",
                       format === f.value
-                        ? "border-ink bg-ink text-white"
-                        : "border-line bg-white text-ink hover:border-ink/40"
+                        ? "border-ocean bg-ocean/10 font-semibold text-ocean"
+                        : "border-line bg-panel text-ink hover:border-ocean/40"
                     )}
                   >
                     {f.label}
                   </button>
                 ))}
               </div>
-              <button
-                onClick={() => create.mutate()}
-                disabled={create.isPending}
-                className="flex h-11 items-center justify-center gap-2 rounded-md bg-ocean px-5 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:opacity-50"
-              >
-                {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
-                Generate {activeType?.label || "report"}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveTemplate();
+                  }}
+                  placeholder="Save as template…"
+                  className="h-9 w-40 rounded-xl border border-line bg-panel shadow-card px-2 text-xs"
+                />
+                <button
+                  onClick={saveTemplate}
+                  disabled={!templateName.trim()}
+                  className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => create.mutate()}
+                  disabled={create.isPending}
+                  className="flex h-11 items-center justify-center gap-2 rounded-lg bg-ocean px-5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+                >
+                  {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+                  Generate {activeType?.label || "report"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1912,7 +2289,7 @@ function ReportGroup({
   const displayV = (i: number) => total - i;
 
   return (
-    <div className="rounded-lg border border-line bg-panel">
+    <div className="rounded-xl border border-line bg-panel shadow-card">
       <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -1921,7 +2298,7 @@ function ReportGroup({
             <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-ink">
               {latest.project_name || "All projects"}
             </span>
-            <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+            <span className="rounded bg-ocean/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ocean">
               Latest · v{displayV(0)}
             </span>
           </div>
@@ -1936,7 +2313,7 @@ function ReportGroup({
           <button
             disabled={latest.status !== "completed"}
             onClick={() => onDownload(latest)}
-            className="flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Download className="h-4 w-4" />
             Download
@@ -1966,7 +2343,7 @@ function ReportGroup({
                   <button
                     disabled={r.status !== "completed"}
                     onClick={() => onDownload(r)}
-                    className="flex items-center gap-1 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Download className="h-3.5 w-3.5" /> Download
                   </button>
@@ -2026,13 +2403,13 @@ function SourceDomainsDesk({
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <input
-            className="h-9 w-44 rounded-md border border-line bg-white px-3 text-sm"
+            className="h-9 w-44 rounded-md border border-line bg-panel px-3 text-sm"
             placeholder="Search domain…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
           <select
-            className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+            className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
             value={sort}
             onChange={(event) => setSort(event.target.value)}
           >
@@ -2044,21 +2421,21 @@ function SourceDomainsDesk({
           </select>
           <button
             onClick={() => recompute.mutate()}
-            className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black"
+            className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
           >
             {recompute.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             Recompute
           </button>
           <button
             onClick={() => fetchMetrics.mutate()}
-            className="flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:bg-field"
+            className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
           >
             {fetchMetrics.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
             Fetch metrics
           </button>
         </div>
       </div>
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-field text-left text-xs uppercase text-muted">
@@ -2148,7 +2525,7 @@ function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }
                 <div className="mt-1 flex flex-wrap gap-1">
                   {dist.length ? (
                     dist.map(([k, v]) => (
-                      <span key={k} className="rounded border border-line bg-white px-2 py-0.5 text-xs">
+                      <span key={k} className="rounded border border-line bg-panel px-2 py-0.5 text-xs">
                         {k}: {v}
                       </span>
                     ))
@@ -2294,14 +2671,14 @@ function EmployeesDesk({
         </p>
         <button
           onClick={() => sync.mutate()}
-          className="flex h-9 items-center gap-2 self-start rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black"
+          className="flex h-9 items-center gap-2 self-start rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
         >
           {sync.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           Sync from sheets
         </button>
       </div>
 
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="Sheet users → app accounts" />
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -2321,7 +2698,7 @@ function EmployeesDesk({
                   <Td>{m.backlink_count}</Td>
                   <Td>
                     <select
-                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
                       value={m.user_id || ""}
                       onChange={(event) =>
                         mapUser.mutate({ id: m.id, user_id: event.target.value || null })
@@ -2340,7 +2717,7 @@ function EmployeesDesk({
         </div>
       </section>
 
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="Employee codes" />
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -2362,7 +2739,7 @@ function EmployeesDesk({
                   <Td>{c.display_name || "—"}</Td>
                   <Td>
                     <select
-                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
                       value={c.user_id || ""}
                       onChange={(event) =>
                         updateCode.mutate({ id: c.id, patch: { user_id: event.target.value || null } })
@@ -2385,7 +2762,7 @@ function EmployeesDesk({
                     <button
                       onClick={() => deleteCode.mutate(c.id)}
                       aria-label="Remove code"
-                      className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-muted transition hover:bg-field hover:text-danger"
+                      className="grid h-7 w-7 place-items-center rounded border border-line bg-panel text-muted transition hover:bg-field hover:text-danger"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -2406,18 +2783,18 @@ function EmployeesDesk({
           }}
         >
           <input
-            className="h-9 w-32 rounded-md border border-line bg-white px-2 text-sm"
+            className="h-9 w-32 rounded-md border border-line bg-panel px-2 text-sm"
             placeholder="Code"
             value={newCode}
             onChange={(event) => setNewCode(event.target.value)}
           />
           <input
-            className="h-9 flex-1 rounded-md border border-line bg-white px-2 text-sm"
+            className="h-9 flex-1 rounded-md border border-line bg-panel px-2 text-sm"
             placeholder="Name (optional)"
             value={newCodeName}
             onChange={(event) => setNewCodeName(event.target.value)}
           />
-          <button className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black">
+          <button className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
             {addCode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Add code
           </button>
@@ -2461,7 +2838,7 @@ function LinkTypesCard({
     onError: (e: Error) => onNotice(e.message)
   });
   return (
-    <section className="rounded-lg border border-line bg-panel">
+    <section className="rounded-xl border border-line bg-panel shadow-card">
       <SectionTitle title="Link types (workspace catalog)" />
       <div className="space-y-3 p-4">
         <p className="text-xs text-muted">
@@ -2497,12 +2874,12 @@ function LinkTypesCard({
           }}
         >
           <input
-            className="h-9 flex-1 rounded-md border border-line bg-white px-3 text-sm"
+            className="h-9 flex-1 rounded-md border border-line bg-panel px-3 text-sm"
             placeholder="New link type (e.g. Web 2.0)"
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
-          <button className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black">
+          <button className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
             {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Add
           </button>
@@ -2537,8 +2914,11 @@ function ScoringDesk({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [scope, setScope] = useState<"global" | "link_type" | "project">("global");
-  const [refId, setRefId] = useState<string>("");
+  // In project context, open directly on the project's own scoring rules.
+  const [scope, setScope] = useState<"global" | "link_type" | "project">(
+    projectId ? "project" : "global"
+  );
+  const [refId, setRefId] = useState<string>(projectId || "");
   const [draft, setDraft] = useState<Record<string, Record<string, number | "">>>({});
   const [bands, setBands] = useState<{ fail_below: number; warn_below: number }>({
     fail_below: 30,
@@ -2659,7 +3039,7 @@ function ScoringDesk({
           <select
             value={refId}
             onChange={(e) => setRefId(e.target.value)}
-            className="h-9 rounded-md border border-line bg-white px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+            className="h-9 rounded-md border border-line bg-panel px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
           >
             <option value="">Select link type…</option>
             {(linkTypes.data || []).map((lt) => (
@@ -2673,7 +3053,7 @@ function ScoringDesk({
           <select
             value={refId}
             onChange={(e) => setRefId(e.target.value)}
-            className="h-9 rounded-md border border-line bg-white px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+            className="h-9 rounded-md border border-line bg-panel px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
           >
             <option value="">Select project…</option>
             {(projects.data || []).map((p) => (
@@ -2693,7 +3073,7 @@ function ScoringDesk({
         </div>
       ) : (
         <>
-          <section className="rounded-lg border border-line bg-panel">
+          <section className="rounded-xl border border-line bg-panel shadow-card">
             <SectionTitle title={`Status thresholds · ${cfg.version ? `v${cfg.version}` : "inherited"}`} />
             <div className="flex flex-wrap items-end gap-4 p-4">
               <label className="text-sm">
@@ -2718,7 +3098,7 @@ function ScoringDesk({
                 <button
                   onClick={() => save.mutate()}
                   disabled={save.isPending}
-                  className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white hover:bg-teal-800"
+                  className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
                 >
                   {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                   Save version
@@ -2758,7 +3138,7 @@ function ScoringDesk({
             ) : null}
           </section>
 
-          <section className="rounded-lg border border-line bg-panel">
+          <section className="rounded-xl border border-line bg-panel shadow-card">
             <SectionTitle title="Parameters" />
             <div className="divide-y divide-line">
               {cfg.parameters.map((p) => (
@@ -2871,12 +3251,12 @@ function SettingsDesk({
     <section className="space-y-5">
       <LinkTypesCard token={token} onNotice={onNotice} />
       {!projectId ? (
-        <div className="rounded-lg border border-line bg-panel">
+        <div className="rounded-xl border border-line bg-panel shadow-card">
           <Empty label="Select a project (top‑left) to manage its main domains and QA policy." />
         </div>
       ) : (
       <section className="grid gap-5 xl:grid-cols-2">
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="Main domains" />
         <div className="space-y-3 p-4">
           <p className="text-xs text-muted">
@@ -2893,7 +3273,7 @@ function SettingsDesk({
                   />
                   <span className="truncate font-medium text-ink">{d.domain}</span>
                   {d.is_primary ? (
-                    <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ember">
+                    <span className="rounded border border-ember/30 bg-ember/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ember">
                       Primary
                     </span>
                   ) : null}
@@ -2902,7 +3282,7 @@ function SettingsDesk({
                   {!d.is_primary ? (
                     <button
                       onClick={() => setPrimary.mutate(d.id)}
-                      className="rounded border border-line bg-white px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+                      className="rounded border border-line bg-panel px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
                     >
                       Set primary
                     </button>
@@ -2910,7 +3290,7 @@ function SettingsDesk({
                   <button
                     onClick={() => removeDomain.mutate(d.id)}
                     aria-label="Remove domain"
-                    className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-muted transition hover:bg-field hover:text-danger"
+                    className="grid h-7 w-7 place-items-center rounded border border-line bg-panel text-muted transition hover:bg-field hover:text-danger"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -2929,12 +3309,12 @@ function SettingsDesk({
             }}
           >
             <input
-              className="h-10 flex-1 rounded-md border border-line bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              className="h-10 flex-1 rounded-md border border-line bg-panel px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
               placeholder="example.com"
               value={newDomain}
               onChange={(event) => setNewDomain(event.target.value)}
             />
-            <button className="flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white transition hover:bg-black">
+            <button className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
               {addDomain.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -2946,7 +3326,7 @@ function SettingsDesk({
         </div>
       </section>
 
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="QA policy" />
         <div className="space-y-4 p-4">
           <label className="flex items-center justify-between gap-3">
@@ -2976,7 +3356,7 @@ function SettingsDesk({
               Scoring profile
             </span>
             <select
-              className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm"
+              className="h-10 w-full rounded-md border border-line bg-panel px-3 text-sm"
               value={s?.scoring_profile || "inherit_global"}
               disabled={!s || saveSettings.isPending}
               onChange={(event) => saveSettings.mutate({ scoring_profile: event.target.value })}
@@ -3058,7 +3438,7 @@ function ConflictsDesk({
         <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean" />
       </div>
 
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-base font-semibold text-ink">Duplicate &amp; conflict groups</h2>
@@ -3068,7 +3448,7 @@ function ConflictsDesk({
           </div>
           <div className="flex items-center gap-2">
             <select
-              className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+              className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
             >
@@ -3079,7 +3459,7 @@ function ConflictsDesk({
             </select>
             <button
               onClick={() => rebuild.mutate()}
-              className="flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white transition hover:bg-black"
+              className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
             >
               {rebuild.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Scan for duplicates
@@ -3128,7 +3508,7 @@ function ConflictRow({
               <span className="rounded border border-line bg-field px-2 py-0.5 font-semibold">
                 {conflict.member_count} backlinks
               </span>
-              <span className="rounded border border-violet-200 bg-violet-50 px-2 py-0.5 font-semibold text-plum">
+              <span className="rounded border border-plum/30 bg-plum/10 px-2 py-0.5 font-semibold text-plum">
                 {conflict.scope.replaceAll("_", " ")}
               </span>
               {conflict.fingerprint ? (
@@ -3142,14 +3522,14 @@ function ConflictRow({
           {conflict.resolution_status !== "resolved" ? (
             <button
               onClick={() => onResolve("resolved")}
-              className="rounded border border-line bg-white px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+              className="rounded border border-line bg-panel px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
             >
               Resolve
             </button>
           ) : (
             <button
               onClick={() => onResolve("open")}
-              className="rounded border border-line bg-white px-2 py-1 text-xs font-medium text-muted transition hover:bg-field"
+              className="rounded border border-line bg-panel px-2 py-1 text-xs font-medium text-muted transition hover:bg-field"
             >
               Reopen
             </button>
@@ -3207,7 +3587,7 @@ function Field({
     <label className="block">
       <span className="mb-1 block text-xs font-semibold uppercase text-muted">{label}</span>
       <input
-        className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+        className="h-10 w-full rounded-xl border border-line bg-panel shadow-card px-3 text-sm shadow-sm transition focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -3227,13 +3607,22 @@ function Metric({
   icon: typeof Gauge;
   tone: "ink" | "ocean" | "ember" | "danger" | "plum";
 }) {
+  const chip = {
+    ink: "bg-field text-ink",
+    ocean: "bg-ocean/10 text-ocean",
+    ember: "bg-ember/10 text-ember",
+    danger: "bg-danger/10 text-danger",
+    plum: "bg-plum/10 text-plum"
+  }[tone];
   return (
-    <div className="rounded-lg border border-line bg-panel p-4">
+    <div className="rounded-xl border border-line bg-panel p-4 shadow-card transition hover:shadow-soft">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase text-muted">{label}</span>
-        <Icon className={clsx("h-4 w-4", toneClass(tone))} />
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</span>
+        <span className={clsx("grid h-8 w-8 place-items-center rounded-lg", chip)}>
+          <Icon className="h-4 w-4" />
+        </span>
       </div>
-      <div className="mt-3 text-3xl font-semibold text-ink">{value}</div>
+      <div className="mt-2 text-3xl font-bold tracking-tight text-ink">{value}</div>
     </div>
   );
 }
@@ -3261,7 +3650,7 @@ function IconButton({ label, onClick, icon: Icon }: { label: string; onClick: ()
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="grid h-9 w-9 place-items-center rounded-md border border-line bg-white text-muted transition hover:bg-field hover:text-ink"
+      className="grid h-9 w-9 place-items-center rounded-md border border-line bg-panel text-muted transition hover:bg-field hover:text-ink"
     >
       <Icon className="h-4 w-4" />
     </button>
@@ -3270,9 +3659,9 @@ function IconButton({ label, onClick, icon: Icon }: { label: string; onClick: ()
 
 function Notice({ text, onClose }: { text: string; onClose: () => void }) {
   return (
-    <div className="flex items-center justify-between rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900">
+    <div className="flex items-center justify-between rounded-xl border border-ocean/30 bg-ocean/10 px-4 py-3 text-sm text-ink shadow-card">
       <span>{text}</span>
-      <button onClick={onClose} className="rounded p-1 hover:bg-teal-100" aria-label="Dismiss">
+      <button onClick={onClose} className="rounded p-1 text-ocean hover:bg-ocean/10" aria-label="Dismiss">
         <XCircle className="h-4 w-4" />
       </button>
     </div>
@@ -3282,16 +3671,16 @@ function Notice({ text, onClose }: { text: string; onClose: () => void }) {
 function Status({ value }: { value: string }) {
   const tone =
     value === "PASS" || value === "completed"
-      ? "bg-teal-50 text-ocean border-teal-200"
+      ? "bg-ocean/10 text-ocean border-ocean/30"
       : value === "FAIL" || value === "failed"
-        ? "bg-red-50 text-danger border-red-200"
+        ? "bg-danger/10 text-danger border-danger/30"
         : value === "WARNING"
-          ? "bg-amber-50 text-ember border-amber-200"
+          ? "bg-ember/10 text-ember border-ember/30"
           : value === "NEEDS_MANUAL_REVIEW"
-            ? "bg-violet-50 text-plum border-violet-200"
-            : "bg-slate-50 text-muted border-slate-200";
+            ? "bg-plum/10 text-plum border-plum/30"
+            : "bg-field text-muted border-line";
   return (
-    <span className={clsx("inline-flex rounded border px-2 py-1 text-xs font-semibold", tone)}>
+    <span className={clsx("inline-flex rounded-full border px-2 py-1 text-xs font-semibold", tone)}>
       {value.replaceAll("_", " ")}
     </span>
   );
@@ -3350,7 +3739,7 @@ function SheetsDesk({
   const cfg = config.data;
   return (
     <section className="space-y-4">
-      <div className="rounded-lg border border-line bg-panel p-4">
+      <div className="rounded-xl border border-line bg-panel shadow-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-ink">Google Sheets</h2>
@@ -3361,7 +3750,7 @@ function SheetsDesk({
           <button
             onClick={() => syncAll.mutate()}
             disabled={!cfg?.enabled || syncAll.isPending}
-            className="flex items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white transition hover:bg-black disabled:opacity-50"
+            className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
           >
             {syncAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             Sync from main sheet
@@ -3384,7 +3773,7 @@ function SheetsDesk({
         ) : null}
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-line bg-panel">
+      <div className="overflow-x-auto rounded-xl border border-line bg-panel shadow-card">
         <table className="min-w-[760px] w-full text-left text-sm">
           <thead className="bg-field text-xs uppercase text-muted">
             <tr>
@@ -3409,9 +3798,9 @@ function SheetsDesk({
                   <span
                     className={clsx(
                       "rounded px-2 py-0.5 text-xs font-medium",
-                      s.last_sync_status === "ok" && "bg-emerald-50 text-emerald-700",
-                      s.last_sync_status === "error" && "bg-red-50 text-danger",
-                      s.last_sync_status === "running" && "bg-amber-50 text-amber-700",
+                      s.last_sync_status === "ok" && "bg-ocean/10 text-ocean",
+                      s.last_sync_status === "error" && "bg-danger/10 text-danger",
+                      s.last_sync_status === "running" && "bg-ember/10 text-ember",
                       !s.last_sync_status && "bg-field text-muted"
                     )}
                     title={s.last_sync_error || ""}
@@ -3482,10 +3871,64 @@ function pct(n: number, total: number) {
   return `${Math.round((n / total) * 100)}%`;
 }
 
-function AnalyticsDesk({ token }: { token: string | null }) {
+type SavedView = { name: string; filters: Record<string, string>; groupBy: string };
+
+function loadViews(key: string): SavedView[] {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: string }) {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [groupBy, setGroupBy] = useState("user");
   const [drillKey, setDrillKey] = useState<string | null>(null);
+  const [views, setViews] = useState<SavedView[]>(() => loadViews("ls_views_analytics"));
+  const [viewName, setViewName] = useState("");
+
+  // Project context: analytics is automatically scoped to the selected project.
+  useEffect(() => {
+    setFilters((f) => {
+      const next = { ...f };
+      if (projectId) next.project_id = projectId;
+      else delete next.project_id;
+      return next;
+    });
+    setDrillKey(null);
+  }, [projectId]);
+
+  const saveView = () => {
+    const name = viewName.trim();
+    if (!name) return;
+    const next = [...views.filter((v) => v.name !== name), { name, filters, groupBy }];
+    setViews(next);
+    setViewName("");
+    try {
+      localStorage.setItem("ls_views_analytics", JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+  const applyView = (name: string) => {
+    const v = views.find((x) => x.name === name);
+    if (!v) return;
+    const f = { ...v.filters };
+    if (projectId) f.project_id = projectId; // stay inside project context
+    setFilters(f);
+    setGroupBy(v.groupBy);
+    setDrillKey(null);
+  };
+  const deleteView = (name: string) => {
+    const next = views.filter((v) => v.name !== name);
+    setViews(next);
+    try {
+      localStorage.setItem("ls_views_analytics", JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
 
   const drill = useQuery({
     queryKey: ["analytics-records", token, filters, groupBy, drillKey],
@@ -3515,6 +3958,7 @@ function AnalyticsDesk({ token }: { token: string | null }) {
 
   const s = q.data?.summary || {};
   const total = Number(s.total || 0);
+  const maxGroup = Math.max(1, ...(q.data?.groups || []).map((g) => Number(g.total || 0)));
   const setFilter = (key: string, value: string) =>
     setFilters((f) => {
       const next = { ...f };
@@ -3526,7 +3970,7 @@ function AnalyticsDesk({ token }: { token: string | null }) {
   return (
     <section className="space-y-4">
       {/* Filter bar (connected facets with live counts) */}
-      <div className="rounded-lg border border-line bg-panel p-4">
+      <div className="rounded-xl border border-line bg-panel shadow-card p-4">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-base font-semibold text-ink">Analytics</h2>
           {Object.keys(filters).length ? (
@@ -3536,24 +3980,71 @@ function AnalyticsDesk({ token }: { token: string | null }) {
           ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
-          {ANALYTICS_FACETS.map(([dim, key, label]) => {
-            const opts = q.data?.facets?.[dim] || [];
-            return (
-              <select
-                key={dim}
-                className="h-9 rounded-md border border-line bg-white px-2 text-sm"
-                value={filters[key] || ""}
-                onChange={(e) => setFilter(key, e.target.value)}
-              >
-                <option value="">{label}: all</option>
-                {opts.map((o) => (
-                  <option key={String(o.value)} value={String(o.value)}>
-                    {String(o.label || o.value)} ({o.count})
-                  </option>
-                ))}
-              </select>
-            );
-          })}
+          {ANALYTICS_FACETS.filter(([dim]) => !(projectId && dim === "project")).map(
+            ([dim, key, label]) => {
+              const opts = q.data?.facets?.[dim] || [];
+              return (
+                <select
+                  key={dim}
+                  className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
+                  value={filters[key] || ""}
+                  onChange={(e) => setFilter(key, e.target.value)}
+                >
+                  <option value="">{label}: all</option>
+                  {opts.map((o) => (
+                    <option key={String(o.value)} value={String(o.value)}>
+                      {String(o.label || o.value)} ({o.count})
+                    </option>
+                  ))}
+                </select>
+              );
+            }
+          )}
+          <label className="flex items-center gap-1 text-xs text-muted">
+            Checked
+            <input
+              type="date"
+              value={filters.checked_from || ""}
+              onChange={(e) => setFilter("checked_from", e.target.value)}
+              className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+            />
+            –
+            <input
+              type="date"
+              value={filters.checked_to || ""}
+              onChange={(e) => setFilter("checked_to", e.target.value)}
+              className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+            />
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted">Views</span>
+          {views.map((v) => (
+            <span key={v.name} className="inline-flex items-center gap-1 rounded-full border border-line bg-field px-2.5 py-1 text-xs">
+              <button onClick={() => applyView(v.name)} className="font-medium text-ink hover:text-ocean">
+                {v.name}
+              </button>
+              <button onClick={() => deleteView(v.name)} aria-label={`Delete view ${v.name}`} className="text-muted hover:text-danger">
+                <XCircle className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          ))}
+          <input
+            value={viewName}
+            onChange={(e) => setViewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveView();
+            }}
+            placeholder="Save current as…"
+            className="h-8 w-40 rounded-xl border border-line bg-panel shadow-card px-2 text-xs"
+          />
+          <button
+            onClick={saveView}
+            disabled={!viewName.trim()}
+            className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+          >
+            Save view
+          </button>
         </div>
       </div>
 
@@ -3568,11 +4059,11 @@ function AnalyticsDesk({ token }: { token: string | null }) {
       </div>
 
       {/* Group-by pivot */}
-      <div className="rounded-lg border border-line bg-panel">
+      <div className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-3">
           <h3 className="text-sm font-semibold text-ink">Breakdown</h3>
           <select
-            className="h-9 rounded-md border border-line bg-white px-3 text-sm"
+            className="h-9 rounded-md border border-line bg-panel px-3 text-sm"
             value={groupBy}
             onChange={(e) => {
               setGroupBy(e.target.value);
@@ -3608,7 +4099,15 @@ function AnalyticsDesk({ token }: { token: string | null }) {
                     onClick={() => setDrillKey(active ? null : String(g.key))}
                     className={clsx("cursor-pointer hover:bg-field/60", active && "bg-ocean/5")}
                   >
-                    <Td><span className="font-medium text-ocean hover:underline">{name || "—"}</span></Td>
+                    <Td>
+                      <span className="font-medium text-ocean hover:underline">{name || "—"}</span>
+                      <span className="mt-1.5 block h-1 max-w-[180px] overflow-hidden rounded-full bg-field">
+                        <span
+                          className="block h-full rounded-full bg-ocean/60"
+                          style={{ width: `${Math.round((t / maxGroup) * 100)}%` }}
+                        />
+                      </span>
+                    </Td>
                     <Td>{t}</Td>
                     <Td>{g.avg_score ?? "-"}</Td>
                     <Td>
@@ -3678,9 +4177,9 @@ function AnalyticsDesk({ token }: { token: string | null }) {
 
 function IndexBadge({ value }: { value: string }) {
   const map: Record<string, string> = {
-    indexed: "bg-emerald-100 text-emerald-700",
-    not_indexed: "bg-red-100 text-danger",
-    uncertain: "bg-amber-100 text-amber-700"
+    indexed: "bg-ocean/10 text-ocean",
+    not_indexed: "bg-danger/10 text-danger",
+    uncertain: "bg-ember/10 text-ember"
   };
   const label: Record<string, string> = {
     indexed: "indexed",
@@ -3743,24 +4242,14 @@ function formatSiteMetricLong(m?: SiteMetrics | null) {
   return parts.length ? parts.join("  •  ") : "No metrics returned for this domain";
 }
 
-function toneClass(tone: "ink" | "ocean" | "ember" | "danger" | "plum") {
-  return {
-    ink: "text-ink",
-    ocean: "text-ocean",
-    ember: "text-ember",
-    danger: "text-danger",
-    plum: "text-plum"
-  }[tone];
-}
-
 function severityClass(value: string) {
   return {
-    CRITICAL: "bg-red-100 text-danger",
-    HIGH: "bg-amber-100 text-ember",
-    MEDIUM: "bg-yellow-100 text-yellow-800",
-    LOW: "bg-slate-100 text-muted",
-    INFO: "bg-teal-100 text-ocean"
-  }[value] || "bg-slate-100 text-muted";
+    CRITICAL: "bg-danger/10 text-danger",
+    HIGH: "bg-ember/15 text-ember",
+    MEDIUM: "bg-ember/10 text-ember",
+    LOW: "bg-field text-muted",
+    INFO: "bg-ocean/10 text-ocean"
+  }[value] || "bg-field text-muted";
 }
 
 const TEAM_ROLES: Role[] = ["admin", "manager", "qa", "viewer"];
@@ -3851,7 +4340,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
 
   if (members.error instanceof ApiError && members.error.status === 403) {
     return (
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="Team & access" />
         <div className="p-8 text-center text-sm text-muted">
           <ShieldAlert className="mx-auto mb-3 h-8 w-8 text-plum" />
@@ -3866,7 +4355,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
 
   return (
     <div className="space-y-5">
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="border-b border-line p-4">
           <h2 className="text-base font-semibold text-ink">Invite a teammate</h2>
           <p className="text-sm text-muted">
@@ -3880,7 +4369,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           <label className="block">
             <span className="mb-1 block text-xs font-semibold uppercase text-muted">Role</span>
             <select
-              className="h-10 w-full rounded-md border border-line bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              className="h-10 w-full rounded-md border border-line bg-panel px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
               value={role}
               onChange={(e) => setRole(e.target.value as Role)}
             >
@@ -3898,7 +4387,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           <button
             onClick={() => invite.mutate()}
             disabled={!canSubmit}
-            className="flex h-9 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-9 items-center justify-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             {invite.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
             Invite member
@@ -3906,7 +4395,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
         </div>
       </section>
 
-      <section className="rounded-lg border border-line bg-panel">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-4">
           <div>
             <h2 className="text-base font-semibold text-ink">Members</h2>
@@ -3935,7 +4424,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                   </Td>
                   <Td>
                     <select
-                      className="h-9 rounded-md border border-line bg-white px-2 text-sm"
+                      className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
                       value={m.role}
                       disabled={changeRole.isPending}
                       onChange={(e) =>
@@ -3954,8 +4443,8 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                       className={clsx(
                         "inline-flex rounded border px-2 py-1 text-xs font-semibold",
                         m.is_active
-                          ? "border-teal-200 bg-teal-50 text-ocean"
-                          : "border-slate-200 bg-slate-50 text-muted"
+                          ? "border-ocean/30 bg-ocean/10 text-ocean"
+                          : "border-line bg-field text-muted"
                       )}
                     >
                       {m.is_active ? "Active" : "Inactive"}
@@ -3981,7 +4470,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                             remove.mutate(m.user_id);
                           }
                         }}
-                        className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger hover:bg-red-50"
+                        className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger hover:bg-danger/10"
                         aria-label="Remove member"
                       >
                         <Trash2 className="h-4 w-4" />

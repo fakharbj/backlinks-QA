@@ -11,7 +11,7 @@ import csv
 import io
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -273,6 +273,25 @@ def _apply_backlink_filters(stmt: Select, meta: dict[str, Any]) -> Select:
         stmt = stmt.where(BacklinkRecord.score >= int(filters["score_min"]))
     if filters.get("score_max") is not None:
         stmt = stmt.where(BacklinkRecord.score <= int(filters["score_max"]))
+    # Custom date ranges (ISO dates from the builder; inclusive end-of-day for "to").
+    if filters.get("checked_from"):
+        stmt = stmt.where(
+            BacklinkRecord.last_checked_at >= datetime.fromisoformat(str(filters["checked_from"]))
+        )
+    if filters.get("checked_to"):
+        stmt = stmt.where(
+            BacklinkRecord.last_checked_at
+            < datetime.fromisoformat(str(filters["checked_to"])) + timedelta(days=1)
+        )
+    if filters.get("created_from"):
+        stmt = stmt.where(
+            BacklinkRecord.created_at >= datetime.fromisoformat(str(filters["created_from"]))
+        )
+    if filters.get("created_to"):
+        stmt = stmt.where(
+            BacklinkRecord.created_at
+            < datetime.fromisoformat(str(filters["created_to"])) + timedelta(days=1)
+        )
     if filters.get("search"):
         like = f"%{str(filters['search']).strip()}%"
         stmt = stmt.where(
