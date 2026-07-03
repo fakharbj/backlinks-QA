@@ -195,6 +195,7 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     source.last_sync_error = None
     await db.commit()
 
+    sync_started = _now()
     batch_id = await batch_service.start(
         "sheet_sync", source.workspace_id, project_id=source.project_id,
         label=f"Sheet sync — {source.project_name}",
@@ -301,6 +302,34 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     source.imported_count = total_imported
     source.updated_count = max(0, total_imported - len(all_new))
     await db.commit()
+
+    # Duplicate accounting: how many duplicate-group memberships among this
+    # sheet's links are NEW this run vs already known before it started.
+    try:
+        dup = (
+            await db.execute(
+                text(
+                    "SELECT count(*) FILTER (WHERE m.created_at >= :t0) AS dup_new, "
+                    "count(*) AS dup_total "
+                    "FROM backlink_conflict_members m "
+                    "JOIN backlink_records b ON b.id = m.backlink_id "
+                    "WHERE b.source_sheet_id = :sid"
+                ),
+                {"t0": sync_started, "sid": source.id},
+            )
+        ).mappings().first() or {}
+        dup_new = int(dup.get("dup_new", 0) or 0)
+        dup_prev = max(0, int(dup.get("dup_total", 0) or 0) - dup_new)
+        await batch_service.update(
+            batch_id, counters_inc={"dup_new": dup_new, "dup_previous": dup_prev}
+        )
+        if dup_new:
+            await batch_service.add_log(
+                batch_id, f"{dup_new} NEW duplicate link(s) found in this sync "
+                f"({dup_prev} were already known).", level="warn",
+            )
+    except Exception as exc:  # noqa: BLE001 — counters are best-effort
+        log.warning("dup_counter_failed", error=repr(exc))
 
     await batch_service.update(batch_id, meta={"current_step": "Finished"})
     await batch_service.finish(batch_id)

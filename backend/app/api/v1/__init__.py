@@ -16,6 +16,7 @@ from app.api.v1 import (
     imports,
     index,
     link_types,
+    performance,
     project_settings,
     projects,
     reports,
@@ -41,6 +42,7 @@ api_router.include_router(crawl.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(analytics.router)
 api_router.include_router(index.router)
+api_router.include_router(performance.router)
 api_router.include_router(reports.router)
 api_router.include_router(scoring.router)
 api_router.include_router(alerts.router)

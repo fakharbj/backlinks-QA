@@ -174,6 +174,66 @@ async def list_domains(
     return [_to_dict(sd) for sd in (await db.execute(stmt)).scalars().all()]
 
 
+async def project_view(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, *, limit: int = 500
+) -> dict:
+    """Project-wise source-domain usage (Phase 9 P1, owner rule):
+    ``used`` — domains this project already has backlinks from (with per-project
+    counts); ``available`` — domains known globally in the workspace but NOT yet
+    used by this project ("new source domain for this project" candidates)."""
+    ctx.assert_project(project_id)
+    from sqlalchemy import text as _text
+
+    used_rows = (
+        await db.execute(
+            _text(
+                """
+                SELECT b.source_domain AS domain_key,
+                       count(*) AS project_links,
+                       count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
+                       round(avg(b.score) FILTER (WHERE b.score IS NOT NULL), 1) AS avg_score,
+                       sd.da AS da, sd.backlink_count AS global_links
+                FROM backlink_records b
+                LEFT JOIN source_domains sd
+                  ON sd.workspace_id = b.workspace_id AND sd.domain_key = b.source_domain
+                WHERE b.workspace_id = :ws AND b.project_id = :pid AND b.source_domain IS NOT NULL
+                GROUP BY b.source_domain, sd.da, sd.backlink_count
+                ORDER BY project_links DESC
+                LIMIT :lim
+                """
+            ),
+            {"ws": ctx.workspace_id, "pid": project_id, "lim": limit},
+        )
+    ).mappings().all()
+
+    available_rows = (
+        await db.execute(
+            _text(
+                """
+                SELECT sd.domain_key, sd.backlink_count AS global_links, sd.da AS da,
+                       sd.project_count, sd.avg_score
+                FROM source_domains sd
+                WHERE sd.workspace_id = :ws
+                  AND NOT EXISTS (
+                      SELECT 1 FROM backlink_records b
+                      WHERE b.project_id = :pid AND b.source_domain = sd.domain_key
+                  )
+                ORDER BY sd.backlink_count DESC
+                LIMIT :lim
+                """
+            ),
+            {"ws": ctx.workspace_id, "pid": project_id, "lim": limit},
+        )
+    ).mappings().all()
+
+    return {
+        "used": [dict(r) for r in used_rows],
+        "available": [dict(r) for r in available_rows],
+        "used_count": len(used_rows),
+        "available_count": len(available_rows),
+    }
+
+
 async def detail(db: AsyncSession, ctx: AuthContext, domain_id: uuid.UUID) -> dict:
     sd = await db.get(SourceDomain, domain_id)
     if sd is None or sd.workspace_id != ctx.workspace_id:

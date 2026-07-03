@@ -161,6 +161,12 @@ class Settings(BaseSettings):
     QA_TREAT_SPONSORED_AS_FOLLOW: bool = True  # paid-campaign default
     QA_TRAILING_SLASH_POLICY: Literal["strict", "lenient"] = "lenient"
 
+    # ── Access control (Phase 9) ─────────────────────────────────────────────
+    # Open self-signup. False (default) = once the first workspace exists, only
+    # admins create accounts (Team desk); the very first registration always
+    # works so a fresh install can bootstrap itself.
+    ALLOW_PUBLIC_REGISTRATION: bool = False
+
     # ── Scheduling / batching ────────────────────────────────────────────────
     CRAWL_BATCH_SIZE_HTTP: int = 100
     CRAWL_BATCH_SIZE_RENDER: int = 20

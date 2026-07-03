@@ -18,7 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import AuthContext
 from app.core.errors import NotFoundError, ValidationAppError
 from app.crawler.normalize import normalize_url
-from app.models.competitor import CompetitorBacklink, CompetitorSheet, CompetitorSourceDomain
+from app.models.competitor import (
+    CompetitorBacklink,
+    CompetitorDomainDecision,
+    CompetitorSheet,
+    CompetitorSourceDomain,
+)
 from app.models.project import Project
 from app.services import canonical_service
 
@@ -33,10 +38,11 @@ async def _ensure_project(db: AsyncSession, ctx: AuthContext, project_id: uuid.U
     ctx.assert_project(project_id)
 
 
-def _parse_rows(raw_text: str) -> list[tuple[str, str | None, str | None]]:
-    """Parse pasted text → [(url, anchor, rel)]. Accepts one URL per line, optionally
-    followed by a comma/tab-separated anchor and rel. Header-ish lines are skipped."""
-    rows: list[tuple[str, str | None, str | None]] = []
+def _parse_rows(raw_text: str) -> list[tuple[str, str | None, str | None, str | None]]:
+    """Parse pasted text → [(url, anchor, rel, link_type)]. One URL per line,
+    optionally followed by comma/tab-separated anchor, rel and link type
+    (e.g. "…, brand anchor, dofollow, Guest Post"). Header-ish lines skipped."""
+    rows: list[tuple[str, str | None, str | None, str | None]] = []
     for line in raw_text.splitlines():
         line = line.strip()
         if not line:
@@ -49,7 +55,8 @@ def _parse_rows(raw_text: str) -> list[tuple[str, str | None, str | None]]:
             url = "https://" + url
         anchor = parts[1] if len(parts) > 1 and parts[1] else None
         rel = parts[2] if len(parts) > 2 and parts[2] else None
-        rows.append((url, anchor, rel))
+        link_type = parts[3] if len(parts) > 3 and parts[3] else None
+        rows.append((url, anchor, rel, link_type))
     return rows
 
 
@@ -74,7 +81,7 @@ async def ingest(
     await db.flush()
 
     cache: dict[str, uuid.UUID] = {}
-    for url, anchor, rel in parsed:
+    for url, anchor, rel, link_type in parsed:
         parsed_url = normalize_url(url)
         domain = parsed_url.registrable_domain if parsed_url.valid else None
         canonical = await canonical_service.resolve_canonical(db, url, cache=cache)
@@ -83,6 +90,7 @@ async def ingest(
                 workspace_id=ctx.workspace_id, project_id=project_id, competitor_sheet_id=sheet.id,
                 canonical_url_id=canonical.id if canonical else None,
                 raw_url=url[:2048], source_domain=domain, anchor=anchor, rel=rel,
+                link_type_label=(link_type or None) and str(link_type)[:120],
             )
         )
     await db.flush()
@@ -167,19 +175,94 @@ async def list_sheets(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID)
 
 
 async def list_domains(
-    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, *, category: str | None = None, limit: int = 500
-) -> list[CompetitorSourceDomain]:
+    db: AsyncSession,
+    ctx: AuthContext,
+    project_id: uuid.UUID,
+    *,
+    category: str | None = None,
+    include_dismissed: bool = True,
+    exclude_guest_posts: bool = False,
+    limit: int = 500,
+) -> list[dict]:
+    """Domain rows + manual decision + guest-post tag. 'Used' is derived live
+    (category = existing); manual dismissals survive recomputes via the
+    decisions table."""
     await _ensure_project(db, ctx, project_id)
-    stmt = select(CompetitorSourceDomain).where(
-        CompetitorSourceDomain.workspace_id == ctx.workspace_id,
-        CompetitorSourceDomain.project_id == project_id,
-    )
+    conds = ["d.workspace_id = :ws", "d.project_id = :pid"]
     if category in ("existing", "new_opportunity"):
-        stmt = stmt.where(CompetitorSourceDomain.category == category)
-    stmt = stmt.order_by(
-        CompetitorSourceDomain.category.asc(), CompetitorSourceDomain.url_count.desc()
-    ).limit(limit)
-    return list((await db.execute(stmt)).scalars().all())
+        conds.append("d.category = :cat")
+    if not include_dismissed:
+        conds.append("coalesce(dec.status, 'open') <> 'dismissed'")
+    if exclude_guest_posts:
+        conds.append(
+            "NOT EXISTS (SELECT 1 FROM competitor_backlinks g WHERE g.project_id = d.project_id "
+            "AND g.source_domain = d.domain_key AND g.link_type_label ILIKE '%guest%')"
+        )
+    sql = text(
+        f"""
+        SELECT d.id::text AS id, d.domain_key, d.url_count, d.category,
+               d.our_link_count, d.our_indexed_pct, d.is_new,
+               coalesce(dec.status, 'open') AS decision,
+               dec.reason AS decision_reason,
+               EXISTS (
+                 SELECT 1 FROM competitor_backlinks cb
+                 WHERE cb.project_id = d.project_id AND cb.source_domain = d.domain_key
+                   AND cb.link_type_label ILIKE '%guest%'
+               ) AS has_guest_post
+        FROM competitor_source_domains d
+        LEFT JOIN competitor_domain_decisions dec
+          ON dec.workspace_id = d.workspace_id AND dec.project_id = d.project_id
+         AND dec.domain_key = d.domain_key
+        WHERE {' AND '.join(conds)}
+        ORDER BY d.category ASC, d.url_count DESC
+        LIMIT :lim
+        """
+    )
+    params: dict = {"ws": ctx.workspace_id, "pid": project_id, "lim": max(1, min(limit, 2000))}
+    if category in ("existing", "new_opportunity"):
+        params["cat"] = category
+    rows = (await db.execute(sql, params)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def decide(
+    db: AsyncSession,
+    ctx: AuthContext,
+    project_id: uuid.UUID,
+    domain_key: str,
+    *,
+    status: str,
+    reason: str | None = None,
+) -> None:
+    """Record a manual opportunity decision: 'dismissed' hides it from the active
+    list; 'open' re-opens it. Upsert so recomputes never lose it."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    await _ensure_project(db, ctx, project_id)
+    if status not in ("dismissed", "open"):
+        raise ValidationAppError("Decision must be 'dismissed' or 'open'.")
+    stmt = (
+        pg_insert(CompetitorDomainDecision)
+        .values(
+            workspace_id=ctx.workspace_id, project_id=project_id,
+            domain_key=domain_key.lower()[:255], status=status,
+            reason=(reason or "")[:300] or None, decided_by=ctx.user.id,
+            decided_at=datetime.now(timezone.utc),
+        )
+        .on_conflict_do_update(
+            constraint="uq_comp_domain_decision",
+            set_={
+                "status": status,
+                "reason": (reason or "")[:300] or None,
+                "decided_by": ctx.user.id,
+                "decided_at": datetime.now(timezone.utc),
+            },
+        )
+    )
+    await db.execute(stmt)
+    await db.flush()
 
 
 async def summary(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> dict:
@@ -189,10 +272,18 @@ async def summary(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> 
             text(
                 """
                 SELECT count(*) AS domains,
-                       count(*) FILTER (WHERE category = 'new_opportunity') AS new_opportunities,
-                       count(*) FILTER (WHERE category = 'existing') AS existing,
-                       coalesce(sum(url_count), 0) AS competitor_links
-                FROM competitor_source_domains WHERE workspace_id = :ws AND project_id = :pid
+                       count(*) FILTER (
+                           WHERE d.category = 'new_opportunity'
+                             AND coalesce(dec.status, 'open') <> 'dismissed'
+                       ) AS new_opportunities,
+                       count(*) FILTER (WHERE d.category = 'existing') AS existing,
+                       count(*) FILTER (WHERE coalesce(dec.status, 'open') = 'dismissed') AS dismissed,
+                       coalesce(sum(d.url_count), 0) AS competitor_links
+                FROM competitor_source_domains d
+                LEFT JOIN competitor_domain_decisions dec
+                  ON dec.workspace_id = d.workspace_id AND dec.project_id = d.project_id
+                 AND dec.domain_key = d.domain_key
+                WHERE d.workspace_id = :ws AND d.project_id = :pid
                 """
             ),
             {"ws": ctx.workspace_id, "pid": project_id},

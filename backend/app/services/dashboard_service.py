@@ -204,6 +204,73 @@ async def _recent_regressions(db, ctx, project_id) -> list[RecentRegression]:
     return [RecentRegression(**m) for m in (await db.execute(sql, params)).mappings().all()]
 
 
+async def trends(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    days: int = 30,
+    project_id: uuid.UUID | None = None,
+) -> dict:
+    """Timeframe stats + equal-length previous-period comparison + weekly series.
+    'New domains' uses the owner rule: first-ever appearance of the domain in the
+    scope (project when selected, else workspace)."""
+    where, params = _scope_clause(ctx, project_id, prefix="b")
+    days = max(1, min(days, 3660))
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(days=days)
+    prev0 = t0 - timedelta(days=days)
+    params |= {"t0": t0, "t1": now, "p0": prev0}
+    first_scope = (
+        "e.project_id = b.project_id" if project_id is not None else "e.workspace_id = b.workspace_id"
+    )
+    new_domain = (
+        "b.source_domain IS NOT NULL AND NOT EXISTS ("
+        "SELECT 1 FROM backlink_records e "
+        f"WHERE {first_scope} AND e.source_domain = b.source_domain "
+        "AND e.created_at < b.created_at)"
+    )
+
+    sql, _ = _bind(
+        f"""
+        SELECT
+            count(*) FILTER (WHERE b.created_at >= :t0)                       AS new_links,
+            count(*) FILTER (WHERE b.created_at >= :t0 AND {new_domain})      AS new_domains,
+            count(*) FILTER (WHERE b.created_at >= :p0 AND b.created_at < :t0) AS prev_links,
+            count(*) FILTER (
+                WHERE b.created_at >= :p0 AND b.created_at < :t0 AND {new_domain}
+            )                                                                 AS prev_domains,
+            count(*) FILTER (WHERE b.created_at >= :t0 AND b.index_status = 'indexed') AS new_indexed
+        FROM backlink_records b
+        WHERE {where} AND b.created_at >= :p0
+        """,
+        params,
+    )
+    head = (await db.execute(sql, params)).mappings().first() or {}
+
+    weekly_sql, _ = _bind(
+        f"""
+        SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week,
+               count(*) AS links,
+               count(*) FILTER (WHERE {new_domain}) AS new_domains
+        FROM backlink_records b
+        WHERE {where} AND b.created_at >= :t0
+        GROUP BY 1 ORDER BY 1 ASC
+        """,
+        params,
+    )
+    weekly = [dict(r) for r in (await db.execute(weekly_sql, params)).mappings().all()]
+
+    return {
+        "days": days,
+        "new_links": head.get("new_links", 0),
+        "new_domains": head.get("new_domains", 0),
+        "new_indexed": head.get("new_indexed", 0),
+        "prev_links": head.get("prev_links", 0),
+        "prev_domains": head.get("prev_domains", 0),
+        "weekly": weekly,
+    }
+
+
 async def _assigned_user_stats(db, ctx, project_id) -> list[AssignedUserStat]:
     where, params = _scope_clause(ctx, project_id)
     eff = _effective()

@@ -18,3 +18,10 @@ async def dashboard(
     ctx: AuthCtx, db: ReadSession, project_id: uuid.UUID | None = None
 ) -> DashboardResponse:
     return await dashboard_service.build_dashboard(db, ctx, project_id)
+
+
+@router.get("/trends")
+async def dashboard_trends(
+    ctx: AuthCtx, db: ReadSession, days: int = 30, project_id: uuid.UUID | None = None
+) -> dict:
+    return await dashboard_service.trends(db, ctx, days=days, project_id=project_id)

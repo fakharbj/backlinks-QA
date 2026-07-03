@@ -7,6 +7,7 @@ from app.models.batch import Batch, BatchLog  # noqa: F401
 from app.models.canonical_url import CanonicalUrl  # noqa: F401
 from app.models.competitor import (  # noqa: F401
     CompetitorBacklink,
+    CompetitorDomainDecision,
     CompetitorSheet,
     CompetitorSourceDomain,
 )

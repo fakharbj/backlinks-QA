@@ -28,18 +28,29 @@ class CompetitorSheetOut(ORMModel):
     created_at: datetime
 
 
-class CompetitorDomainOut(ORMModel):
-    id: uuid.UUID
+class CompetitorDomainOut(BaseModel):
+    id: str
     domain_key: str
     url_count: int
     category: str
     our_link_count: int
     our_indexed_pct: float | None
     is_new: bool
+    decision: str = "open"          # open | dismissed (manual, survives recompute)
+    decision_reason: str | None = None
+    has_guest_post: bool = False
+
+
+class CompetitorDecisionRequest(BaseModel):
+    project_id: uuid.UUID
+    domain_key: str
+    status: str  # dismissed | open
+    reason: str | None = None
 
 
 class CompetitorSummary(BaseModel):
     domains: int = 0
     new_opportunities: int = 0
     existing: int = 0
+    dismissed: int = 0
     competitor_links: int = 0

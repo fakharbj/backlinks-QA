@@ -34,6 +34,20 @@ def _meta(request: Request) -> tuple[str | None, str | None]:
 async def register(payload: RegisterRequest, request: Request, db: DbSession) -> TokenPair:
     from app.core.rbac import Role
 
+    # Closed signup (Phase 9): once any workspace exists, only admins create
+    # accounts (Team desk). The very first registration stays open so a fresh
+    # install can bootstrap itself.
+    from app.core.config import settings as app_settings
+
+    if not app_settings.ALLOW_PUBLIC_REGISTRATION:
+        existing = (await db.execute(select(Workspace.id).limit(1))).scalar_one_or_none()
+        if existing is not None:
+            from app.core.errors import PermissionDeniedError
+
+            raise PermissionDeniedError(
+                "Sign-up is closed. Ask your admin to create your account from the Team page."
+            )
+
     user, workspace = await auth_service.register(
         db,
         email=payload.email,

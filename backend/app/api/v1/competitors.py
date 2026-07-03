@@ -10,6 +10,7 @@ from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
 from app.models.enums import AuditAction
 from app.schemas.competitor import (
+    CompetitorDecisionRequest,
     CompetitorDomainOut,
     CompetitorIngestRequest,
     CompetitorSheetOut,
@@ -45,10 +46,36 @@ async def list_sheets(project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> l
 
 @router.get("/domains", response_model=list[CompetitorDomainOut])
 async def list_domains(
-    project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession, category: str | None = Query(None)
+    project_id: uuid.UUID,
+    ctx: AuthCtx,
+    db: ReadSession,
+    category: str | None = Query(None),
+    include_dismissed: bool = Query(True),
+    exclude_guest_posts: bool = Query(False),
 ) -> list[CompetitorDomainOut]:
-    rows = await competitor_service.list_domains(db, ctx, project_id, category=category)
-    return [CompetitorDomainOut.model_validate(r) for r in rows]
+    rows = await competitor_service.list_domains(
+        db, ctx, project_id, category=category,
+        include_dismissed=include_dismissed, exclude_guest_posts=exclude_guest_posts,
+    )
+    return [CompetitorDomainOut(**r) for r in rows]
+
+
+@router.patch("/domains/decision", response_model=CompetitorSummary)
+async def decide_domain(
+    payload: CompetitorDecisionRequest, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> CompetitorSummary:
+    await competitor_service.decide(
+        db, ctx, payload.project_id, payload.domain_key,
+        status=payload.status, reason=payload.reason,
+    )
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="competitor_domain", entity_id=payload.project_id,
+        summary=f"Opportunity {payload.domain_key} → {payload.status}",
+    )
+    await db.commit()
+    return CompetitorSummary(**await competitor_service.summary(db, ctx, payload.project_id))
 
 
 @router.get("/summary", response_model=CompetitorSummary)

@@ -72,6 +72,33 @@ class CompetitorBacklink(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_domain: Mapped[str | None] = mapped_column(String(255))
     anchor: Mapped[str | None] = mapped_column(String(500))
     rel: Mapped[str | None] = mapped_column(String(60))
+    # Link type from the competitor sheet (e.g. "Guest Post") for tag/exclude.
+    link_type_label: Mapped[str | None] = mapped_column(String(120))
+
+
+class CompetitorDomainDecision(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A manual opportunity decision for one competitor domain in one project.
+
+    Kept separate from ``competitor_source_domains`` because that table is
+    rebuilt (DELETE+INSERT) on every recompute — decisions must survive it.
+    ``status``: dismissed (hidden from the active opportunity list) | open
+    (explicitly re-opened). "Used" is never stored: it is derived live from the
+    project actually having a backlink on that domain, so it can't go stale.
+    """
+
+    __tablename__ = "competitor_domain_decisions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "project_id", "domain_key", name="uq_comp_domain_decision"),
+        Index("ix_comp_domain_decisions_project", "workspace_id", "project_id"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    domain_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="dismissed", nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(300))
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CompetitorSourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):

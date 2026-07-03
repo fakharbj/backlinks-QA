@@ -13,6 +13,18 @@ import asyncio
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _open_registration_for_tests():
+    """Tests register their own throwaway accounts; keep signup open under test
+    (prod default is closed — admins create accounts from the Team desk)."""
+    from app.core.config import settings
+
+    original = settings.ALLOW_PUBLIC_REGISTRATION
+    settings.ALLOW_PUBLIC_REGISTRATION = True
+    yield
+    settings.ALLOW_PUBLIC_REGISTRATION = original
+
+
 @pytest.fixture(scope="session")
 def live_stack():
     from sqlalchemy.ext.asyncio import create_async_engine

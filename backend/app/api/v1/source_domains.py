@@ -26,6 +26,15 @@ async def list_source_domains(
     return [SourceDomainOut(**r) for r in rows]
 
 
+# NOTE: declared before /{domain_id} so the literal path wins route matching.
+@router.get("/project-view")
+async def project_view(
+    project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession, limit: int = 500
+) -> dict:
+    """Domains used by this project vs domains known globally but not used here."""
+    return await svc.project_view(db, ctx, project_id, limit=min(max(limit, 1), 1000))
+
+
 @router.get("/{domain_id}", response_model=SourceDomainDetailOut)
 async def source_domain_detail(
     domain_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
