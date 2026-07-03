@@ -63,15 +63,22 @@ def _signals(rec: BacklinkRecord) -> dict[str, str]:
     return sig
 
 
-async def _latest_result(db: AsyncSession, backlink_id: uuid.UUID) -> CrawlResult | None:
-    return (
-        await db.execute(
-            select(CrawlResult)
-            .where(CrawlResult.backlink_id == backlink_id)
-            .order_by(CrawlResult.crawled_at.desc())
-            .limit(1)
-        )
-    ).scalars().first()
+async def _latest_results_by_backlink(
+    db: AsyncSession, records: list[BacklinkRecord]
+) -> dict[uuid.UUID, CrawlResult]:
+    """Chunk-load the latest crawl result for every record in one query per 500
+    ids (records already store ``latest_crawl_result_id`` — no per-row lookups,
+    which is what keeps a workspace-wide re-score flat as data grows)."""
+    ids = [r.latest_crawl_result_id for r in records if r.latest_crawl_result_id]
+    out: dict[uuid.UUID, CrawlResult] = {}
+    for i in range(0, len(ids), 500):
+        chunk = ids[i : i + 500]
+        rows = (
+            await db.execute(select(CrawlResult).where(CrawlResult.id.in_(chunk)))
+        ).scalars().all()
+        for cr in rows:
+            out[cr.backlink_id] = cr
+    return out
 
 
 async def rescore(
@@ -105,11 +112,12 @@ async def rescore(
     total = changed = 0
     score_delta_sum = 0
     transitions: dict[str, int] = {}
+    latest = await _latest_results_by_backlink(db, list(records))
     # All records sharing a (project, link_type) resolve to the same rule set —
     # cache it so a large rescore doesn't re-run the scope-chain queries per row.
     ruleset_cache: dict[tuple, object] = {}
     for rec in records:
-        cr = await _latest_result(db, rec.id)
+        cr = latest.get(rec.id)
         if cr is None or not cr.issues:
             continue
         issues = [i for i in (_issue_from_dict(d) for d in cr.issues) if i is not None]

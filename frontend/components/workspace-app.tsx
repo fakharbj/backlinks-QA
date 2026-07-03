@@ -132,6 +132,18 @@ export function WorkspaceApp() {
     syncUrl(activeProjectId, next, true);
   };
 
+  // Click-through: open the Backlinks desk pre-filtered (e.g. clicking "Fail"
+  // on a dashboard). Filters travel as f_* URL params; Backlinks reads them on
+  // mount and then removes them, so refresh/back behave normally.
+  const openBacklinks = (filters: Record<string, string>) => {
+    const q = new URLSearchParams(window.location.search);
+    Object.entries(filters).forEach(([k, v]) => {
+      if (v) q.set(`f_${k}`, v);
+    });
+    window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+    setTab("backlinks");
+  };
+
   const setActiveProjectId = (next: string) => {
     // Entering/leaving project context: keep the tab if the new nav has it,
     // otherwise land on the dashboard.
@@ -290,7 +302,7 @@ export function WorkspaceApp() {
             ))}
           </div>
           {tab === "overview" ? (
-            <Overview token={token} projectId={activeProjectId} />
+            <Overview token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} />
           ) : null}
           {tab === "analytics" ? <AnalyticsDesk token={token} projectId={activeProjectId} /> : null}
           {tab === "backlinks" ? (
@@ -298,7 +310,12 @@ export function WorkspaceApp() {
           ) : null}
           {tab === "conflicts" ? <ConflictsDesk token={token} onNotice={setNotice} /> : null}
           {tab === "domains" ? (
-            <SourceDomainsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+            <SourceDomainsDesk
+              token={token}
+              projectId={activeProjectId}
+              onNotice={setNotice}
+              onOpenBacklinks={openBacklinks}
+            />
           ) : null}
           {tab === "competitors" ? (
             <CompetitorDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
@@ -816,7 +833,15 @@ function ProjectPanel({
   );
 }
 
-function Overview({ token, projectId }: { token: string | null; projectId: string }) {
+function Overview({
+  token,
+  projectId,
+  onOpenBacklinks
+}: {
+  token: string | null;
+  projectId: string;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+}) {
   // No project selected → company-wide main dashboard; a project → project dashboard.
   const dashboard = useQuery({
     queryKey: ["dashboard", token, projectId],
@@ -922,15 +947,20 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
 
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink"
-          help="All backlinks being monitored in this view." />
+          help="All backlinks being monitored in this view. Click to open the full list."
+          onClick={() => onOpenBacklinks({})} />
         <Metric label="Pass" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean"
-          help="Links that are live and passed every check — nothing to do." />
+          help="Links that are live and passed every check — nothing to do. Click to see them."
+          onClick={() => onOpenBacklinks({ status: "PASS" })} />
         <Metric label="Warning" value={stats?.totals.warning_count ?? 0} icon={AlertTriangle} tone="ember"
-          help="Links that work but lost some value (e.g. nofollow, weak page, redirects). Worth a look." />
+          help="Links that work but lost some value (e.g. nofollow, weak page, redirects). Click to review them."
+          onClick={() => onOpenBacklinks({ status: "WARNING" })} />
         <Metric label="Fail" value={stats?.totals.fail_count ?? 0} icon={XCircle} tone="danger"
-          help="Serious problems — the link is missing, the page is dead, or it can't be indexed. Fix or replace these." />
+          help="Serious problems — the link is missing, the page is dead, or it can't be indexed. Click to fix them."
+          onClick={() => onOpenBacklinks({ status: "FAIL" })} />
         <Metric label="Review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum"
-          help="We couldn't decide automatically (usually bot protection on the site). Open the page yourself to confirm." />
+          help="We couldn't decide automatically (usually bot protection on the site). Click to check them yourself."
+          onClick={() => onOpenBacklinks({ status: "NEEDS_MANUAL_REVIEW" })} />
         <Metric label="Avg score" value={stats?.totals.avg_score ?? "-"} icon={Gauge} tone="ink"
           help="Average quality score (0–100) across these links. Hover any score in the Backlinks list to see how it's calculated." />
       </div>
@@ -994,17 +1024,23 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
           <SectionTitle title="Issue Mix" />
           <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
             <Issue label="Nofollow" value={stats?.issues.nofollow_count ?? 0}
-              help="Links marked rel=nofollow — they pass less SEO value than dofollow links." />
+              help="Links marked rel=nofollow — they pass less SEO value. Click to see them."
+              onClick={() => onOpenBacklinks({ rel: "nofollow" })} />
             <Issue label="Noindex" value={stats?.issues.noindex_count ?? 0}
-              help="Pages that tell Google not to index them — the link there helps very little." />
+              help="Pages that tell Google not to index them — the link there helps very little. Click to see them."
+              onClick={() => onOpenBacklinks({ issue_label: "PAGE_NOINDEX" })} />
             <Issue label="Robots blocked" value={stats?.issues.robots_blocked_count ?? 0}
-              help="Pages blocked by robots.txt — search engines can't even visit them." />
+              help="Pages blocked by robots.txt — search engines can't even visit them. Click to see them."
+              onClick={() => onOpenBacklinks({ issue_label: "ROBOTS_BLOCKED" })} />
             <Issue label="Canonical" value={stats?.issues.canonical_issue_count ?? 0}
-              help="Pages that declare a different page as the 'real' one, weakening the link." />
+              help="Pages that declare a different page as the 'real' one, weakening the link. Click to see them."
+              onClick={() => onOpenBacklinks({ issue_label: "CANONICAL_MISMATCH" })} />
             <Issue label="Broken page" value={stats?.issues.broken_count ?? 0}
-              help="Pages returning an error (404, 500…) — the link is effectively gone." />
+              help="Pages returning an error (404, 500…) — the link is effectively gone. Click to see them."
+              onClick={() => onOpenBacklinks({ issue_label: "SOURCE_404" })} />
             <Issue label="Link missing" value={stats?.issues.link_missing_count ?? 0}
-              help="The page loads fine, but your link is no longer on it." />
+              help="The page loads fine, but your link is no longer on it. Click to see them."
+              onClick={() => onOpenBacklinks({ issue_label: "LINK_MISSING" })} />
           </div>
         </section>
         <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -1038,8 +1074,13 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
                   </thead>
                   <tbody className="divide-y divide-line">
                     {(stats.link_type_breakdown || []).map((r) => (
-                      <tr key={r.link_type} className="hover:bg-field/60">
-                        <Td><span className="font-medium text-ink">{r.link_type}</span></Td>
+                      <tr
+                        key={r.link_type}
+                        title="Click to open these links"
+                        onClick={() => onOpenBacklinks({ link_type: r.link_type === "(none)" ? "(blanks)" : r.link_type })}
+                        className="cursor-pointer hover:bg-field/60"
+                      >
+                        <Td><span className="font-medium text-ocean hover:underline">{r.link_type}</span></Td>
                         <Td>{r.total}</Td>
                         <Td><span className="text-ocean">{r.pass_count}</span></Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
@@ -1060,8 +1101,17 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
                   </thead>
                   <tbody className="divide-y divide-line">
                     {(stats.assigned_user_stats || []).map((r) => (
-                      <tr key={r.assigned_user_label} className="hover:bg-field/60">
-                        <Td><span className="font-medium text-ink">{r.assigned_user_label}</span></Td>
+                      <tr
+                        key={r.assigned_user_label}
+                        title="Click to open this person's links"
+                        onClick={() =>
+                          onOpenBacklinks({
+                            user: r.assigned_user_label === "(unassigned)" ? "(blanks)" : r.assigned_user_label
+                          })
+                        }
+                        className="cursor-pointer hover:bg-field/60"
+                      >
+                        <Td><span className="font-medium text-ocean hover:underline">{r.assigned_user_label}</span></Td>
                         <Td>{r.total}</Td>
                         <Td>{pct(r.pass_count, r.total)}</Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
@@ -1122,8 +1172,13 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
                   </thead>
                   <tbody className="divide-y divide-line">
                     {(stats.top_source_domains || []).map((r) => (
-                      <tr key={r.source_domain} className="hover:bg-field/60">
-                        <Td><span className="break-all text-ink">{r.source_domain}</span></Td>
+                      <tr
+                        key={r.source_domain}
+                        title="Click to open links from this website"
+                        onClick={() => onOpenBacklinks({ source_domain: r.source_domain })}
+                        className="cursor-pointer hover:bg-field/60"
+                      >
+                        <Td><span className="break-all text-ocean hover:underline">{r.source_domain}</span></Td>
                         <Td>{r.total}</Td>
                         <Td><span className="text-ocean">{r.pass_count}</span></Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
@@ -1141,8 +1196,13 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
             <SectionTitle title="Recent regressions (high severity)" />
             <div className="divide-y divide-line">
               {(stats.recent_regressions || []).map((r) => (
-                <div key={`${r.backlink_id}-${r.created_at}`} className="p-3">
-                  <div className="truncate text-sm font-medium text-ink">{r.source_page_url}</div>
+                <div
+                  key={`${r.backlink_id}-${r.created_at}`}
+                  title="Click to open this link in the Backlinks list"
+                  onClick={() => onOpenBacklinks({ search: r.source_page_url })}
+                  className="cursor-pointer p-3 transition hover:bg-field/60"
+                >
+                  <div className="truncate text-sm font-medium text-ocean hover:underline">{r.source_page_url}</div>
                   <div className="mt-1 flex items-center justify-between text-xs text-muted">
                     <span>
                       {r.event_type}
@@ -1172,18 +1232,46 @@ function Backlinks({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [status, setStatus] = useState("");
-  const [dupFilter, setDupFilter] = useState("");
-  const [indexFilter, setIndexFilter] = useState("");
-  const [rel, setRel] = useState("");
-  const [linkType, setLinkType] = useState("");
-  const [userF, setUserF] = useState("");
-  const [domainF, setDomainF] = useState("");
-  const [issueLabel, setIssueLabel] = useState("");
+  // Deep-link filters: dashboards open this desk pre-filtered via f_* URL params
+  // (read once on mount, then removed so refresh/back behave normally).
+  const fParam = (k: string) => {
+    try {
+      return new URLSearchParams(window.location.search).get(`f_${k}`) || "";
+    } catch {
+      return "";
+    }
+  };
+  const [status, setStatus] = useState(() => fParam("status"));
+  const [dupFilter, setDupFilter] = useState(() => fParam("duplicate_status"));
+  const [indexFilter, setIndexFilter] = useState(() => fParam("index_status"));
+  const [rel, setRel] = useState(() => fParam("rel"));
+  const [linkType, setLinkType] = useState(() => fParam("link_type"));
+  const [userF, setUserF] = useState(() => fParam("user"));
+  const [domainF, setDomainF] = useState(() => fParam("source_domain"));
+  const [issueLabel, setIssueLabel] = useState(() => fParam("issue_label"));
   const [sort, setSort] = useState("score");
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [search, setSearch] = useState(() => fParam("search"));
+  const [debouncedSearch, setDebouncedSearch] = useState(() => fParam("search"));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Consume the f_* params so they don't stick around in the address bar.
+    try {
+      const q = new URLSearchParams(window.location.search);
+      let dirty = false;
+      Array.from(q.keys()).forEach((k) => {
+        if (k.startsWith("f_")) {
+          q.delete(k);
+          dirty = true;
+        }
+      });
+      if (dirty) {
+        window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
@@ -4076,7 +4164,15 @@ type ProjectDomainRow = {
   project_count?: number;
 };
 
-function ProjectDomainsPanel({ token, projectId }: { token: string | null; projectId: string }) {
+function ProjectDomainsPanel({
+  token,
+  projectId,
+  onOpenBacklinks
+}: {
+  token: string | null;
+  projectId: string;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+}) {
   const [mode, setMode] = useState<"used" | "available">("used");
   const view = useQuery({
     queryKey: ["sd-project-view", token, projectId],
@@ -4126,8 +4222,13 @@ function ProjectDomainsPanel({ token, projectId }: { token: string | null; proje
           </thead>
           <tbody className="divide-y divide-line">
             {rows.map((r) => (
-              <tr key={r.domain_key} className="hover:bg-field/60">
-                <Td><span className="break-all text-ink">{r.domain_key}</span></Td>
+              <tr
+                key={r.domain_key}
+                title={mode === "used" ? "Click to open this project's links from this website" : "This website has links in other projects — click to see them"}
+                onClick={() => onOpenBacklinks({ source_domain: r.domain_key })}
+                className="cursor-pointer hover:bg-field/60"
+              >
+                <Td><span className="break-all text-ocean hover:underline">{r.domain_key}</span></Td>
                 <Td>{mode === "used" ? r.project_links : r.global_links}</Td>
                 <Td>{mode === "used" ? (r.indexed ?? 0) : (r.project_count ?? 0)}</Td>
                 <Td>{r.da ?? "-"}</Td>
@@ -4149,11 +4250,13 @@ function ProjectDomainsPanel({ token, projectId }: { token: string | null; proje
 function SourceDomainsDesk({
   token,
   projectId,
-  onNotice
+  onNotice,
+  onOpenBacklinks
 }: {
   token: string | null;
   projectId: string;
   onNotice: (text: string) => void;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
 }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -4226,7 +4329,9 @@ function SourceDomainsDesk({
           </button>
         </div>
       </div>
-      {projectId ? <ProjectDomainsPanel token={token} projectId={projectId} /> : null}
+      {projectId ? (
+        <ProjectDomainsPanel token={token} projectId={projectId} onOpenBacklinks={onOpenBacklinks} />
+      ) : null}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -5553,13 +5658,15 @@ function Metric({
   value,
   icon: Icon,
   tone,
-  help
+  help,
+  onClick
 }: {
   label: string;
   value: number | string;
   icon: typeof Gauge;
   tone: "ink" | "ocean" | "ember" | "danger" | "plum";
   help?: string;
+  onClick?: () => void;
 }) {
   const chip = {
     ink: "bg-field text-ink",
@@ -5569,7 +5676,14 @@ function Metric({
     plum: "bg-plum/10 text-plum"
   }[tone];
   return (
-    <div className="rounded-xl border border-line bg-panel p-4 shadow-card transition hover:shadow-soft">
+    <div
+      onClick={onClick}
+      title={onClick ? "Click to see these links" : undefined}
+      className={clsx(
+        "rounded-xl border border-line bg-panel p-4 shadow-card transition hover:shadow-soft",
+        onClick && "cursor-pointer hover:border-ocean/50"
+      )}
+    >
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted">
           {label}
@@ -5584,9 +5698,26 @@ function Metric({
   );
 }
 
-function Issue({ label, value, help }: { label: string; value: number; help?: string }) {
+function Issue({
+  label,
+  value,
+  help,
+  onClick
+}: {
+  label: string;
+  value: number;
+  help?: string;
+  onClick?: () => void;
+}) {
   return (
-    <div title={help} className={clsx("rounded-md border border-line bg-field p-3", help && "cursor-help")}>
+    <div
+      title={help}
+      onClick={onClick}
+      className={clsx(
+        "rounded-md border border-line bg-field p-3 transition",
+        onClick ? "cursor-pointer hover:border-ocean/50 hover:bg-panel" : help && "cursor-help"
+      )}
+    >
       <div className="text-xs font-semibold uppercase text-muted">{label}</div>
       <div className="mt-1 text-xl font-semibold text-ink">{value}</div>
     </div>

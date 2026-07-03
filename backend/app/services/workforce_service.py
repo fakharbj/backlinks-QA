@@ -253,7 +253,8 @@ async def day_report(
     def on_leave(label: str, d: date) -> bool:
         return any(lv.user_label == label and lv.start_date <= d <= lv.end_date for lv in leaves)
 
-    # Actual links per (project, user, day) in one query.
+    # Actual links per (project, user, day) in one query. Range predicates (not
+    # ::date casts) keep the (workspace_id, created_at) index usable at scale.
     actuals: dict[tuple, int] = {}
     result = await db.execute(
         text(
@@ -261,7 +262,9 @@ async def day_report(
             SELECT project_id, coalesce(nullif(assigned_user_label, ''), '(unassigned)') AS u,
                    created_at::date AS d, count(*) AS n
             FROM backlink_records
-            WHERE workspace_id = :ws AND created_at::date >= :f AND created_at::date <= :t
+            WHERE workspace_id = :ws
+              AND created_at >= :f
+              AND created_at < CAST(:t AS date) + INTERVAL '1 day'
             GROUP BY 1, 2, 3
             """
         ),

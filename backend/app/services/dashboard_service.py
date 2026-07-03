@@ -236,7 +236,38 @@ async def trends(
 ) -> dict:
     """Timeframe stats + equal-length previous-period comparison + weekly series.
     'New domains' uses the owner rule: first-ever appearance of the domain in the
-    scope (project when selected, else workspace)."""
+    scope (project when selected, else workspace).
+
+    Micro-cached in Redis for 30s: dashboards are read far more often than data
+    changes, so repeat loads answer in a few ms without touching Postgres."""
+    import json as _json
+
+    cache_key = f"ls:dash:trends:{ctx.workspace_id}:{project_id}:{days}"
+    try:
+        from app.core.redis import get_redis
+
+        cached = await get_redis().get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:  # noqa: BLE001 — cache is best-effort
+        pass
+    result = await _trends_uncached(db, ctx, days=days, project_id=project_id)
+    try:
+        from app.core.redis import get_redis
+
+        await get_redis().set(cache_key, _json.dumps(result), ex=30)
+    except Exception:  # noqa: BLE001
+        pass
+    return result
+
+
+async def _trends_uncached(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    days: int = 30,
+    project_id: uuid.UUID | None = None,
+) -> dict:
     where, params = _scope_clause(ctx, project_id, prefix="b")
     days = max(1, min(days, 3660))
     now = datetime.now(timezone.utc)
