@@ -669,59 +669,149 @@ function ProjectPanel({
     onError: (err: Error) => onNotice(err.message)
   });
 
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  const active = projects.find((p) => p.id === activeProjectId) || null;
+  const shown = projects.filter((p) =>
+    `${p.name} ${p.client_name || ""}`.toLowerCase().includes(q.trim().toLowerCase())
+  );
+  const initials = (n: string) =>
+    n.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "P";
+  const pick = (id: string) => {
+    onSelect(id);
+    setOpen(false);
+    setQ("");
+    setShowCreate(false);
+  };
+
   return (
-    <section className="rounded-xl border border-line bg-panel shadow-card p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase text-muted">Project</h2>
-        <Plus className="h-4 w-4 text-ocean" />
-      </div>
-      <select
-        className="mb-4 h-10 w-full rounded-md border border-line bg-panel px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
-        value={activeProjectId}
-        onChange={(event) => onSelect(event.target.value)}
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={clsx(
+          "flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-left shadow-card transition",
+          active
+            ? "border-plum/40 bg-gradient-to-r from-plum/10 to-ocean/5 hover:border-plum/60"
+            : "border-line bg-panel hover:border-ocean/40"
+        )}
       >
-        <option value="">🏢 All projects (company)</option>
-        {projects.map((project) => (
-          <option key={project.id} value={project.id}>
-            {project.name}
-          </option>
-        ))}
-      </select>
-      {showCreate ? (
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            createProject.mutate();
-          }}
+        <span
+          className={clsx(
+            "grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white dark:text-slate-900",
+            active ? "bg-gradient-to-br from-plum to-ocean" : "bg-gradient-to-br from-ocean to-teal-500"
+          )}
         >
-          <Field label="Name" value={name} onChange={setName} />
-          <Field label="Client" value={client} onChange={setClient} />
-          <Field label="Target domain" value={domain} onChange={setDomain} />
-          <div className="flex gap-2">
-            <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
-              {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              Create
-            </button>
+          {active ? initials(active.name) : <Globe className="h-4 w-4" />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-ink">
+            {active ? active.name : "All projects"}
+          </span>
+          <span className="block truncate text-[11px] text-muted">
+            {active ? (active.client_name || "Project workspace") : "Company view — everything combined"}
+          </span>
+        </span>
+        <ChevronDown className={clsx("h-4 w-4 shrink-0 text-muted transition", open && "rotate-180")} />
+      </button>
+
+      {open ? (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1.5 rounded-xl border border-line bg-panel p-2 shadow-pop">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search projects…"
+            autoFocus
+            className="mb-1.5 h-9 w-full rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+          />
+          <div className="max-h-72 overflow-y-auto">
             <button
-              type="button"
-              onClick={() => setShowCreate(false)}
-              className="h-9 rounded-md border border-line px-3 text-sm font-medium text-muted transition hover:bg-field"
+              onClick={() => pick("")}
+              className={clsx(
+                "flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-field",
+                !activeProjectId && "bg-ocean/10"
+              )}
             >
-              Cancel
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-ocean to-teal-500 text-white dark:text-slate-900">
+                <Globe className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-ink">All projects</span>
+                <span className="block text-[11px] text-muted">Company dashboard & totals</span>
+              </span>
+              {!activeProjectId ? <CheckCircle2 className="h-4 w-4 shrink-0 text-ocean" /> : null}
             </button>
+            {shown.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => pick(p.id)}
+                className={clsx(
+                  "flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-field",
+                  activeProjectId === p.id && "bg-plum/10"
+                )}
+              >
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white dark:text-slate-900">
+                  {initials(p.name)}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-ink">{p.name}</span>
+                  <span className="block truncate text-[11px] text-muted">{p.client_name || "—"}</span>
+                </span>
+                {activeProjectId === p.id ? <CheckCircle2 className="h-4 w-4 shrink-0 text-plum" /> : null}
+              </button>
+            ))}
+            {!shown.length ? (
+              <div className="p-3 text-center text-xs text-muted">No projects match “{q}”.</div>
+            ) : null}
           </div>
-        </form>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setShowCreate(true)}
-          className="flex h-9 w-full items-center justify-center gap-2 rounded-md border border-dashed border-line text-sm font-medium text-muted transition hover:border-ocean hover:text-ocean"
-        >
-          <Plus className="h-4 w-4" /> New project
-        </button>
-      )}
-    </section>
+          <div className="mt-1.5 border-t border-line pt-1.5">
+            {showCreate ? (
+              <form
+                className="space-y-2 p-1"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  createProject.mutate();
+                }}
+              >
+                <Field label="Name" value={name} onChange={setName} />
+                <Field label="Client" value={client} onChange={setClient} />
+                <Field label="Target domain" value={domain} onChange={setDomain} />
+                <div className="flex gap-2">
+                  <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+                    {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                    Create
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreate(false)}
+                    className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowCreate(true)}
+                className="flex h-9 w-full items-center justify-center gap-2 rounded-lg text-sm font-medium text-ocean transition hover:bg-ocean/10"
+              >
+                <Plus className="h-4 w-4" /> New project
+              </button>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -733,6 +823,12 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
     queryFn: () =>
       api<Dashboard>(projectId ? `/dashboard?project_id=${projectId}` : "/dashboard", { token })
   });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const activeProject = (projectsQ.data || []).find((p) => p.id === projectId) || null;
   const [trendDays, setTrendDays] = useState("30");
   const trends = useQuery({
     queryKey: ["dashboard-trends", token, projectId, trendDays],
@@ -751,16 +847,54 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
   const stats = dashboard.data;
   return (
     <section className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-ink">
-            {projectId ? "Project dashboard" : "Company dashboard"}
-          </h2>
-          <p className="text-sm text-muted">
-            {projectId ? "This project's backlinks" : "All projects across the workspace"}
-          </p>
+      {projectId ? (
+        // ── Project hero: unmistakably a single project's home ───────────
+        <div className="relative overflow-hidden rounded-2xl border border-plum/30 bg-gradient-to-r from-plum/15 via-panel to-ocean/10 p-5 shadow-soft">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-plum to-ocean text-lg font-bold text-white shadow-soft dark:text-slate-900">
+              {(activeProject?.name || "P").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] font-bold uppercase tracking-widest text-plum">Project dashboard</div>
+              <h2 className="truncate text-xl font-bold tracking-tight text-ink">
+                {activeProject?.name || "Project"}
+              </h2>
+              <p className="truncate text-sm text-muted">
+                {activeProject?.client_name ? `Client: ${activeProject.client_name} · ` : ""}
+                Everything on this page is about this project only.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
+                <span className="block text-lg font-bold leading-tight text-ink">{stats?.totals.total ?? 0}</span>
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Links</span>
+              </span>
+              <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
+                <span className="block text-lg font-bold leading-tight text-ocean">{stats?.totals.pass_count ?? 0}</span>
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Pass</span>
+              </span>
+              <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
+                <span className="block text-lg font-bold leading-tight text-ink">{stats?.totals.avg_score ?? "—"}</span>
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Avg score</span>
+              </span>
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        // ── Company header: the whole-workspace view ─────────────────────
+        <div className="flex items-center gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-teal-500 text-white shadow-soft dark:text-slate-900">
+            <Globe className="h-5 w-5" />
+          </span>
+          <div>
+            <h2 className="flex items-center gap-1.5 text-lg font-bold tracking-tight text-ink">
+              Company dashboard
+              <HelpTip text="The combined picture across ALL projects. Pick a project (top-left selector) to switch to that project's own dashboard — it looks different on purpose, so you always know where you are." />
+            </h2>
+            <p className="text-sm text-muted">All projects together — totals, activity and health.</p>
+          </div>
+        </div>
+      )}
       {!projectId && stats?.counts && Object.keys(stats.counts).length ? (
         <div className="flex flex-wrap gap-2">
           {(
@@ -786,12 +920,18 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
       ) : null}
 
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink" />
-        <Metric label="Pass" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean" />
-        <Metric label="Warning" value={stats?.totals.warning_count ?? 0} icon={AlertTriangle} tone="ember" />
-        <Metric label="Fail" value={stats?.totals.fail_count ?? 0} icon={XCircle} tone="danger" />
-        <Metric label="Review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum" />
-        <Metric label="Avg score" value={stats?.totals.avg_score ?? "-"} icon={Gauge} tone="ink" />
+        <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink"
+          help="All backlinks being monitored in this view." />
+        <Metric label="Pass" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean"
+          help="Links that are live and passed every check — nothing to do." />
+        <Metric label="Warning" value={stats?.totals.warning_count ?? 0} icon={AlertTriangle} tone="ember"
+          help="Links that work but lost some value (e.g. nofollow, weak page, redirects). Worth a look." />
+        <Metric label="Fail" value={stats?.totals.fail_count ?? 0} icon={XCircle} tone="danger"
+          help="Serious problems — the link is missing, the page is dead, or it can't be indexed. Fix or replace these." />
+        <Metric label="Review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum"
+          help="We couldn't decide automatically (usually bot protection on the site). Open the page yourself to confirm." />
+        <Metric label="Avg score" value={stats?.totals.avg_score ?? "-"} icon={Gauge} tone="ink"
+          help="Average quality score (0–100) across these links. Hover any score in the Backlinks list to see how it's calculated." />
       </div>
 
       {/* Timeframe activity + previous-period comparison */}
@@ -852,12 +992,18 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
         <section className="rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Issue Mix" />
           <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Issue label="Nofollow" value={stats?.issues.nofollow_count ?? 0} />
-            <Issue label="Noindex" value={stats?.issues.noindex_count ?? 0} />
-            <Issue label="Robots blocked" value={stats?.issues.robots_blocked_count ?? 0} />
-            <Issue label="Canonical" value={stats?.issues.canonical_issue_count ?? 0} />
-            <Issue label="Broken page" value={stats?.issues.broken_count ?? 0} />
-            <Issue label="Link missing" value={stats?.issues.link_missing_count ?? 0} />
+            <Issue label="Nofollow" value={stats?.issues.nofollow_count ?? 0}
+              help="Links marked rel=nofollow — they pass less SEO value than dofollow links." />
+            <Issue label="Noindex" value={stats?.issues.noindex_count ?? 0}
+              help="Pages that tell Google not to index them — the link there helps very little." />
+            <Issue label="Robots blocked" value={stats?.issues.robots_blocked_count ?? 0}
+              help="Pages blocked by robots.txt — search engines can't even visit them." />
+            <Issue label="Canonical" value={stats?.issues.canonical_issue_count ?? 0}
+              help="Pages that declare a different page as the 'real' one, weakening the link." />
+            <Issue label="Broken page" value={stats?.issues.broken_count ?? 0}
+              help="Pages returning an error (404, 500…) — the link is effectively gone." />
+            <Issue label="Link missing" value={stats?.issues.link_missing_count ?? 0}
+              help="The page loads fine, but your link is no longer on it." />
           </div>
         </section>
         <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -1400,7 +1546,7 @@ function Backlinks({
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
                 <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
-                <Td>{row.top_issue_label ?? (row.issue_count ? `${row.issue_count} issues` : "-")}</Td>
+                <Td><IssueWord label={row.top_issue_label} count={row.issue_count} /></Td>
                 <Td><span className="whitespace-nowrap text-xs text-muted">{formatDate(row.created_at ?? null)}</span></Td>
                 <Td>{formatDate(row.last_checked_at)}</Td>
               </tr>
@@ -2823,10 +2969,14 @@ function CompetitorDesk({
       </div>
 
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Domains" value={s?.domains ?? 0} icon={Globe} tone="ink" />
-        <Metric label="New opportunities" value={s?.new_opportunities ?? 0} icon={Star} tone="ocean" />
-        <Metric label="Already have" value={s?.existing ?? 0} icon={CheckCircle2} tone="plum" />
-        <Metric label="Competitor links" value={s?.competitor_links ?? 0} icon={Link2} tone="ink" />
+        <Metric label="Domains" value={s?.domains ?? 0} icon={Globe} tone="ink"
+          help="All the websites your competitor has links from (grouped by domain)." />
+        <Metric label="New opportunities" value={s?.new_opportunities ?? 0} icon={Star} tone="ocean"
+          help="Websites the competitor has links from but this project doesn't yet — your outreach list." />
+        <Metric label="Already have" value={s?.existing ?? 0} icon={CheckCircle2} tone="plum"
+          help="Websites where this project already has a link — removed from the opportunity list automatically." />
+        <Metric label="Competitor links" value={s?.competitor_links ?? 0} icon={Link2} tone="ink"
+          help="Total competitor backlinks you've uploaded for this project." />
       </div>
 
       <section className="rounded-xl border border-line bg-panel shadow-card p-4">
@@ -4982,10 +5132,14 @@ function ConflictsDesk({
         <p className="text-sm text-muted">Every group shows why it's a duplicate and where the original lives.</p>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Duplicate groups" value={s?.total ?? 0} icon={Layers} tone="ink" />
-        <Metric label="Open" value={s?.open ?? 0} icon={AlertTriangle} tone="ember" />
-        <Metric label="Cross-project" value={s?.by_scope?.cross_project ?? 0} icon={Link2} tone="plum" />
-        <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean" />
+        <Metric label="Duplicate groups" value={s?.total ?? 0} icon={Layers} tone="ink"
+          help="Each group = one page URL that appears in more than one record." />
+        <Metric label="Open" value={s?.open ?? 0} icon={AlertTriangle} tone="ember"
+          help="Groups nobody has dealt with yet — review these first." />
+        <Metric label="Cross-project" value={s?.by_scope?.cross_project ?? 0} icon={Link2} tone="plum"
+          help="The same page is used by two different projects — you may be paying twice for one placement." />
+        <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean"
+          help="Groups someone reviewed and closed." />
       </div>
 
       {(s?.weekly || []).length ? (
@@ -5198,12 +5352,14 @@ function Metric({
   label,
   value,
   icon: Icon,
-  tone
+  tone,
+  help
 }: {
   label: string;
   value: number | string;
   icon: typeof Gauge;
   tone: "ink" | "ocean" | "ember" | "danger" | "plum";
+  help?: string;
 }) {
   const chip = {
     ink: "bg-field text-ink",
@@ -5215,7 +5371,10 @@ function Metric({
   return (
     <div className="rounded-xl border border-line bg-panel p-4 shadow-card transition hover:shadow-soft">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</span>
+        <span className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted">
+          {label}
+          {help ? <HelpTip text={help} /> : null}
+        </span>
         <span className={clsx("grid h-8 w-8 place-items-center rounded-lg", chip)}>
           <Icon className="h-4 w-4" />
         </span>
@@ -5225,12 +5384,53 @@ function Metric({
   );
 }
 
-function Issue({ label, value }: { label: string; value: number }) {
+function Issue({ label, value, help }: { label: string; value: number; help?: string }) {
   return (
-    <div className="rounded-md border border-line bg-field p-3">
+    <div title={help} className={clsx("rounded-md border border-line bg-field p-3", help && "cursor-help")}>
       <div className="text-xs font-semibold uppercase text-muted">{label}</div>
       <div className="mt-1 text-xl font-semibold text-ink">{value}</div>
     </div>
+  );
+}
+
+// Plain-English explanations for the issue labels shown in lists.
+const ISSUE_WORDS: Record<string, string> = {
+  LINK_MISSING: "The backlink is no longer on the page.",
+  LINK_NOFOLLOW: "The link is marked nofollow — it passes less SEO value.",
+  LINK_SPONSORED: "The link sits in a sponsored/ad block.",
+  LINK_UGC: "The link sits in a comments/user content area.",
+  LINK_HIDDEN: "The link is hidden from visitors (CSS/comment/iframe).",
+  SOURCE_404: "The page is gone (404/410).",
+  SOURCE_403: "The website blocks automated visits (403).",
+  SOURCE_5XX: "The website had a server error.",
+  CAPTCHA_DETECTED: "The site shows a CAPTCHA to robots — open it yourself to confirm.",
+  PAGE_NOINDEX: "The page tells Google not to index it.",
+  X_ROBOTS_NOINDEX: "The server tells Google not to index the page.",
+  ROBOTS_BLOCKED: "robots.txt blocks this page from crawlers.",
+  WRONG_TARGET: "The page links to your domain, but not to the agreed URL.",
+  ANCHOR_CHANGED: "The anchor text changed from what was agreed.",
+  CANONICAL_MISMATCH: "The page declares a different page as the 'real' one.",
+  CANONICAL_CROSS_DOMAIN: "The page's canonical points to another domain entirely.",
+  SOFT_404: "The page looks like a 'not found' page even though it loads.",
+  JS_RENDER_REQUIRED: "The link only appears after JavaScript runs — search engines may under-credit it.",
+  HTTP_ERROR: "The page returned an HTTP error.",
+  SSL_ERROR: "The site's HTTPS certificate has a problem.",
+  DNS_ERROR: "The website's address could not be found.",
+  TIMEOUT: "The website took too long to answer.",
+  REDIRECT_CHAIN: "The page goes through several redirects before loading.",
+  REDIRECT_LOOP: "The page redirects in a circle and never loads.",
+  INDEXABILITY_UNKNOWN: "We couldn't tell whether the page can be indexed."
+};
+
+function IssueWord({ label, count }: { label: string | null; count: number }) {
+  if (!label) return <span>{count ? `${count} issues` : "-"}</span>;
+  return (
+    <span
+      title={ISSUE_WORDS[label] || "Open the link for full details."}
+      className="cursor-help whitespace-nowrap text-xs underline decoration-dotted decoration-line underline-offset-2"
+    >
+      {label.replaceAll("_", " ").toLowerCase()}
+    </span>
   );
 }
 
@@ -5862,12 +6062,18 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
 
       {/* Summary cards */}
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Metric label="Total" value={total} icon={Link2} tone="ink" />
-        <Metric label="Indexed" value={`${Number(s.indexed || 0)} · ${pct(Number(s.indexed || 0), total)}`} icon={CheckCircle2} tone="ocean" />
-        <Metric label="Not indexed" value={Number(s.not_indexed || 0)} icon={XCircle} tone="danger" />
-        <Metric label="Failing" value={`${Number(s.fail || 0)} · ${pct(Number(s.fail || 0), total)}`} icon={XCircle} tone="danger" />
-        <Metric label="Nofollow" value={`${Number(s.nofollow || 0)} · ${pct(Number(s.nofollow || 0), total)}`} icon={AlertTriangle} tone="ember" />
-        <Metric label="Duplicates" value={Number(s.duplicates || 0)} icon={Filter} tone="plum" />
+        <Metric label="Total" value={total} icon={Link2} tone="ink"
+          help="How many links match the filters above. Change a filter and this updates instantly." />
+        <Metric label="Indexed" value={`${Number(s.indexed || 0)} · ${pct(Number(s.indexed || 0), total)}`} icon={CheckCircle2} tone="ocean"
+          help="Links whose page Google shows in its index — these actually help SEO." />
+        <Metric label="Not indexed" value={Number(s.not_indexed || 0)} icon={XCircle} tone="danger"
+          help="Google does not show these pages — low SEO value until they get indexed." />
+        <Metric label="Failing" value={`${Number(s.fail || 0)} · ${pct(Number(s.fail || 0), total)}`} icon={XCircle} tone="danger"
+          help="Links with a serious problem (missing, dead page, blocked). These need action." />
+        <Metric label="Nofollow" value={`${Number(s.nofollow || 0)} · ${pct(Number(s.nofollow || 0), total)}`} icon={AlertTriangle} tone="ember"
+          help="Links marked rel=nofollow — they pass less SEO value than dofollow links." />
+        <Metric label="Duplicates" value={Number(s.duplicates || 0)} icon={Filter} tone="plum"
+          help="Links that point at a page another record already uses — see the Duplicates desk for who/where." />
       </div>
 
       {/* Group-by pivot */}
