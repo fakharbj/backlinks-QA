@@ -39,6 +39,13 @@ from app.models.source_domain import SourceDomain  # noqa: F401
 from app.models.settings import Setting  # noqa: F401
 from app.models.sheet_tab import GoogleSheetTab  # noqa: F401
 from app.models.sheets import SheetSource  # noqa: F401
+from app.models.workforce import (  # noqa: F401
+    LeaveRequest,
+    LinkTypeProductivity,
+    TaskAssignment,
+    UserProductivityOverride,
+    WorkingDay,
+)
 from app.models.user import (  # noqa: F401
     PasswordResetToken,
     RefreshToken,

@@ -25,6 +25,7 @@ from app.api.v1 import (
     sheets,
     source_domains,
     team,
+    workforce,
 )
 
 api_router = APIRouter()
@@ -50,3 +51,4 @@ api_router.include_router(settings.router)
 api_router.include_router(sheets.router)
 api_router.include_router(source_domains.router)
 api_router.include_router(team.router)
+api_router.include_router(workforce.router)
