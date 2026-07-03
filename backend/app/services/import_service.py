@@ -356,7 +356,9 @@ async def _project_target_domain(db: AsyncSession, project_id: uuid.UUID) -> str
 
 
 async def _workspace_user_map(db: AsyncSession, workspace_id: uuid.UUID) -> dict[str, uuid.UUID]:
-    """Lowercased email → user id, for matching the sheet 'User' to an app account."""
+    """Lowercased email OR sheet-label → user id, for matching the sheet 'User'
+    to an app account. Label entries come from the employee catalog (including
+    auto-provisioned sheet users) and win over an email collision."""
     rows = (
         await db.execute(
             select(User.id, User.email)
@@ -364,7 +366,21 @@ async def _workspace_user_map(db: AsyncSession, workspace_id: uuid.UUID) -> dict
             .where(WorkspaceMember.workspace_id == workspace_id)
         )
     ).all()
-    return {email.lower(): uid for uid, email in rows if email}
+    out = {email.lower(): uid for uid, email in rows if email}
+    from app.models.employee import UserEmployeeMapping
+
+    maps = (
+        await db.execute(
+            select(UserEmployeeMapping.sheet_user_label, UserEmployeeMapping.user_id).where(
+                UserEmployeeMapping.workspace_id == workspace_id,
+                UserEmployeeMapping.user_id.is_not(None),
+            )
+        )
+    ).all()
+    for label, uid in maps:
+        if label:
+            out[label.lower()] = uid
+    return out
 
 
 def _parse_rel(value: str | None) -> RelType:

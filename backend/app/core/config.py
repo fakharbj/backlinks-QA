@@ -233,6 +233,10 @@ class Settings(BaseSettings):
     # Spread the per-project syncs so 1,000 sheets don't hammer the Sheets API at once.
     GOOGLE_SYNC_STAGGER_SECONDS: float = 2.0
     GOOGLE_SHEETS_TIMEOUT_SECONDS: float = 60.0
+    # Auto-create an app account (Viewer role, scoped to that project) for every
+    # sheet "User" name that has no catalog mapping yet; admins hand out access
+    # via Team → Reset password. Off → sheets never touch the user table.
+    SHEETS_AUTO_CREATE_USERS: bool = True
 
     # ── Index checking (Google site: via the proxy) ──────────────────────────
     # Checks whether the EXACT source URL is indexed by Google (site:<url>). Routed

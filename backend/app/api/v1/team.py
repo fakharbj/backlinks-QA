@@ -194,6 +194,85 @@ async def set_teamlead_assignments(
     return Message(message=f"Saved — this team lead now sees {len(labels) or 'ALL'} member(s)")
 
 
+class MemberProjects(BaseModel):
+    project_ids: list[uuid.UUID]
+
+
+@router.get("/members/{user_id}/projects")
+async def get_member_projects(
+    user_id: uuid.UUID, db: ReadSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_USERS)),
+) -> dict:
+    """The projects a member is scoped to. Empty = TeamLead/QA see all projects;
+    a Viewer with no rows sees none (Viewers must be explicitly scoped)."""
+    from sqlalchemy import select
+
+    from app.models.project import Project, ProjectMember
+
+    rows = (
+        await db.execute(
+            select(ProjectMember.project_id)
+            .join(Project, Project.id == ProjectMember.project_id)
+            .where(Project.workspace_id == ctx.workspace_id, ProjectMember.user_id == user_id)
+        )
+    ).scalars().all()
+    return {"project_ids": [str(r) for r in rows]}
+
+
+@router.put("/members/{user_id}/projects", response_model=Message)
+async def set_member_projects(
+    user_id: uuid.UUID, payload: MemberProjects, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_USERS)),
+) -> Message:
+    """Replace the set of projects a member is scoped to (this workspace only)."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import select
+
+    from app.core.errors import NotFoundError, ValidationAppError
+    from app.models.project import Project, ProjectMember
+
+    members = await team_service.list_members(db, ctx)
+    if not any(u.id == user_id for _, u in members):
+        raise NotFoundError("Member not found in this workspace")
+
+    wanted = set(payload.project_ids)
+    if wanted:
+        valid = set(
+            (
+                await db.execute(
+                    select(Project.id).where(
+                        Project.workspace_id == ctx.workspace_id, Project.id.in_(wanted)
+                    )
+                )
+            ).scalars().all()
+        )
+        if valid != wanted:
+            raise ValidationAppError("One or more projects are not in this workspace.")
+
+    ws_project_ids = select(Project.id).where(Project.workspace_id == ctx.workspace_id)
+    await db.execute(
+        sa_delete(ProjectMember).where(
+            ProjectMember.user_id == user_id,
+            ProjectMember.project_id.in_(ws_project_ids),
+        )
+    )
+    for pid in wanted:
+        db.add(ProjectMember(project_id=pid, user_id=user_id, role=None))
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="project_members", entity_id=user_id,
+        summary=f"Member scoped to {len(wanted) or 'ALL (unrestricted)'} project(s)",
+    )
+    await db.commit()
+    return Message(
+        message=(
+            f"Saved — this member now sees {len(wanted)} project(s)."
+            if wanted
+            else "Saved — no project restriction (TeamLead/QA see all; Viewers see none)."
+        )
+    )
+
+
 @router.post("/members/{user_id}/reset-password")
 async def reset_member_password(
     user_id: uuid.UUID, db: DbSession,

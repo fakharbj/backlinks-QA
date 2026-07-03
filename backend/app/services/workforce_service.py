@@ -113,6 +113,20 @@ async def set_productivity(
     await db.flush()
 
 
+async def delete_productivity_override(
+    db: AsyncSession, ctx: AuthContext, *, user_label: str, link_type_name: str
+) -> None:
+    """Remove a per-user override — that user falls back to the global rate."""
+    await db.execute(
+        delete(UserProductivityOverride).where(
+            UserProductivityOverride.workspace_id == ctx.workspace_id,
+            UserProductivityOverride.user_label == user_label.strip()[:200],
+            UserProductivityOverride.link_type_name == link_type_name.strip()[:80],
+        )
+    )
+    await db.flush()
+
+
 async def _lph_map(db: AsyncSession, workspace_id: uuid.UUID) -> tuple[dict, dict]:
     g = {
         r.link_type_name.lower(): float(r.links_per_hour)

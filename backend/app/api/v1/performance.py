@@ -22,8 +22,11 @@ async def user_performance(
     date_to: datetime | None = Query(None),
     project_id: uuid.UUID | None = Query(None),
     compare: bool = Query(True),
+    compare_from: datetime | None = Query(None),
+    compare_to: datetime | None = Query(None),
 ) -> dict:
     return await performance_service.users(
         db, ctx, days=days, date_from=date_from, date_to=date_to,
         project_id=project_id, compare=compare,
+        compare_from=compare_from, compare_to=compare_to,
     )

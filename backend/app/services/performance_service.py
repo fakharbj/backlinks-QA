@@ -97,17 +97,22 @@ async def users(
     date_to: datetime | None = None,
     project_id: uuid.UUID | None = None,
     compare: bool = True,
+    compare_from: datetime | None = None,
+    compare_to: datetime | None = None,
 ) -> dict:
     """Per-user performance for a window (default: last N days) with an optional
-    equal-length previous window for comparison."""
+    comparison window — the previous equal-length period by default, or any
+    custom period via ``compare_from``/``compare_to``."""
     t1 = date_to or datetime.now(timezone.utc)
     t0 = date_from or (t1 - timedelta(days=max(1, min(days, 3660))))
     span = t1 - t0
 
     current = await _window(db, ctx, t0, t1, project_id)
     previous: dict[str, dict] = {}
+    c1 = compare_to or t0
+    c0 = compare_from or (c1 - span)
     if compare:
-        prev_rows = await _window(db, ctx, t0 - span, t0, project_id)
+        prev_rows = await _window(db, ctx, c0, c1, project_id)
         previous = {r["user_label"]: r for r in prev_rows}
 
     # TeamLead scoping: managers with member assignments only see their people.
@@ -157,6 +162,8 @@ async def users(
         "from": t0.isoformat(),
         "to": t1.isoformat(),
         "compared_to_previous": compare,
+        "compare_from": c0.isoformat() if compare else None,
+        "compare_to": c1.isoformat() if compare else None,
         "users": out,
         "weekly": weekly,
     }

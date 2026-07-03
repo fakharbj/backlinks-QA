@@ -47,6 +47,20 @@ async def put_productivity(
     return Message(message="Productivity saved")
 
 
+@router.delete("/productivity", response_model=Message)
+async def remove_productivity_override(
+    db: DbSession,
+    user_label: str = Query(...),
+    link_type_name: str = Query(...),
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> Message:
+    await workforce_service.delete_productivity_override(
+        db, ctx, user_label=user_label, link_type_name=link_type_name
+    )
+    await db.commit()
+    return Message(message="Override removed — global rate applies again")
+
+
 # ── Assignments ──────────────────────────────────────────────────────────────
 class AssignmentUpsert(BaseModel):
     project_id: uuid.UUID

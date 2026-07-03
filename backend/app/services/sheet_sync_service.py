@@ -181,6 +181,168 @@ async def _sync_tabs(db, source, worksheets) -> dict:
     return out
 
 
+async def _auto_provision_users(db: AsyncSession, source: SheetSource, batch_id) -> int:
+    """Owners' rule: a person named in a project's sheet becomes a system user
+    automatically, scoped to that project (Viewer role — task view + leave
+    requests). Matching is case-insensitive ("tony" and "Tony" are one person).
+    A catalog mapping already linked to an account is respected as-is; an
+    unlinked mapping (backfill rows) gets an account and is linked. New accounts
+    start with a random unusable password; admins hand out access via Team →
+    Reset password. Fail-open: provisioning must never fail a sync."""
+    from app.services import batch_service
+
+    if not settings.SHEETS_AUTO_CREATE_USERS:
+        return 0
+    created = 0
+    try:
+        labels = (
+            await db.execute(
+                text(
+                    "SELECT DISTINCT assigned_user_label FROM backlink_records "
+                    "WHERE project_id = :pid AND assigned_user_label IS NOT NULL "
+                    "AND assigned_user_label <> '' ORDER BY 1 LIMIT 200"
+                ),
+                {"pid": source.project_id},
+            )
+        ).scalars().all()
+        if not labels:
+            return 0
+
+        import secrets
+
+        from app.core.rbac import Role
+        from app.core.security import hash_password
+        from app.models.employee import UserEmployeeMapping
+        from app.models.enums import AuditAction
+        from app.models.project import ProjectMember
+        from app.models.user import User, WorkspaceMember
+        from app.services import audit_service
+
+        # One person per lowercased name: "Tony" and "tony" must never become
+        # two accounts, and the whole workspace catalog matters (not just the
+        # labels present in this one project).
+        mapped_lc: dict[str, UserEmployeeMapping] = {}
+        for m in (
+            await db.execute(
+                select(UserEmployeeMapping).where(
+                    UserEmployeeMapping.workspace_id == source.workspace_id
+                )
+            )
+        ).scalars().all():
+            mapped_lc.setdefault(m.sheet_user_label.lower(), m)
+            if m.user_id is not None:
+                mapped_lc[m.sheet_user_label.lower()] = m
+
+        async def _is_project_member(user_id: uuid.UUID) -> bool:
+            return (
+                await db.execute(
+                    select(ProjectMember.id).where(
+                        ProjectMember.project_id == source.project_id,
+                        ProjectMember.user_id == user_id,
+                    )
+                )
+            ).scalar_one_or_none() is not None
+
+        async def _grant_project_access(user_id: uuid.UUID, label: str) -> None:
+            member = (
+                await db.execute(
+                    select(WorkspaceMember).where(
+                        WorkspaceMember.workspace_id == source.workspace_id,
+                        WorkspaceMember.user_id == user_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            # Only Viewers: their access is membership-driven. QA/TeamLead
+            # visibility is managed by admins and must never be auto-narrowed.
+            if member is None or member.role != Role.VIEWER:
+                return
+            if not await _is_project_member(user_id):
+                db.add(ProjectMember(project_id=source.project_id, user_id=user_id, role=None))
+                await batch_service.add_log(
+                    batch_id,
+                    f"“{label}” appears in this project's sheet — project access added "
+                    "to their existing account.",
+                )
+
+        seen_lc: set[str] = set()
+        ws8 = source.workspace_id.hex[:8]
+        for label in labels:
+            lc = label.lower()
+            if lc in seen_lc:
+                continue
+            seen_lc.add(lc)
+            existing = mapped_lc.get(lc)
+            if existing is not None and existing.user_id is not None:
+                await _grant_project_access(existing.user_id, label)
+                continue
+
+            # Deterministic per-workspace address (the label is a sheet name, not
+            # an email) — reruns find the same account instead of duplicating it.
+            slug = re.sub(r"[^a-z0-9]+", ".", lc).strip(".") or "user"
+            email = f"{slug[:40]}.{ws8}@sheet-users.linksentinel.local"
+            user = (
+                await db.execute(select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if user is not None and not user.is_active:
+                continue  # an admin deactivated this auto account — leave it be
+            if user is None:
+                user = User(
+                    email=email,
+                    full_name=label[:200],
+                    password_hash=hash_password(secrets.token_urlsafe(24)),
+                    is_active=True,
+                )
+                db.add(user)
+                await db.flush()
+                db.add(
+                    WorkspaceMember(
+                        workspace_id=source.workspace_id, user_id=user.id, role=Role.VIEWER
+                    )
+                )
+            if existing is not None:
+                existing.user_id = user.id  # link the unlinked backfill mapping
+            else:
+                db.add(
+                    UserEmployeeMapping(
+                        workspace_id=source.workspace_id,
+                        sheet_user_label=label,
+                        user_id=user.id,
+                    )
+                )
+            if not await _is_project_member(user.id):
+                db.add(ProjectMember(project_id=source.project_id, user_id=user.id, role=None))
+            # Attribute this project's existing rows (any case variant) to them.
+            await db.execute(
+                text(
+                    "UPDATE backlink_records SET assigned_user_id = :uid "
+                    "WHERE project_id = :pid AND lower(assigned_user_label) = :lbl "
+                    "AND assigned_user_id IS NULL"
+                ),
+                {"uid": user.id, "pid": source.project_id, "lbl": lc},
+            )
+            await audit_service.record(
+                db, action=AuditAction.CREATE, workspace_id=source.workspace_id,
+                entity_type="user", entity_id=user.id,
+                summary=f"Auto-added '{label}' from sheet sync (User role, project-scoped)",
+            )
+            created += 1
+            await batch_service.add_log(
+                batch_id,
+                f"Auto-added user account for “{label}” (User role, access to this project "
+                "only) — hand out a password from Team → Reset password.",
+            )
+        await db.commit()
+        if created:
+            log.info(
+                "sheet_users_auto_provisioned",
+                sheet_source_id=str(source.id), created=created,
+            )
+    except Exception as exc:  # noqa: BLE001 — user provisioning is best-effort
+        log.warning("auto_provision_users_failed", error=repr(exc))
+        await db.rollback()
+    return created
+
+
 async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     """Sync ALL sub-sheets (tabs) of a project spreadsheet. Each tab name = a link
     type; rows inherit it. Re-sync is idempotent per (tab, row). The whole run is
@@ -355,6 +517,8 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
             )
     except Exception as exc:  # noqa: BLE001 — counters are best-effort
         log.warning("dup_counter_failed", error=repr(exc))
+
+    await _auto_provision_users(db, source, batch_id)
 
     await batch_service.add_log(
         batch_id,

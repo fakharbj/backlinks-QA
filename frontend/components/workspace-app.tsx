@@ -2079,14 +2079,15 @@ function TasksDesk({
         { token }
       )
   });
+  const [view, setView] = useState<"list" | "grid">("list");
   const productivity = useQuery({
     queryKey: ["productivity", token],
     enabled: Boolean(token),
     queryFn: () =>
-      api<{ global: Array<{ link_type_name: string; links_per_hour: number }> }>(
-        "/workforce/productivity",
-        { token }
-      )
+      api<{
+        global: Array<{ link_type_name: string; links_per_hour: number }>;
+        overrides: Array<{ user_label: string; link_type_name: string; links_per_hour: number }>;
+      }>("/workforce/productivity", { token })
   });
   const leaves = useQuery({
     queryKey: ["leaves", token],
@@ -2149,7 +2150,7 @@ function TasksDesk({
     onError: (e: Error) => onNotice(e.message)
   });
   const saveProductivity = useMutation({
-    mutationFn: (p: { link_type_name: string; links_per_hour: number }) =>
+    mutationFn: (p: { link_type_name: string; links_per_hour: number; user_label?: string }) =>
       api<{ message: string }>("/workforce/productivity", {
         token,
         method: "PUT",
@@ -2161,6 +2162,21 @@ function TasksDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const removeOverride = useMutation({
+    mutationFn: (p: { user_label: string; link_type_name: string }) =>
+      api<{ message: string }>(
+        `/workforce/productivity?user_label=${encodeURIComponent(p.user_label)}&link_type_name=${encodeURIComponent(p.link_type_name)}`,
+        { token, method: "DELETE" }
+      ),
+    onSuccess: () => {
+      onNotice("Override removed — global rate applies again");
+      queryClient.invalidateQueries({ queryKey: ["productivity"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const [ovUser, setOvUser] = useState("");
+  const [ovType, setOvType] = useState("");
+  const [ovLph, setOvLph] = useState("");
   const toggleDay = useMutation({
     mutationFn: (p: { day: string; is_working: boolean }) =>
       api<{ message: string }>("/workforce/calendar", { token, method: "PUT", body: JSON.stringify(p) }),
@@ -2239,13 +2255,99 @@ function TasksDesk({
       {/* Day report */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
-          <h3 className="text-sm font-semibold text-ink">Plan vs done</h3>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+            Plan vs done
+            <span className="flex overflow-hidden rounded-lg border border-line text-xs font-medium">
+              <button
+                onClick={() => setView("list")}
+                className={clsx("px-2.5 py-1 transition", view === "list" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+              >
+                List
+              </button>
+              <button
+                onClick={() => setView("grid")}
+                title="Schedule grid — people down the side, days across the top (like the Google Sheet)"
+                className={clsx("px-2.5 py-1 transition", view === "grid" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+              >
+                Schedule grid
+              </button>
+            </span>
+          </h3>
           <div className="flex items-center gap-2 text-xs text-muted">
             <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
             –
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
           </div>
         </div>
+        {view === "grid" ? (
+          <div className="overflow-x-auto">
+            {(() => {
+              const rows = report.data || [];
+              const gridDays = Array.from(new Set(rows.map((r) => r.day))).sort();
+              const gridUsers = Array.from(new Set(rows.map((r) => r.user_label))).sort();
+              if (!rows.length)
+                return report.isLoading ? (
+                  <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                ) : (
+                  <Empty label="No assignments in this period — add one above." />
+                );
+              return (
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-field text-xs uppercase text-muted">
+                    <tr>
+                      <Th>User</Th>
+                      {gridDays.map((d) => (
+                        <Th key={d}><span title={d}>{d.slice(5)}</span></Th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {gridUsers.map((u) => (
+                      <tr key={u} className="align-top">
+                        <Td><span className="font-medium text-ink">{u}</span></Td>
+                        {gridDays.map((d) => {
+                          const cell = rows.filter((r) => r.user_label === u && r.day === d);
+                          return (
+                            <Td key={d}>
+                              {cell.length ? (
+                                <span className="block min-w-[110px] space-y-1">
+                                  {cell.map((r) => (
+                                    <span
+                                      key={r.id}
+                                      title={`${projectName(r.project_id)} — ${r.hours}h · ${r.link_type_names.join(", ") || "any type"} · ${r.actual_links}/${r.expected_links} done${r.excused ? ` · ${r.excuse_reason}` : ""}`}
+                                      className={clsx(
+                                        "block rounded-md px-1.5 py-1 text-[11px] leading-tight",
+                                        r.excused
+                                          ? "bg-field text-muted"
+                                          : (r.completion_pct ?? 0) >= 100
+                                            ? "bg-ocean/10 text-ocean"
+                                            : (r.completion_pct ?? 0) >= 60
+                                              ? "bg-ember/10 text-ember"
+                                              : "bg-danger/10 text-danger"
+                                      )}
+                                    >
+                                      <span className="block truncate font-semibold">{projectName(r.project_id)}</span>
+                                      <span className="block">
+                                        {r.hours}h · {r.actual_links}/{r.expected_links}
+                                        {r.excused ? " · excused" : ""}
+                                      </span>
+                                    </span>
+                                  ))}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-muted">—</span>
+                              )}
+                            </Td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              );
+            })()}
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-field text-xs uppercase text-muted">
@@ -2303,6 +2405,7 @@ function TasksDesk({
             <Empty label="No assignments in this period — add one above." />
           ) : null}
         </div>
+        )}
       </section>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -2328,6 +2431,54 @@ function TasksDesk({
               </div>
             ))}
             {!(productivity.data?.global || []).length ? <Empty label="No link types yet." /> : null}
+          </div>
+          <div className="border-t border-line">
+            <p className="flex items-center gap-1.5 px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
+              Per-person overrides
+              <HelpTip text="A personal rate for one link type, e.g. a fast profile-link builder. It beats the global rate above when calculating that person's expected links. Remove it to fall back to the global rate." />
+            </p>
+            <div className="divide-y divide-line">
+              {(productivity.data?.overrides || []).map((o) => (
+                <div key={`${o.user_label}|${o.link_type_name}`} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <span className="text-sm text-ink">
+                    <span className="font-medium">{o.user_label}</span>
+                    <span className="text-muted"> · {o.link_type_name}</span>
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-ink">{o.links_per_hour}/h</span>
+                    <button
+                      onClick={() => removeOverride.mutate({ user_label: o.user_label, link_type_name: o.link_type_name })}
+                      className="text-xs text-muted hover:text-danger hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </span>
+                </div>
+              ))}
+              {!(productivity.data?.overrides || []).length ? (
+                <p className="px-3 py-2 text-xs text-muted">No personal rates yet — everyone uses the global rates above.</p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-end gap-2 p-3">
+              <input value={ovUser} onChange={(e) => setOvUser(e.target.value)} placeholder="User (sheet name)…" className="h-9 w-36 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <select value={ovType} onChange={(e) => setOvType(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+                <option value="">Link type…</option>
+                {(productivity.data?.global || []).map((g) => (
+                  <option key={g.link_type_name} value={g.link_type_name}>{g.link_type_name}</option>
+                ))}
+              </select>
+              <input type="number" min={0.1} step={0.5} value={ovLph} onChange={(e) => setOvLph(e.target.value)} placeholder="links/h" className="h-9 w-24 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <button
+                onClick={() => {
+                  saveProductivity.mutate({ link_type_name: ovType, links_per_hour: Number(ovLph), user_label: ovUser.trim() });
+                  setOvUser(""); setOvType(""); setOvLph("");
+                }}
+                disabled={saveProductivity.isPending || !ovUser.trim() || !ovType || !(Number(ovLph) > 0)}
+                className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
+              >
+                Add override
+              </button>
+            </div>
           </div>
         </section>
 
@@ -2541,6 +2692,13 @@ const TIMEFRAMES: Array<[string, string]> = [
 
 function PerformanceDesk({ token, projectId }: { token: string | null; projectId: string }) {
   const [days, setDays] = useState("30");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [cmpMode, setCmpMode] = useState<"prev" | "custom" | "off">("prev");
+  const [cmpFrom, setCmpFrom] = useState("");
+  const [cmpTo, setCmpTo] = useState("");
+  const [duelA, setDuelA] = useState("");
+  const [duelB, setDuelB] = useState("");
   const [openUser, setOpenUser] = useState<string | null>(null);
 
   type PerfUser = {
@@ -2549,17 +2707,33 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
     project_new_domains: number; global_new_domains: number;
     previous: Omit<PerfUser, "previous"> | null;
   };
+  // "Custom" choices only fire once both dates are picked (no half-built queries).
+  const customReady = days !== "custom" || Boolean(customFrom && customTo);
+  const cmpReady = cmpMode !== "custom" || Boolean(cmpFrom && cmpTo);
   const perf = useQuery({
-    queryKey: ["performance", token, days, projectId],
-    enabled: Boolean(token),
-    queryFn: () =>
-      api<{
-        from: string; to: string; users: PerfUser[];
+    queryKey: ["performance", token, days, customFrom, customTo, cmpMode, cmpFrom, cmpTo, projectId],
+    enabled: Boolean(token) && customReady && cmpReady,
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (days === "custom") {
+        p.set("date_from", `${customFrom}T00:00:00Z`);
+        p.set("date_to", `${customTo}T23:59:59Z`);
+      } else {
+        p.set("days", days);
+      }
+      p.set("compare", cmpMode === "off" ? "false" : "true");
+      if (cmpMode === "custom") {
+        p.set("compare_from", `${cmpFrom}T00:00:00Z`);
+        p.set("compare_to", `${cmpTo}T23:59:59Z`);
+      }
+      if (projectId) p.set("project_id", projectId);
+      return api<{
+        from: string; to: string;
+        compare_from: string | null; compare_to: string | null;
+        users: PerfUser[];
         weekly: Array<{ week: string; links: number; new_domains: number; indexed: number }>;
-      }>(
-        `/performance/users?days=${days}&compare=true${projectId ? `&project_id=${projectId}` : ""}`,
-        { token }
-      )
+      }>(`/performance/users?${p.toString()}`, { token });
+    }
   });
   // Drill-down: the open user's weakest links (like the Backlinks tab, inline).
   const userLinks = useQuery({
@@ -2585,9 +2759,18 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
           </h2>
           <p className="text-sm text-muted">
             {projectId ? "This project only." : "All projects."} Click a person for details.
+            {perf.data ? (
+              <span className="ml-1">
+                Showing {perf.data.from.slice(0, 10)} → {perf.data.to.slice(0, 10)}
+                {perf.data.compare_from
+                  ? `, compared with ${perf.data.compare_from.slice(0, 10)} → ${(perf.data.compare_to || "").slice(0, 10)}`
+                  : ""}
+                .
+              </span>
+            ) : null}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <ExportButton
             disabled={!users.length}
             onClick={() =>
@@ -2605,11 +2788,35 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
             value={days}
             onChange={(e) => setDays(e.target.value)}
             className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+            title="Timeframe for every number on this page"
           >
             {TIMEFRAMES.map(([v, l]) => (
               <option key={v} value={v}>{l}</option>
             ))}
+            <option value="custom">Custom range…</option>
           </select>
+          {days === "custom" ? (
+            <>
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" title="From" />
+              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" title="To" />
+            </>
+          ) : null}
+          <select
+            value={cmpMode}
+            onChange={(e) => setCmpMode(e.target.value as "prev" | "custom" | "off")}
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+            title="What the small green/red numbers compare against"
+          >
+            <option value="prev">vs previous period</option>
+            <option value="custom">vs custom period…</option>
+            <option value="off">no comparison</option>
+          </select>
+          {cmpMode === "custom" ? (
+            <>
+              <input type="date" value={cmpFrom} onChange={(e) => setCmpFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" title="Compare from" />
+              <input type="date" value={cmpTo} onChange={(e) => setCmpTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" title="Compare to" />
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -2623,6 +2830,76 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
               { name: "Indexed", cssVar: "--ember", values: weekly.map((w) => w.indexed) }
             ]}
           />
+        </section>
+      ) : null}
+
+      {users.length >= 2 ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+              Compare two people
+              <HelpTip text="Put any two team members side by side for the selected timeframe and scope (this project, or all projects when no project is chosen). Green marks the better number — for Fail and Duplicates, lower is better." />
+            </h3>
+            <select value={duelA} onChange={(e) => setDuelA(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+              <option value="">Pick a person…</option>
+              {users.map((u) => (
+                <option key={u.user_label} value={u.user_label}>{u.user_label}</option>
+              ))}
+            </select>
+            <span className="text-xs font-semibold uppercase text-muted">vs</span>
+            <select value={duelB} onChange={(e) => setDuelB(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+              <option value="">Pick a person…</option>
+              {users.filter((u) => u.user_label !== duelA).map((u) => (
+                <option key={u.user_label} value={u.user_label}>{u.user_label}</option>
+              ))}
+            </select>
+            {duelA || duelB ? (
+              <button onClick={() => { setDuelA(""); setDuelB(""); }} className="text-xs text-muted hover:text-ink hover:underline">
+                Clear
+              </button>
+            ) : null}
+          </div>
+          {(() => {
+            const a = users.find((u) => u.user_label === duelA);
+            const b = users.find((u) => u.user_label === duelB);
+            if (!a || !b)
+              return (
+                <p className="pt-3 text-xs text-muted">
+                  Choose two people above — the comparison uses the same timeframe as the rest of the page.
+                </p>
+              );
+            const rows: Array<[string, number | null, number | null, boolean]> = [
+              ["Links created", a.links, b.links, false],
+              ["New domains (project)", a.project_new_domains, b.project_new_domains, false],
+              ["New domains (overall)", a.global_new_domains, b.global_new_domains, false],
+              ["Indexed", a.indexed, b.indexed, false],
+              ["Pass", a.pass, b.pass, false],
+              ["Fail", a.fail, b.fail, true],
+              ["Duplicates", a.duplicates, b.duplicates, true],
+              ["Avg score", a.avg_score, b.avg_score, false]
+            ];
+            const better = (x: number | null, y: number | null, lower: boolean) => {
+              if (x == null || y == null || x === y) return 0;
+              return (lower ? x < y : x > y) ? -1 : 1; // -1 → A wins, 1 → B wins
+            };
+            return (
+              <div className="grid gap-1.5 pt-3 sm:grid-cols-2">
+                {rows.map(([label, av, bv, lower]) => {
+                  const w = better(av, bv, lower);
+                  return (
+                    <div key={label} className="flex items-center justify-between rounded-lg border border-line bg-field/40 px-3 py-2 text-sm">
+                      <span className="text-xs font-medium text-muted">{label}</span>
+                      <span className="flex items-center gap-2 font-semibold">
+                        <span className={clsx(w === -1 ? "text-ocean" : "text-ink")}>{av ?? "—"}</span>
+                        <span className="text-[10px] text-muted">/</span>
+                        <span className={clsx(w === 1 ? "text-ocean" : "text-ink")}>{bv ?? "—"}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </section>
       ) : null}
 
@@ -6884,6 +7161,55 @@ const ROLE_HINT: Record<Role, string> = {
   viewer: "Read-only dashboards and exports"
 };
 
+function MemberProjectsCell({
+  token,
+  userId,
+  role,
+  projects,
+  onNotice
+}: {
+  token: string | null;
+  userId: string;
+  role: Role;
+  projects: Project[];
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const scoped = useQuery({
+    queryKey: ["member-projects", token, userId],
+    enabled: Boolean(token) && role !== "admin",
+    retry: false,
+    queryFn: () => api<{ project_ids: string[] }>(`/team/members/${userId}/projects`, { token })
+  });
+  const save = useMutation({
+    mutationFn: (ids: string[]) =>
+      api<{ message: string }>(`/team/members/${userId}/projects`, {
+        token,
+        method: "PUT",
+        body: JSON.stringify({ project_ids: ids })
+      }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["member-projects", token, userId] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  if (role === "admin")
+    return <span className="text-xs text-muted" title="Admins always see every project">All (admin)</span>;
+  const ids = scoped.data?.project_ids || [];
+  const emptyLabel = role === "viewer" ? "No projects yet" : "All projects";
+  return (
+    <span title="Which projects this member can see. Empty = a TeamLead/QA sees all; a User (viewer) sees none until you pick their projects.">
+      <FilterMultiSelect
+        label={ids.length ? `${ids.length} project${ids.length !== 1 ? "s" : ""}` : emptyLabel}
+        options={projects.map((p) => ({ value: p.id, label: p.name }))}
+        selected={ids}
+        onChange={(v) => save.mutate(v)}
+      />
+    </span>
+  );
+}
+
 function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
@@ -6896,6 +7222,11 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
     enabled: Boolean(token),
     retry: false,
     queryFn: () => api<TeamMember[]>("/team/members", { token })
+  });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["team"] });
@@ -7055,11 +7386,16 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           <Users className="h-5 w-5 text-ocean" />
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-left text-sm">
+          <table className="w-full min-w-[920px] text-left text-sm">
             <thead className="border-b border-line bg-field text-xs uppercase text-muted">
               <tr>
                 <Th>Member</Th>
                 <Th>Role</Th>
+                <Th>
+                  <span title="Which projects this member can open. TeamLead/QA with none selected see all projects; Users (viewers) only see what you pick.">
+                    Projects
+                  </span>
+                </Th>
                 <Th>Status</Th>
                 <Th>Last login</Th>
                 <Th>Joined</Th>
@@ -7088,6 +7424,15 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                         </option>
                       ))}
                     </select>
+                  </Td>
+                  <Td>
+                    <MemberProjectsCell
+                      token={token}
+                      userId={m.user_id}
+                      role={m.role}
+                      projects={projectsQ.data || []}
+                      onNotice={onNotice}
+                    />
                   </Td>
                   <Td>
                     <span
