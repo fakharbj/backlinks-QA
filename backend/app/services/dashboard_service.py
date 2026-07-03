@@ -116,8 +116,31 @@ async def build_dashboard(
     vendors = await _top_vendors(db, ctx, project_id)
     recent = await _recent_changes(db, ctx, project_id)
 
-    # Deeper, project-specific sections (only for a single-project dashboard).
+    # Company view: entity totals strip (owners: "no of projects, competitors…").
     extra: dict = {}
+    if project_id is None:
+        counts_row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT
+                      (SELECT count(*) FROM projects WHERE workspace_id = :ws)              AS projects,
+                      (SELECT count(*) FROM source_domains WHERE workspace_id = :ws)        AS source_domains,
+                      (SELECT count(*) FROM competitor_source_domains WHERE workspace_id = :ws) AS competitor_domains,
+                      (SELECT count(*) FROM workspace_members WHERE workspace_id = :ws)     AS users,
+                      (SELECT count(*) FROM batches WHERE workspace_id = :ws)               AS batches,
+                      (SELECT count(*) FROM backlink_conflicts
+                        WHERE workspace_id = :ws AND resolution_status = 'open')            AS open_duplicates,
+                      (SELECT count(*) FROM backlink_records
+                        WHERE workspace_id = :ws AND index_status = 'indexed')              AS indexed_links
+                    """
+                ),
+                {"ws": ctx.workspace_id},
+            )
+        ).mappings().first() or {}
+        extra = {"counts": dict(counts_row)}
+
+    # Deeper, project-specific sections (only for a single-project dashboard).
     if project_id is not None:
         extra = dict(
             is_project=True,

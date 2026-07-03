@@ -61,6 +61,7 @@ class BacklinkRow(ORMModel):
     robots_status: str | None
     issue_count: int
     top_issue_label: str | None
+    created_at: datetime | None = None
     last_checked_at: datetime | None
     next_check_at: datetime | None
     assigned_user_id: uuid.UUID | None

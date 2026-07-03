@@ -182,6 +182,8 @@ export type CompetitorDomain = {
   our_link_count: number;
   our_indexed_pct: number | null;
   is_new: boolean;
+  da: number | null;
+  pa: number | null;
   decision: string;
   decision_reason: string | null;
   has_guest_post: boolean;
@@ -282,6 +284,8 @@ export type Dashboard = {
     severity: string | null;
     created_at: string;
   }>;
+  // Company-view entity totals (empty for a project dashboard).
+  counts?: Record<string, number>;
   // Project-dashboard-only sections (empty for the company view).
   is_project: boolean;
   link_type_breakdown: Array<{
@@ -335,6 +339,7 @@ export type BacklinkRow = {
   robots_status: string | null;
   issue_count: number;
   top_issue_label: string | null;
+  created_at?: string | null;
   last_checked_at: string | null;
   next_check_at: string | null;
   assigned_user_id: string | null;

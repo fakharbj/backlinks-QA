@@ -36,9 +36,13 @@ def _param_out(p) -> ScoringParameterOut:
     )
 
 
-async def _config_out(db, ctx, scope: str, scope_ref_id: uuid.UUID | None) -> ScoringConfigOut:
+async def _config_out(
+    db, ctx, scope: str, scope_ref_id: uuid.UUID | None,
+    link_type_id: uuid.UUID | None = None,
+) -> ScoringConfigOut:
     cfg = await scoring_config_service.effective_config(
-        db, workspace_id=ctx.workspace_id, scope=scope, scope_ref_id=scope_ref_id
+        db, workspace_id=ctx.workspace_id, scope=scope, scope_ref_id=scope_ref_id,
+        link_type_id=link_type_id,
     )
     params = await scoring_config_service.list_parameters(db)
     return ScoringConfigOut(parameters=[_param_out(p) for p in params], **cfg)
@@ -55,8 +59,9 @@ async def get_config(
     db: ReadSession,
     scope: str = Query("global"),
     scope_ref_id: uuid.UUID | None = Query(None),
+    link_type_id: uuid.UUID | None = Query(None),
 ) -> ScoringConfigOut:
-    return await _config_out(db, ctx, scope, scope_ref_id)
+    return await _config_out(db, ctx, scope, scope_ref_id, link_type_id)
 
 
 @router.put("/config", response_model=ScoringConfigOut)
@@ -66,6 +71,7 @@ async def save_config(
 ) -> ScoringConfigOut:
     row = await scoring_config_service.save_version(
         db, workspace_id=ctx.workspace_id, scope=payload.scope, scope_ref_id=payload.scope_ref_id,
+        link_type_id=payload.link_type_id,
         rules=payload.rules, bands=payload.bands, note=payload.note, created_by=ctx.user.id,
     )
     await audit_service.record(
@@ -74,16 +80,18 @@ async def save_config(
         summary=f"Saved {payload.scope} scoring v{row.version}",
     )
     await db.commit()
-    return await _config_out(db, ctx, payload.scope, payload.scope_ref_id)
+    return await _config_out(db, ctx, payload.scope, payload.scope_ref_id, payload.link_type_id)
 
 
 @router.get("/versions", response_model=list[ScoringVersionOut])
 async def list_versions(
     ctx: AuthCtx, db: ReadSession,
     scope: str = Query("global"), scope_ref_id: uuid.UUID | None = Query(None),
+    link_type_id: uuid.UUID | None = Query(None),
 ) -> list[ScoringVersionOut]:
     rows = await scoring_config_service.list_versions(
-        db, workspace_id=ctx.workspace_id, scope=scope, scope_ref_id=scope_ref_id
+        db, workspace_id=ctx.workspace_id, scope=scope, scope_ref_id=scope_ref_id,
+        link_type_id=link_type_id,
     )
     return [
         ScoringVersionOut(
@@ -112,6 +120,7 @@ async def rescore(
         result = await rescore_service.rescore(
             db, workspace_id=ctx.workspace_id, scope=payload.scope,
             scope_ref_id=payload.scope_ref_id, preview=payload.preview,
+            link_type_id=payload.link_type_id,
         )
     except Exception as exc:  # noqa: BLE001 — close the batch, then surface the error
         await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])

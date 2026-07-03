@@ -760,6 +760,30 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
           </p>
         </div>
       </div>
+      {!projectId && stats?.counts && Object.keys(stats.counts).length ? (
+        <div className="flex flex-wrap gap-2">
+          {(
+            [
+              ["projects", "Projects"],
+              ["source_domains", "Source domains"],
+              ["competitor_domains", "Competitor domains"],
+              ["users", "Users"],
+              ["batches", "Runs"],
+              ["open_duplicates", "Open duplicates"],
+              ["indexed_links", "Indexed links"]
+            ] as Array<[string, string]>
+          ).map(([k, label]) => (
+            <span
+              key={k}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-3 py-1.5 text-xs shadow-card"
+            >
+              <span className="font-bold text-ink">{stats.counts?.[k] ?? 0}</span>
+              <span className="text-muted">{label}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink" />
         <Metric label="Pass" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean" />
@@ -1029,6 +1053,14 @@ function Backlinks({
     enabled: Boolean(token),
     queryFn: () => api<LinkType[]>("/link-types", { token })
   });
+  // Shared cache with the sidebar's projects query (same key → no extra request).
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const projectName = (id: string) =>
+    (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
 
   const clearFilters = () => {
     setStatus("");
@@ -1253,17 +1285,21 @@ function Backlinks({
         </div>
       </div>
       <div className="overflow-x-auto scrollbar-thin">
-        <table className="min-w-[1120px] w-full border-collapse text-left text-sm">
+        <table className="min-w-[1480px] w-full border-collapse text-left text-sm">
           <thead className="bg-field text-xs uppercase text-muted">
             <tr>
               <Th>Status</Th>
               <Th>Score</Th>
               <Th>Source</Th>
               <Th>Target</Th>
+              <Th>Type</Th>
+              <Th>User</Th>
+              {!projectId ? <Th>Project</Th> : null}
               <Th>HTTP</Th>
               <Th>Rel</Th>
               <Th>Rank / Visits</Th>
               <Th>Issue</Th>
+              <Th>Added</Th>
               <Th>Checked</Th>
             </tr>
           </thead>
@@ -1275,7 +1311,11 @@ function Backlinks({
                 className="cursor-pointer hover:bg-field/70"
               >
                 <Td><Status value={row.override_status || row.status} reason={row.top_issue_label} /></Td>
-                <Td><span className="font-semibold">{row.score ?? "-"}</span></Td>
+                <Td>
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <ScoreTip token={token} backlinkId={row.id} score={row.score} />
+                  </span>
+                </Td>
                 <Td>
                   <Url value={row.source_page_url} />
                   {row.is_duplicate ? (
@@ -1287,15 +1327,22 @@ function Backlinks({
                     </span>
                   ) : null}
                   {row.index_status ? <IndexBadge value={row.index_status} /> : null}
-                  {row.assigned_user_label ? (
-                    <span className="mt-0.5 block text-[11px] text-muted">👤 {row.assigned_user_label}</span>
-                  ) : null}
                 </Td>
                 <Td><Url value={row.target_url} /></Td>
+                <Td><span className="whitespace-nowrap text-xs">{row.link_type || "—"}</span></Td>
+                <Td><span className="whitespace-nowrap text-xs font-medium text-ink">{row.assigned_user_label || "—"}</span></Td>
+                {!projectId ? (
+                  <Td>
+                    <span className="whitespace-nowrap text-xs text-muted">
+                      {projectName(row.project_id)}
+                    </span>
+                  </Td>
+                ) : null}
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
                 <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
                 <Td>{row.top_issue_label ?? (row.issue_count ? `${row.issue_count} issues` : "-")}</Td>
+                <Td><span className="whitespace-nowrap text-xs text-muted">{formatDate(row.created_at ?? null)}</span></Td>
                 <Td>{formatDate(row.last_checked_at)}</Td>
               </tr>
             ))}
@@ -2164,6 +2211,7 @@ const BATCH_KIND_LABEL: Record<string, string> = {
   duplicate_scan: "Duplicate scan",
   rescore: "Re-score",
   competitor_import: "Competitor upload",
+  competitor_check: "Competitor metrics check",
   report: "Report"
 };
 
@@ -2430,9 +2478,25 @@ function CompetitorDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const checkMetrics = useMutation({
+    mutationFn: () =>
+      api<{ checked: number; from_cache: number; api_calls: number; skipped_fresh: number }>(
+        `/competitors/check-metrics?project_id=${projectId}&freshness_days=10`,
+        { token, method: "POST" }
+      ),
+    onSuccess: (r) => {
+      onNotice(
+        `Metrics checked: ${r.checked} domain(s) — ${r.from_cache} reused from our own checks, ` +
+          `${r.api_calls} API call(s), ${r.skipped_fresh} already fresh.`
+      );
+      queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
   const exportCsv = () => {
     const rows = domains.data || [];
-    const head = "domain,status,competitor_links,our_links,indexed_pct,guest_post";
+    const head = "domain,status,competitor_links,our_links,indexed_pct,da,pa,guest_post";
     const body = rows
       .map((d) =>
         [
@@ -2441,6 +2505,8 @@ function CompetitorDesk({
           d.url_count,
           d.our_link_count,
           d.our_indexed_pct ?? "",
+          d.da ?? "",
+          d.pa ?? "",
           d.has_guest_post ? "yes" : ""
         ].join(",")
       )
@@ -2544,6 +2610,15 @@ function CompetitorDesk({
               Hide guest posts
             </button>
             <button
+              onClick={() => checkMetrics.mutate()}
+              disabled={checkMetrics.isPending || !(domains.data || []).length}
+              title="Fill DA/PA for these domains — reuses our own recent checks first (no API cost), only calls the API for what's missing or stale (10-day freshness)"
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+            >
+              {checkMetrics.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Gauge className="h-3.5 w-3.5" />}
+              Check metrics
+            </button>
+            <button
               onClick={exportCsv}
               disabled={!(domains.data || []).length}
               className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
@@ -2556,7 +2631,7 @@ function CompetitorDesk({
           <table className="w-full text-left text-sm">
             <thead className="bg-field text-xs uppercase text-muted">
               <tr>
-                <Th>Domain</Th><Th>Status</Th><Th>Competitor links</Th><Th>Our links</Th><Th>Indexed %</Th><Th>Action</Th>
+                <Th>Domain</Th><Th>Status</Th><Th>Competitor links</Th><Th>Our links</Th><Th>Indexed %</Th><Th>DA</Th><Th>Action</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -2588,6 +2663,7 @@ function CompetitorDesk({
                   <Td>{d.url_count}</Td>
                   <Td>{d.our_link_count}</Td>
                   <Td>{d.our_indexed_pct != null ? `${d.our_indexed_pct}%` : "-"}</Td>
+                  <Td>{d.da ?? "—"}</Td>
                   <Td>
                     {d.category === "new_opportunity" ? (
                       d.decision === "dismissed" ? (
@@ -4063,6 +4139,9 @@ function ScoringDesk({
     projectId ? "project" : "global"
   );
   const [refId, setRefId] = useState<string>(projectId || "");
+  // Optional second axis inside a project: configure ONE link type for THIS
+  // project (owners: "each project sets scoring for all 7 link types").
+  const [projLt, setProjLt] = useState<string>("");
   const [draft, setDraft] = useState<Record<string, Record<string, number | "">>>({});
   const [bands, setBands] = useState<{ fail_below: number; warn_below: number }>({
     fail_below: 30,
@@ -4087,14 +4166,17 @@ function ScoringDesk({
   }, [scope, projectId, refId]);
 
   const effectiveRef = scope === "global" ? "" : refId;
+  // Project + a chosen link type = the combined project_link_type scope.
+  const effectiveScope = scope === "project" && projLt ? "project_link_type" : scope;
+  const ltParam = effectiveScope === "project_link_type" ? `&link_type_id=${projLt}` : "";
   const ready = scope === "global" || Boolean(effectiveRef);
-  const cfgKey = ["scoring-config", token, scope, effectiveRef];
+  const cfgKey = ["scoring-config", token, effectiveScope, effectiveRef, projLt];
   const config = useQuery({
     queryKey: cfgKey,
     enabled: Boolean(token) && ready,
     queryFn: () =>
       api<ScoringConfig>(
-        `/scoring/config?scope=${scope}${effectiveRef ? `&scope_ref_id=${effectiveRef}` : ""}`,
+        `/scoring/config?scope=${effectiveScope}${effectiveRef ? `&scope_ref_id=${effectiveRef}` : ""}${ltParam}`,
         { token }
       )
   });
@@ -4108,7 +4190,13 @@ function ScoringDesk({
   }, [config.data]);
 
   const body = () =>
-    JSON.stringify({ scope, scope_ref_id: effectiveRef || null, rules: cleanScoringRules(draft), bands });
+    JSON.stringify({
+      scope: effectiveScope,
+      scope_ref_id: effectiveRef || null,
+      link_type_id: effectiveScope === "project_link_type" ? projLt : null,
+      rules: cleanScoringRules(draft),
+      bands
+    });
 
   const save = useMutation({
     mutationFn: () => api<ScoringConfig>("/scoring/config", { token, method: "PUT", body: body() }),
@@ -4122,7 +4210,12 @@ function ScoringDesk({
     api<RescoreResult>("/scoring/rescore", {
       token,
       method: "POST",
-      body: JSON.stringify({ scope, scope_ref_id: effectiveRef || null, preview: !apply })
+      body: JSON.stringify({
+        scope: effectiveScope,
+        scope_ref_id: effectiveRef || null,
+        link_type_id: effectiveScope === "project_link_type" ? projLt : null,
+        preview: !apply
+      })
     });
   const previewMut = useMutation({
     mutationFn: () => rescore(false),
@@ -4170,6 +4263,7 @@ function ScoringDesk({
             onClick={() => {
               setScope(s);
               setRefId(s === "project" && projectId ? projectId : "");
+              setProjLt("");
             }}
             className={clsx(
               "h-9 rounded-md border px-3 text-sm font-medium transition",
@@ -4196,13 +4290,31 @@ function ScoringDesk({
         {scope === "project" ? (
           <select
             value={refId}
-            onChange={(e) => setRefId(e.target.value)}
+            onChange={(e) => {
+              setRefId(e.target.value);
+              setProjLt("");
+            }}
             className="h-9 rounded-md border border-line bg-panel px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
           >
             <option value="">Select project…</option>
             {(projects.data || []).map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {scope === "project" && refId ? (
+          <select
+            value={projLt}
+            onChange={(e) => setProjLt(e.target.value)}
+            title="Configure one link type for this project — the most specific rule; wins over the project default and the link type's own rules"
+            className="h-9 rounded-md border border-line bg-panel px-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          >
+            <option value="">All link types (project default)</option>
+            {(linkTypes.data || []).map((lt) => (
+              <option key={lt.id} value={lt.id}>
+                Link type: {lt.name}
               </option>
             ))}
           </select>
@@ -4530,13 +4642,15 @@ function ConflictsDesk({
 }) {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>("open");
+  // "New" = the group was first detected in the last 7 days (vs previously known).
+  const [ageFilter, setAgeFilter] = useState<"" | "new" | "old">("");
 
   const summary = useQuery({
     queryKey: ["conflict-summary", token],
     enabled: Boolean(token),
     queryFn: () => api<ConflictSummary>("/conflicts/summary", { token })
   });
-  const conflicts = useQuery({
+  const conflictsRaw = useQuery({
     queryKey: ["conflicts", token, statusFilter],
     enabled: Boolean(token),
     queryFn: () =>
@@ -4545,6 +4659,17 @@ function ConflictsDesk({
         { token }
       )
   });
+  const weekAgo = Date.now() - 7 * 86400000;
+  const isNew = (g: ConflictGroup) => {
+    const t = g.detected_at || g.created_at;
+    return Boolean(t) && new Date(t as string).getTime() >= weekAgo;
+  };
+  const conflicts = {
+    ...conflictsRaw,
+    data: (conflictsRaw.data || []).filter((g) =>
+      ageFilter === "new" ? isNew(g) : ageFilter === "old" ? !isNew(g) : true
+    )
+  };
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["conflicts"] });
@@ -4601,6 +4726,26 @@ function ConflictsDesk({
               <option value="ignored">Ignored</option>
               <option value="">All</option>
             </select>
+            <button
+              onClick={() => setAgeFilter(ageFilter === "new" ? "" : "new")}
+              title="Duplicate groups first found in the last 7 days"
+              className={clsx(
+                "h-8 rounded-full border px-3 text-xs font-medium transition",
+                ageFilter === "new" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+              )}
+            >
+              New (7 days)
+            </button>
+            <button
+              onClick={() => setAgeFilter(ageFilter === "old" ? "" : "old")}
+              title="Duplicate groups already known before the last 7 days"
+              className={clsx(
+                "h-8 rounded-full border px-3 text-xs font-medium transition",
+                ageFilter === "old" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+              )}
+            >
+              Previously found
+            </button>
             <button
               onClick={() => rebuild.mutate()}
               className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
@@ -4888,6 +5033,70 @@ function Severity({ value }: { value: string }) {
   return (
     <span className={clsx("rounded px-2 py-1 text-xs font-semibold", severityClass(value))}>
       {value}
+    </span>
+  );
+}
+
+function ScoreTip({
+  token,
+  backlinkId,
+  score
+}: {
+  token: string | null;
+  backlinkId: string;
+  score: number | null;
+}) {
+  const [hovered, setHovered] = useState(false);
+  // Lazy: the breakdown is fetched only on first hover, then cached.
+  const detail = useQuery({
+    queryKey: ["score-tip", token, backlinkId],
+    enabled: Boolean(token) && hovered,
+    staleTime: 5 * 60_000,
+    queryFn: () => api<BacklinkDetail>(`/backlinks/${backlinkId}`, { token })
+  });
+  const steps = (detail.data?.score_breakdown || []) as Array<{
+    code: string; delta: number; note?: string; cap_applied?: number | null;
+  }>;
+  const shown = steps.filter((s) => s.delta !== 0 || s.cap_applied != null);
+  return (
+    <span
+      className="group relative inline-flex"
+      onMouseEnter={() => setHovered(true)}
+    >
+      <span className="cursor-help font-semibold underline decoration-dotted decoration-line underline-offset-2">
+        {score ?? "-"}
+      </span>
+      <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-80 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
+        <span className="block text-[11px] font-semibold uppercase tracking-wide text-muted">
+          How this score was calculated
+        </span>
+        {!hovered || detail.isLoading ? (
+          <span className="mt-1 block text-xs text-muted">Loading breakdown…</span>
+        ) : shown.length ? (
+          <span className="mt-1 block space-y-0.5">
+            <span className="flex justify-between text-xs text-muted">
+              <span>Starting score</span><span>100</span>
+            </span>
+            {shown.map((s, i) => (
+              <span key={i} className="flex justify-between gap-2 text-xs">
+                <span className="truncate text-ink">
+                  {(s.note || s.code).replaceAll("_", " ").toLowerCase()}
+                </span>
+                <span className={clsx("shrink-0 font-semibold", s.delta < 0 ? "text-danger" : "text-ocean")}>
+                  {s.cap_applied != null ? `capped at ${s.cap_applied}` : `${s.delta > 0 ? "+" : ""}${s.delta}`}
+                </span>
+              </span>
+            ))}
+            <span className="mt-1 flex justify-between border-t border-line pt-1 text-xs font-bold text-ink">
+              <span>Final score</span><span>{score ?? "-"}</span>
+            </span>
+          </span>
+        ) : (
+          <span className="mt-1 block text-xs text-muted">
+            No deductions — every checked parameter passed (score {score ?? "-"}).
+          </span>
+        )}
+      </span>
     </span>
   );
 }

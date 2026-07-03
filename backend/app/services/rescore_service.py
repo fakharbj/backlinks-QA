@@ -81,6 +81,7 @@ async def rescore(
     scope: str,
     scope_ref_id: uuid.UUID | None,
     preview: bool = True,
+    link_type_id: uuid.UUID | None = None,
 ) -> dict:
     """Recompute scores for the backlinks a scope governs. Returns a summary
     (total, changed, score_delta_avg, status transitions); writes when not preview."""
@@ -92,6 +93,11 @@ async def rescore(
         stmt = stmt.where(BacklinkRecord.project_id == scope_ref_id)
     elif scope == "link_type":
         stmt = stmt.where(BacklinkRecord.link_type_id == scope_ref_id)
+    elif scope == "project_link_type":
+        stmt = stmt.where(
+            BacklinkRecord.project_id == scope_ref_id,
+            BacklinkRecord.link_type_id == link_type_id,
+        )
     # workspace/global → all of the workspace's crawled backlinks.
 
     records = (await db.execute(stmt)).scalars().all()

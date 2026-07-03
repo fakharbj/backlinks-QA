@@ -202,6 +202,7 @@ async def list_domains(
         f"""
         SELECT d.id::text AS id, d.domain_key, d.url_count, d.category,
                d.our_link_count, d.our_indexed_pct, d.is_new,
+               coalesce(d.da, sd.da) AS da, coalesce(d.pa, sd.pa) AS pa,
                coalesce(dec.status, 'open') AS decision,
                dec.reason AS decision_reason,
                EXISTS (
@@ -213,6 +214,8 @@ async def list_domains(
         LEFT JOIN competitor_domain_decisions dec
           ON dec.workspace_id = d.workspace_id AND dec.project_id = d.project_id
          AND dec.domain_key = d.domain_key
+        LEFT JOIN source_domains sd
+          ON sd.workspace_id = d.workspace_id AND sd.domain_key = d.domain_key
         WHERE {' AND '.join(conds)}
         ORDER BY d.category ASC, d.url_count DESC
         LIMIT :lim
@@ -263,6 +266,111 @@ async def decide(
     )
     await db.execute(stmt)
     await db.flush()
+
+
+async def check_metrics(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID,
+    *, freshness_days: int = 10, limit: int = 100, force: bool = False,
+) -> dict:
+    """Fill DA/PA for this project's competitor domains, REUSE-FIRST:
+    1. copy from ``source_domains`` when we already checked that domain recently
+       (zero API cost); 2. skip domains checked within the freshness window;
+    3. only then call the metrics API. Every step is recorded (batch + history)."""
+    import httpx as _httpx
+    from datetime import datetime, timedelta, timezone
+
+    from app.integrations import domain_metrics as dm_integration
+    from app.models.metric_history import MetricCheckHistory
+    from app.services import batch_service
+
+    await _ensure_project(db, ctx, project_id)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, freshness_days))
+
+    rows = (
+        await db.execute(
+            select(CompetitorSourceDomain)
+            .where(
+                CompetitorSourceDomain.workspace_id == ctx.workspace_id,
+                CompetitorSourceDomain.project_id == project_id,
+            )
+            .order_by(CompetitorSourceDomain.da.is_(None).desc(), CompetitorSourceDomain.url_count.desc())
+            .limit(max(1, min(limit, 500)))
+        )
+    ).scalars().all()
+    if not rows:
+        return {"checked": 0, "from_cache": 0, "api_calls": 0, "skipped_fresh": 0}
+
+    batch_id = await batch_service.start(
+        "competitor_check", ctx.workspace_id, project_id=project_id,
+        label=f"Competitor metrics check ({len(rows)} domains)", started_by=ctx.user.id,
+        total=len(rows),
+    )
+
+    # Our own source-domain metrics (already paid for) → free reuse.
+    from sqlalchemy import String as _String
+    from sqlalchemy import bindparam as _bindparam
+    from sqlalchemy.dialects.postgresql import ARRAY as _ARRAY
+
+    sd_stmt = text(
+        "SELECT domain_key, da, pa, metrics_updated_at FROM source_domains "
+        "WHERE workspace_id = :ws AND domain_key = ANY(:keys)"
+    ).bindparams(_bindparam("keys", type_=_ARRAY(_String())))
+    sd_map = {
+        r["domain_key"]: r
+        for r in (
+            await db.execute(sd_stmt, {"ws": ctx.workspace_id, "keys": [r.domain_key for r in rows]})
+        ).mappings().all()
+    }
+
+    checked = cached = api_calls = skipped = 0
+    async with _httpx.AsyncClient(timeout=20) as client:
+        for row in rows:
+            if not force and row.da is not None and row.updated_at and row.updated_at >= cutoff:
+                skipped += 1
+                continue
+            sd = sd_map.get(row.domain_key)
+            if (
+                not force and sd and sd["da"] is not None
+                and sd["metrics_updated_at"] and sd["metrics_updated_at"] >= cutoff
+            ):
+                row.da = sd["da"]
+                row.pa = sd["pa"]
+                cached += 1
+                checked += 1
+                db.add(MetricCheckHistory(
+                    workspace_id=ctx.workspace_id, entity_kind="domain",
+                    entity_key=row.domain_key[:600], provider="moz", from_cache=True,
+                    ok=True, batch_id=batch_id,
+                ))
+                continue
+            try:
+                data = await dm_integration.fetch_all(row.domain_key, client)
+            except Exception:  # noqa: BLE001 — one bad domain must not stop the run
+                data = {}
+            if data.get("da") is not None:
+                row.da = data.get("da")
+                row.pa = data.get("pa")
+            api_calls += 1
+            checked += 1
+            db.add(MetricCheckHistory(
+                workspace_id=ctx.workspace_id, entity_kind="domain",
+                entity_key=row.domain_key[:600], provider="moz", from_cache=False,
+                ok=bool(data), batch_id=batch_id,
+            ))
+    await db.flush()
+
+    await batch_service.update(
+        batch_id,
+        totals={"total": len(rows), "done": len(rows), "ok": checked, "skipped": skipped},
+        counters_inc={"api_calls": api_calls, "api_cached": cached},
+    )
+    await batch_service.add_log(
+        batch_id,
+        f"{checked} domain(s) updated — {cached} reused from our own recent checks (no API cost), "
+        f"{api_calls} fresh API call(s), {skipped} already fresh (checked within {freshness_days} days).",
+    )
+    await batch_service.finish(batch_id)
+    return {"checked": checked, "from_cache": cached, "api_calls": api_calls, "skipped_fresh": skipped}
 
 
 async def summary(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> dict:

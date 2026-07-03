@@ -25,7 +25,7 @@ from app.core.errors import ValidationAppError
 from app.models.scoring import ScoringParameter, ScoringRuleVersion
 from app.qa.scoring_rules import DEFAULT_RULESET, ResolvedRuleset
 
-_SCOPES = ("global", "workspace", "link_type", "project")
+_SCOPES = ("global", "workspace", "link_type", "project", "project_link_type")
 _DEFAULT_BANDS = {"fail_below": 30, "warn_below": 80}
 
 
@@ -35,6 +35,7 @@ async def _latest(
     workspace_id: uuid.UUID | None,
     scope: str,
     scope_ref_id: uuid.UUID | None,
+    link_type_id: uuid.UUID | None = None,
 ) -> ScoringRuleVersion | None:
     stmt = select(ScoringRuleVersion).where(
         ScoringRuleVersion.scope == scope,
@@ -48,6 +49,10 @@ async def _latest(
         stmt = stmt.where(ScoringRuleVersion.scope_ref_id.is_(None))
     else:
         stmt = stmt.where(ScoringRuleVersion.scope_ref_id == scope_ref_id)
+    if link_type_id is None:
+        stmt = stmt.where(ScoringRuleVersion.link_type_id.is_(None))
+    else:
+        stmt = stmt.where(ScoringRuleVersion.link_type_id == link_type_id)
     return (await db.execute(stmt.limit(1))).scalars().first()
 
 
@@ -64,21 +69,25 @@ async def _merged_chain(
     project_id: uuid.UUID | None,
     link_type_id: uuid.UUID | None,
 ) -> ResolvedRuleset:
-    """Merge global→workspace→link_type→project (least→most specific)."""
-    chain: list[tuple[str, uuid.UUID | None]] = [("global", None)]
+    """Merge global→workspace→link_type→project→project×link_type (least→most
+    specific). The last hop is the owners' "each project configures each link
+    type" grid — it wins over everything else for that combination."""
+    chain: list[tuple[str, uuid.UUID | None, uuid.UUID | None]] = [("global", None, None)]
     if workspace_id is not None:
-        chain.append(("workspace", None))
+        chain.append(("workspace", None, None))
     if link_type_id is not None:
-        chain.append(("link_type", link_type_id))
+        chain.append(("link_type", link_type_id, None))
     if project_id is not None:
-        chain.append(("project", project_id))
+        chain.append(("project", project_id, None))
+    if project_id is not None and link_type_id is not None:
+        chain.append(("project_link_type", project_id, link_type_id))
 
     merged_rules: dict = {}
     bands = dict(_DEFAULT_BANDS)
     version_id: uuid.UUID | None = None
-    for scope, ref in chain:
+    for scope, ref, lt in chain:
         ws = None if scope == "global" else workspace_id
-        row = await _latest(db, workspace_id=ws, scope=scope, scope_ref_id=ref)
+        row = await _latest(db, workspace_id=ws, scope=scope, scope_ref_id=ref, link_type_id=lt)
         if row is None:
             continue
         _merge_into(merged_rules, row.rules or {})
@@ -117,13 +126,21 @@ async def list_parameters(db: AsyncSession) -> list[ScoringParameter]:
     )
 
 
-def _validate_scope(scope: str, scope_ref_id: uuid.UUID | None) -> None:
+def _validate_scope(
+    scope: str, scope_ref_id: uuid.UUID | None, link_type_id: uuid.UUID | None = None
+) -> None:
     if scope not in _SCOPES:
         raise ValidationAppError(f"Unknown scope '{scope}'.")
     if scope in ("project", "link_type") and scope_ref_id is None:
         raise ValidationAppError(f"scope '{scope}' requires scope_ref_id.")
     if scope in ("global", "workspace") and scope_ref_id is not None:
         raise ValidationAppError(f"scope '{scope}' must not have scope_ref_id.")
+    if scope == "project_link_type" and (scope_ref_id is None or link_type_id is None):
+        raise ValidationAppError(
+            "scope 'project_link_type' needs both the project and the link type."
+        )
+    if scope != "project_link_type" and link_type_id is not None:
+        raise ValidationAppError(f"scope '{scope}' must not have link_type_id.")
 
 
 async def effective_config(
@@ -132,18 +149,44 @@ async def effective_config(
     workspace_id: uuid.UUID,
     scope: str,
     scope_ref_id: uuid.UUID | None,
+    link_type_id: uuid.UUID | None = None,
 ) -> dict:
     """For the config grid: this scope's OWN sparse overrides + bands + version,
     plus the rule set it INHERITS from its parents (so the UI shows placeholders)."""
-    _validate_scope(scope, scope_ref_id)
+    _validate_scope(scope, scope_ref_id, link_type_id)
     ws = None if scope == "global" else workspace_id
-    own = await _latest(db, workspace_id=ws, scope=scope, scope_ref_id=scope_ref_id)
+    own = await _latest(
+        db, workspace_id=ws, scope=scope, scope_ref_id=scope_ref_id, link_type_id=link_type_id
+    )
 
     # Parents of this scope (what applies when a cell is left unset).
     if scope == "global":
         inherited = DEFAULT_RULESET
     elif scope == "workspace":
         inherited = await _merged_chain(db, workspace_id=None, project_id=None, link_type_id=None)
+    elif scope == "project_link_type":
+        # Inherits everything below it: global + workspace + the link type's own
+        # rules + the project's default rules.
+        inherited = await _merged_chain(
+            db, workspace_id=workspace_id, project_id=scope_ref_id, link_type_id=link_type_id
+        )
+        # _merged_chain includes the project_link_type row itself when it exists;
+        # recompute WITHOUT it so placeholders show only what's inherited.
+        if own is not None:
+            base: dict = {}
+            for s, ref, lt in (
+                ("global", None, None),
+                ("workspace", None, None),
+                ("link_type", link_type_id, None),
+                ("project", scope_ref_id, None),
+            ):
+                row = await _latest(
+                    db, workspace_id=None if s == "global" else workspace_id,
+                    scope=s, scope_ref_id=ref, link_type_id=lt,
+                )
+                if row is not None:
+                    _merge_into(base, row.rules or {})
+            inherited = ResolvedRuleset(rules=base, bands=inherited.bands)
     else:  # project or link_type → inherit global + workspace
         inherited = await _merged_chain(
             db, workspace_id=workspace_id, project_id=None, link_type_id=None
@@ -152,6 +195,7 @@ async def effective_config(
     return {
         "scope": scope,
         "scope_ref_id": scope_ref_id,
+        "link_type_id": link_type_id,
         "version": own.version if own else 0,
         "version_id": own.id if own else None,
         "rules": dict(own.rules or {}) if own else {},
@@ -172,9 +216,10 @@ async def save_version(
     bands: dict | None,
     note: str | None,
     created_by: uuid.UUID | None,
+    link_type_id: uuid.UUID | None = None,
 ) -> ScoringRuleVersion:
     """Create the next immutable version for a scope, retiring the previous latest."""
-    _validate_scope(scope, scope_ref_id)
+    _validate_scope(scope, scope_ref_id, link_type_id)
     ws = None if scope == "global" else workspace_id
 
     # Serialize the retire-prior + insert-next-version sequence per scope so two
@@ -183,7 +228,7 @@ async def save_version(
     # advisory lock releases on commit.
     await db.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
-        {"lock_key": f"scoring:{scope}:{scope_ref_id}:{ws}"},
+        {"lock_key": f"scoring:{scope}:{scope_ref_id}:{link_type_id}:{ws}"},
     )
 
     base = select(ScoringRuleVersion).where(ScoringRuleVersion.scope == scope)
@@ -195,6 +240,10 @@ async def save_version(
         ScoringRuleVersion.scope_ref_id.is_(None) if scope_ref_id is None
         else ScoringRuleVersion.scope_ref_id == scope_ref_id
     )
+    base = base.where(
+        ScoringRuleVersion.link_type_id.is_(None) if link_type_id is None
+        else ScoringRuleVersion.link_type_id == link_type_id
+    )
     rows = (await db.execute(base)).scalars().all()
     next_version = 1 + max((r.version for r in rows), default=0)
     for r in rows:
@@ -205,6 +254,7 @@ async def save_version(
         workspace_id=ws,
         scope=scope,
         scope_ref_id=scope_ref_id,
+        link_type_id=link_type_id,
         version=next_version,
         is_latest=True,
         rules=_clean_rules(rules),
@@ -242,8 +292,9 @@ async def list_versions(
     workspace_id: uuid.UUID,
     scope: str,
     scope_ref_id: uuid.UUID | None,
+    link_type_id: uuid.UUID | None = None,
 ) -> list[ScoringRuleVersion]:
-    _validate_scope(scope, scope_ref_id)
+    _validate_scope(scope, scope_ref_id, link_type_id)
     ws = None if scope == "global" else workspace_id
     stmt = select(ScoringRuleVersion).where(ScoringRuleVersion.scope == scope)
     stmt = stmt.where(
@@ -253,5 +304,9 @@ async def list_versions(
     stmt = stmt.where(
         ScoringRuleVersion.scope_ref_id.is_(None) if scope_ref_id is None
         else ScoringRuleVersion.scope_ref_id == scope_ref_id
+    )
+    stmt = stmt.where(
+        ScoringRuleVersion.link_type_id.is_(None) if link_type_id is None
+        else ScoringRuleVersion.link_type_id == link_type_id
     )
     return list((await db.execute(stmt.order_by(ScoringRuleVersion.version.desc()))).scalars().all())

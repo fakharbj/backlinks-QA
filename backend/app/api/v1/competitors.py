@@ -81,3 +81,20 @@ async def decide_domain(
 @router.get("/summary", response_model=CompetitorSummary)
 async def summary(project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> CompetitorSummary:
     return CompetitorSummary(**await competitor_service.summary(db, ctx, project_id))
+
+
+@router.post("/check-metrics")
+async def check_metrics(
+    project_id: uuid.UUID,
+    db: DbSession,
+    freshness_days: int = Query(10, ge=1, le=90),
+    force: bool = Query(False),
+    ctx: AuthContext = Depends(require(Permission.RUN_CRAWLS)),
+) -> dict:
+    """Fill DA/PA for competitor domains — reuse-first (our own recent checks
+    cost nothing), respecting the freshness window unless forced."""
+    result = await competitor_service.check_metrics(
+        db, ctx, project_id, freshness_days=freshness_days, force=force
+    )
+    await db.commit()
+    return result

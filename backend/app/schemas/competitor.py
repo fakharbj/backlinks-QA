@@ -36,6 +36,8 @@ class CompetitorDomainOut(BaseModel):
     our_link_count: int
     our_indexed_pct: float | None
     is_new: bool
+    da: int | None = None           # checked (or reused from our own domains)
+    pa: int | None = None
     decision: str = "open"          # open | dismissed (manual, survives recompute)
     decision_reason: str | None = None
     has_guest_post: bool = False

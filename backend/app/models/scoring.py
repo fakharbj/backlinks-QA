@@ -77,8 +77,12 @@ class ScoringRuleVersion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # NULL for the system-global scope.
     workspace_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
-    scope: Mapped[str] = mapped_column(String(20), nullable=False)  # global|workspace|project|link_type
+    # global | workspace | link_type | project | project_link_type
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
     scope_ref_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # Second axis for the project_link_type scope: THIS project × THIS link type
+    # (owners: "each project sets scoring for all 7 link types"). NULL elsewhere.
+    link_type_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_latest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # {parameter_key: {outcome_key: points}} — sparse overrides; missing params

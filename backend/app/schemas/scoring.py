@@ -22,6 +22,7 @@ class ScoringParameterOut(BaseModel):
 class ScoringConfigOut(BaseModel):
     scope: str
     scope_ref_id: uuid.UUID | None
+    link_type_id: uuid.UUID | None = None
     version: int
     version_id: uuid.UUID | None
     rules: dict
@@ -35,6 +36,7 @@ class ScoringConfigOut(BaseModel):
 class ScoringConfigSave(BaseModel):
     scope: str
     scope_ref_id: uuid.UUID | None = None
+    link_type_id: uuid.UUID | None = None  # project_link_type scope only
     rules: dict
     bands: dict | None = None
     note: str | None = None
@@ -53,6 +55,7 @@ class ScoringVersionOut(BaseModel):
 class RescoreRequest(BaseModel):
     scope: str
     scope_ref_id: uuid.UUID | None = None
+    link_type_id: uuid.UUID | None = None  # project_link_type scope only
     preview: bool = True
 
 

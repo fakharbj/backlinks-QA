@@ -108,6 +108,9 @@ class DashboardResponse(BaseModel):
     top_failing_domains: list[DomainFailure]
     top_vendors_by_failure: list[VendorFailure]
     recent_changes: list[RecentChange]
+    # Company-view entity totals (projects, source domains, competitors, users,
+    # batches, open duplicates, indexed links). Empty for a project dashboard.
+    counts: dict = Field(default_factory=dict)
     # Populated only for a single-project dashboard (empty for the company view).
     is_project: bool = False
     link_type_breakdown: list[LinkTypeBreakdown] = Field(default_factory=list)
