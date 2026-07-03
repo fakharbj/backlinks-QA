@@ -37,13 +37,26 @@ async def conflict_summary(ctx: AuthCtx, db: ReadSession) -> ConflictSummaryOut:
 async def rebuild_conflicts(
     db: DbSession, ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS))
 ) -> ConflictSummaryOut:
-    groups = await conflict_service.rebuild_workspace(db, ctx.workspace_id)
+    from app.services import batch_service
+
+    batch_id = await batch_service.start(
+        "duplicate_scan", ctx.workspace_id, label="Duplicate scan (all links)",
+        started_by=ctx.user.id,
+    )
+    try:
+        groups = await conflict_service.rebuild_workspace(db, ctx.workspace_id)
+    except Exception as exc:  # noqa: BLE001 — close the batch, then surface the error
+        await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])
+        raise
     await audit_service.record(
         db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id,
         workspace_id=ctx.workspace_id, entity_type="conflict", entity_id=ctx.workspace_id,
         summary=f"Re-scanned duplicates ({groups} groups)",
     )
     await db.commit()
+    await batch_service.update(batch_id, totals={"total": groups, "done": groups, "ok": groups})
+    await batch_service.add_log(batch_id, f"Found {groups} duplicate group(s) across the workspace.")
+    await batch_service.finish(batch_id)
     return ConflictSummaryOut(**await conflict_service.summary(db, ctx))
 
 

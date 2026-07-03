@@ -209,7 +209,22 @@ async def _persist_one(
         # Enrich with source-site metrics (Similarweb/Moz) — no-op unless configured.
         from app.integrations import site_metrics
 
-        await site_metrics.enrich(record)
+        origin = await site_metrics.enrich(record)
+        if origin in ("cached", "fresh") and record.source_domain:
+            try:  # history is best-effort — never fail a crawl over bookkeeping
+                from app.core.config import settings as _settings
+                from app.models.metric_history import MetricCheckHistory
+
+                s.add(
+                    MetricCheckHistory(
+                        workspace_id=record.workspace_id, entity_kind="domain",
+                        entity_key=record.source_domain[:600],
+                        provider=_settings.SITE_METRICS_PROVIDER,
+                        from_cache=(origin == "cached"), ok=True,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         external: list[uuid.UUID] = []
         if fire_alerts:
@@ -225,6 +240,9 @@ async def _persist_one(
 
 
 async def _update_job(job_id: uuid.UUID, processed: int, succeeded: int, failed: int) -> None:
+    batch_id = None
+    batch_done = False
+    batch_totals: dict = {}
     async with session_scope() as s:
         await s.execute(
             update(CrawlJob)
@@ -242,6 +260,20 @@ async def _update_job(job_id: uuid.UUID, processed: int, succeeded: int, failed:
 
             job.status = JobStatus.PARTIAL if job.failed else JobStatus.COMPLETED
             job.finished_at = datetime.now(timezone.utc)
+        if job:
+            batch_id = job.batch_id
+            batch_done = job.processed >= job.total
+            batch_totals = {
+                "total": job.total, "done": job.processed,
+                "ok": job.succeeded, "failed": job.failed,
+            }
+    # Mirror progress onto the operations batch (fail-open; separate session).
+    if batch_id is not None:
+        from app.services import batch_service
+
+        await batch_service.update(batch_id, totals=batch_totals)
+        if batch_done:
+            await batch_service.finish(batch_id)
 
 
 @celery_app.task(

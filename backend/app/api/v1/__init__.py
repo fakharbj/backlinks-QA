@@ -7,6 +7,7 @@ from app.api.v1 import (
     analytics,
     auth,
     backlinks,
+    batches,
     competitors,
     conflicts,
     crawl,
@@ -30,6 +31,7 @@ api_router.include_router(auth.router)
 api_router.include_router(projects.router)
 api_router.include_router(project_settings.router)
 api_router.include_router(backlinks.router)
+api_router.include_router(batches.router)
 api_router.include_router(competitors.router)
 api_router.include_router(conflicts.router)
 api_router.include_router(employees.router)

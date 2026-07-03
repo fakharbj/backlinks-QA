@@ -3,6 +3,7 @@
 from app.models.alerts import AlertRule, Notification  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.backlink import BacklinkRecord  # noqa: F401
+from app.models.batch import Batch, BatchLog  # noqa: F401
 from app.models.canonical_url import CanonicalUrl  # noqa: F401
 from app.models.competitor import (  # noqa: F401
     CompetitorBacklink,
@@ -28,6 +29,7 @@ from app.models.imports import Import, ImportRow  # noqa: F401
 from app.models.index_check import IndexCheck  # noqa: F401
 from app.models.link_identity import AssignmentHistory, LinkIdentity  # noqa: F401
 from app.models.link_type import LinkType  # noqa: F401
+from app.models.metric_history import MetricCheckHistory  # noqa: F401
 from app.models.project import Campaign, Project, ProjectMember, Vendor  # noqa: F401
 from app.models.project_settings import ProjectDomain, ProjectSettings  # noqa: F401
 from app.models.report import Report  # noqa: F401

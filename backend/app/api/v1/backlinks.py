@@ -34,11 +34,12 @@ async def list_backlinks(
     ctx: AuthCtx,
     db: ReadSession,
     project_id: uuid.UUID | None = None,
-    status_filter: OverallStatus | None = Query(default=None, alias="status"),
+    # Single value or comma-separated multi-select ("FAIL,WARNING"); "(blanks)" = NULL.
+    status_filter: str | None = Query(default=None, alias="status"),
     issue_label: str | None = None,
     score_min: int | None = Query(default=None, ge=0, le=100),
     score_max: int | None = Query(default=None, ge=0, le=100),
-    rel: RelType | None = None,
+    rel: str | None = None,
     indexability: Indexability | None = None,
     robots_status: str | None = None,
     canonical_status: str | None = None,
@@ -210,6 +211,18 @@ async def recheck_bulk(
     job = await crawl_service.create_job(
         db, ctx, ids=ids, project_id=payload.project_id, job_type=job_type
     )
+    # Register the run in the operations batch history (fail-open).
+    from app.services import batch_service
+
+    label = f"Recheck {len(ids)} links"
+    if payload.older_than_days:
+        label += f" (older than {payload.older_than_days} days)"
+    batch_id = await batch_service.start(
+        "recheck", ctx.workspace_id, project_id=payload.project_id,
+        label=label, started_by=ctx.user.id, total=len(ids),
+    )
+    if batch_id is not None:
+        job.batch_id = batch_id
     await audit_service.record(
         db, action=AuditAction.RECHECK, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
         entity_type="crawl_job", entity_id=job.id, summary=f"Bulk recheck ({len(ids)} links)",

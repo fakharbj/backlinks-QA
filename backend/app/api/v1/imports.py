@@ -143,6 +143,37 @@ async def get_import(import_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Imp
     return ImportOut.model_validate(imp)
 
 
+@router.get("/{import_id}/errors.json")
+async def list_errors(
+    import_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    limit: int = 200, offset: int = 0,
+) -> dict:
+    """In-app error report: the failed rows with their original cells, viewable
+    without downloading anything."""
+    imp = await db.get(Import, import_id)
+    if imp is None or imp.workspace_id != ctx.workspace_id:
+        from app.core.errors import NotFoundError
+
+        raise NotFoundError("Import not found")
+    ctx.assert_project(imp.project_id)
+    rows = (
+        await db.execute(
+            select(ImportRow)
+            .where(ImportRow.import_id == import_id, ImportRow.error.is_not(None))
+            .order_by(ImportRow.row_number)
+            .limit(max(1, min(limit, 500)))
+            .offset(max(0, offset))
+        )
+    ).scalars().all()
+    return {
+        "total_errors": imp.error_rows,
+        "rows": [
+            {"row_number": r.row_number, "error": r.error, "raw": r.raw or {}}
+            for r in rows
+        ],
+    }
+
+
 @router.get("/{import_id}/errors")
 async def download_errors(import_id: uuid.UUID, ctx: AuthCtx, db: ReadSession):
     imp = await db.get(Import, import_id)

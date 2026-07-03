@@ -20,6 +20,24 @@ log = get_logger("worker.imports")
 
 
 async def _process_async(import_id: uuid.UUID, parse_from_storage: bool) -> dict:
+    from app.services import batch_service
+
+    # 0) Register the run as a batch (fail-open; None is tolerated everywhere).
+    batch_id = None
+    async with session_scope() as s:
+        imp = await s.get(Import, import_id)
+        if imp is None:
+            return {"error": "import not found"}
+        if imp.batch_id is None:
+            batch_id = await batch_service.start(
+                "import", imp.workspace_id, project_id=imp.project_id,
+                label=imp.filename or imp.source.value, started_by=imp.created_by,
+            )
+            if batch_id is not None:
+                imp.batch_id = batch_id
+        else:
+            batch_id = imp.batch_id
+
     # 1) Parse + stage (only for file imports; paste/manual are pre-staged).
     if parse_from_storage:
         async with session_scope() as s:
@@ -40,13 +58,37 @@ async def _process_async(import_id: uuid.UUID, parse_from_storage: bool) -> dict
                 imp.status = ImportStatus.FAILED
                 imp.error = str(exc)[:500]
                 log.error("import_parse_failed", import_id=str(import_id), error=repr(exc))
+                await batch_service.add_log(batch_id, f"File could not be read: {exc}", level="error")
+                await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])
                 return {"error": str(exc)}
 
     # 2) Process staged rows (resumable; commits internally).
     async with session_scope() as s:
         new_ids = await import_service.process(s, import_id)
 
-    # 3) Queue the freshly-imported links for their first crawl.
+    # 3) Close the batch from the import's own counters.
+    async with session_scope() as s:
+        imp = await s.get(Import, import_id)
+        if imp is not None:
+            await batch_service.update(
+                batch_id,
+                totals={
+                    "total": imp.total_rows, "done": imp.processed_rows,
+                    "ok": imp.imported_rows, "failed": imp.error_rows,
+                    "skipped": imp.duplicate_rows,
+                },
+            )
+            if imp.error_rows:
+                await batch_service.add_log(
+                    batch_id,
+                    f"{imp.error_rows} row(s) could not be imported — open the error report for details.",
+                    level="warn",
+                )
+            await batch_service.finish(
+                batch_id, error=imp.error if imp.status is ImportStatus.FAILED else None
+            )
+
+    # 4) Queue the freshly-imported links for their first crawl.
     if new_ids:
         from app.workers.dispatch import enqueue_backlinks
 

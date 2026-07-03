@@ -32,19 +32,49 @@ def _scope(stmt: Select, ctx: AuthContext) -> Select:
     return stmt
 
 
+_BLANKS = "(blanks)"
+
+
+def _csv(value) -> list[str]:
+    """Split a single-or-comma-separated filter value into clean parts."""
+    return [p.strip() for p in str(value).split(",") if p.strip()]
+
+
+def _multi_clause(column, value, *, valid: set[str] | None = None, lower: bool = False):
+    """Build a WHERE clause for a multi-select value: ``IN (...)`` over the valid
+    parts, with the ``(blanks)`` sentinel matching NULL/empty. Returns None when
+    nothing valid remains (filter is skipped, never errors)."""
+    parts = _csv(value)
+    want_blanks = any(p.lower() == _BLANKS for p in parts)
+    vals = [p.lower() if lower else p for p in parts if p.lower() != _BLANKS]
+    if valid is not None:
+        vals = [v for v in vals if v in valid]
+    conds = []
+    if vals:
+        conds.append(column.in_(vals))
+    if want_blanks:
+        conds.append(or_(column.is_(None), column == ""))
+    if not conds:
+        return None
+    return or_(*conds) if len(conds) > 1 else conds[0]
+
+
 def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
     if f.project_id:
         stmt = stmt.where(BacklinkRecord.project_id == f.project_id)
     if f.status:
-        stmt = stmt.where(
-            func.coalesce(BacklinkRecord.override_status, BacklinkRecord.status) == f.status
-        )
+        eff = func.coalesce(BacklinkRecord.override_status, BacklinkRecord.status)
+        vals = [OverallStatus(s) for s in _csv(f.status) if s in OverallStatus._value2member_map_]
+        if vals:
+            stmt = stmt.where(eff.in_(vals))
     if f.score_min is not None:
         stmt = stmt.where(BacklinkRecord.score >= f.score_min)
     if f.score_max is not None:
         stmt = stmt.where(BacklinkRecord.score <= f.score_max)
     if f.rel:
-        stmt = stmt.where(BacklinkRecord.current_rel == f.rel)
+        vals = [RelType(r) for r in _csv(f.rel) if r in RelType._value2member_map_]
+        if vals:
+            stmt = stmt.where(BacklinkRecord.current_rel.in_(vals))
     if f.indexability:
         stmt = stmt.where(BacklinkRecord.indexability == f.indexability)
     if f.robots_status:
@@ -58,21 +88,37 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
     if f.assigned_user_id:
         stmt = stmt.where(BacklinkRecord.assigned_user_id == f.assigned_user_id)
     if f.assigned_user_label:
-        stmt = stmt.where(BacklinkRecord.assigned_user_label == f.assigned_user_label)
+        clause = _multi_clause(BacklinkRecord.assigned_user_label, f.assigned_user_label)
+        if clause is not None:
+            stmt = stmt.where(clause)
     if f.link_type:
-        stmt = stmt.where(BacklinkRecord.link_type == f.link_type)
+        clause = _multi_clause(BacklinkRecord.link_type, f.link_type)
+        if clause is not None:
+            stmt = stmt.where(clause)
     if f.duplicate_status:
-        if f.duplicate_status == "duplicate":  # any duplicate
-            stmt = stmt.where(BacklinkRecord.is_duplicate.is_(True))
-        else:
-            stmt = stmt.where(BacklinkRecord.duplicate_status == f.duplicate_status)
+        conds = []
+        for part in _csv(f.duplicate_status):
+            if part == "duplicate":  # any duplicate
+                conds.append(BacklinkRecord.is_duplicate.is_(True))
+            elif part == "unique":
+                conds.append(BacklinkRecord.is_duplicate.is_not(True))
+            else:
+                conds.append(BacklinkRecord.duplicate_status == part)
+        if conds:
+            stmt = stmt.where(or_(*conds) if len(conds) > 1 else conds[0])
     if f.index_status:
-        if f.index_status == "unchecked":
-            stmt = stmt.where(BacklinkRecord.index_status.is_(None))
-        else:
-            stmt = stmt.where(BacklinkRecord.index_status == f.index_status)
+        conds = []
+        for part in _csv(f.index_status):
+            if part == "unchecked":
+                conds.append(BacklinkRecord.index_status.is_(None))
+            else:
+                conds.append(BacklinkRecord.index_status == part)
+        if conds:
+            stmt = stmt.where(or_(*conds) if len(conds) > 1 else conds[0])
     if f.source_domain:
-        stmt = stmt.where(BacklinkRecord.source_domain == f.source_domain.lower())
+        clause = _multi_clause(BacklinkRecord.source_domain, f.source_domain, lower=True)
+        if clause is not None:
+            stmt = stmt.where(clause)
     if f.tag:
         stmt = stmt.where(BacklinkRecord.tags.any(f.tag))
     if f.search:

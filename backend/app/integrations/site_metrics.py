@@ -45,8 +45,17 @@ def is_enabled() -> bool:
 
 async def domain_metrics(domain: str) -> dict[str, Any] | None:
     """Return the cached/fetched metrics dict for a registrable domain, or None."""
+    metrics, _origin = await domain_metrics_with_origin(domain)
+    return metrics
+
+
+async def domain_metrics_with_origin(domain: str) -> tuple[dict[str, Any] | None, str]:
+    """Like :func:`domain_metrics` but also reports where the value came from:
+    ``"cached"`` (reused, no API call), ``"fresh"`` (paid API call), or ``"none"``.
+    The cached payload carries its ORIGINAL ``fetched_at`` so the UI can honestly
+    say "checked N days ago" instead of pretending a cache hit is a new check."""
     if not is_enabled() or not domain:
-        return None
+        return None, "none"
 
     redis = get_redis()
     cache_key = f"{_CACHE_PREFIX}{settings.SITE_METRICS_PROVIDER}:{domain.lower()}"
@@ -55,20 +64,22 @@ async def domain_metrics(domain: str) -> dict[str, Any] | None:
     except Exception:  # noqa: BLE001 - cache is best-effort
         cached = None
     if cached == _NEGATIVE:
-        return None
+        return None, "cached"
     if cached:
         try:
-            return json.loads(cached)
+            return json.loads(cached), "cached"
         except ValueError:
             pass
 
     metrics = await _fetch(domain)
+    if metrics:
+        metrics.setdefault("fetched_at", datetime.now(timezone.utc).isoformat())
     ttl = max(1, settings.SITE_METRICS_CACHE_DAYS) * 86400
     try:
         await redis.set(cache_key, json.dumps(metrics) if metrics else _NEGATIVE, ex=ttl)
     except Exception:  # noqa: BLE001
         pass
-    return metrics
+    return metrics, ("fresh" if metrics else "none")
 
 
 async def _fetch(domain: str) -> dict[str, Any] | None:
@@ -203,17 +214,24 @@ def _num(value: Any) -> int | None:
         return None
 
 
-async def enrich(backlink) -> None:
-    """Attach source-domain metrics into ``extra['metrics']`` (best-effort)."""
+async def enrich(backlink) -> str:
+    """Attach source-domain metrics into ``extra['metrics']`` (best-effort).
+    Returns the origin ("cached" | "fresh" | "none") so callers can record the
+    check history and count saved API calls."""
     if not is_enabled():
-        return
+        return "none"
     try:
-        metrics = await domain_metrics(backlink.source_domain)
+        metrics, origin = await domain_metrics_with_origin(backlink.source_domain)
     except Exception as exc:  # noqa: BLE001
         log.warning("site_metrics_enrich_failed", domain=backlink.source_domain, error=repr(exc))
-        return
+        return "none"
     if not metrics:
-        return
+        return origin
     extra = dict(backlink.extra or {})
-    extra["metrics"] = {**metrics, "fetched_at": datetime.now(timezone.utc).isoformat()}
+    # Keep the payload's own fetched_at (true check time); stamp only if absent.
+    extra["metrics"] = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        **metrics,
+    }
     backlink.extra = extra
+    return origin

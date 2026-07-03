@@ -80,9 +80,17 @@ async def download_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -
     if report.status is not ReportStatus.COMPLETED or not report.file_key:
         raise ValidationAppError("Report is not ready for download")
 
-    data = await get_bytes_async(settings.S3_BUCKET_REPORTS, report.file_key)
+    try:
+        data = await get_bytes_async(settings.S3_BUCKET_REPORTS, report.file_key)
+    except Exception as exc:  # noqa: BLE001 — missing/unreadable object → clean 400
+        raise ValidationAppError(
+            "The report file could not be read — regenerate the report and try again."
+        ) from exc
     fmt = report.format.value if hasattr(report.format, "value") else str(report.format)
-    safe = (report.title or "report").strip().replace("/", "-").replace(" ", "_") or "report"
+    # HTTP headers are latin-1 only: strip non-ASCII — em dashes in report titles
+    # previously crashed downloads with a 500 UnicodeEncodeError.
+    safe = (report.title or "report").strip().replace("/", "-").replace(" ", "_")
+    safe = safe.encode("ascii", "ignore").decode("ascii").strip("_-. ") or "report"
     return StreamingResponse(
         iter([data]),
         media_type=_REPORT_MEDIA_TYPES.get(fmt, "application/octet-stream"),

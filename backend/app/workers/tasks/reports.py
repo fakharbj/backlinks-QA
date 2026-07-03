@@ -97,6 +97,9 @@ _HISTORY_HEADERS = [
 
 
 async def _generate_async(report_id: uuid.UUID) -> dict:
+    from app.services import batch_service
+
+    batch_id = None
     try:
         async with session_scope() as s:
             report = await s.get(Report, report_id)
@@ -113,6 +116,12 @@ async def _generate_async(report_id: uuid.UUID) -> dict:
                 "title": report.title,
                 "filters": report.filters or {},
             }
+            batch_id = await batch_service.start(
+                "report", report.workspace_id, project_id=report.project_id,
+                label=f"Report — {report.title}"[:300], started_by=report.created_by,
+            )
+            if batch_id is not None:
+                report.batch_id = batch_id
 
         async with session_scope() as s:
             if meta["report_type"] == ReportType.CHANGE_HISTORY:
@@ -137,6 +146,10 @@ async def _generate_async(report_id: uuid.UUID) -> dict:
                 report.file_size = len(data)
                 report.row_count = len(rows)
                 report.completed_at = datetime.now(timezone.utc)
+        await batch_service.update(
+            batch_id, totals={"total": len(rows), "done": len(rows), "ok": len(rows)}
+        )
+        await batch_service.finish(batch_id)
         return {"rows": len(rows), "file_key": key}
     except OperationalError:
         raise
@@ -147,6 +160,8 @@ async def _generate_async(report_id: uuid.UUID) -> dict:
             if report is not None:
                 report.status = ReportStatus.FAILED
                 report.error = str(exc)[:1000]
+        await batch_service.add_log(batch_id, f"Report failed: {exc}", level="error")
+        await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])
         return {"error": str(exc)}
 
 

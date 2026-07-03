@@ -71,6 +71,8 @@ class CrawlJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     triggered_by: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
+    # Operations-layer batch this run belongs to (Phase 9; nullable pre-9 rows).
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     succeeded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

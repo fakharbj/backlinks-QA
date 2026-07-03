@@ -183,7 +183,10 @@ async def _sync_tabs(db, source, worksheets) -> dict:
 
 async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     """Sync ALL sub-sheets (tabs) of a project spreadsheet. Each tab name = a link
-    type; rows inherit it. Re-sync is idempotent per (tab, row)."""
+    type; rows inherit it. Re-sync is idempotent per (tab, row). The whole run is
+    a ``sheet_sync`` batch with per-tab progress + plain-English logs."""
+    from app.services import batch_service
+
     source = await db.get(SheetSource, sheet_source_id)
     if source is None:
         return {"error": "sheet source not found"}
@@ -191,6 +194,12 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     source.last_sync_status = "running"
     source.last_sync_error = None
     await db.commit()
+
+    batch_id = await batch_service.start(
+        "sheet_sync", source.workspace_id, project_id=source.project_id,
+        label=f"Sheet sync — {source.project_name}",
+        meta={"sheet_source_id": str(source.id)},
+    )
 
     try:
         worksheets = await asyncio.to_thread(google_sheets.list_worksheets, source.spreadsheet_id)
@@ -200,24 +209,35 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         source.last_sync_error = str(exc)[:1000]
         source.last_synced_at = _now()
         await db.commit()
+        await batch_service.add_log(batch_id, f"Could not open the spreadsheet: {exc}", level="error")
+        await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])
         return {"error": str(exc)}
 
     tabs = await _sync_tabs(db, source, worksheets)
     await db.commit()
 
+    enabled = [w for w in worksheets if tabs[w["gid"]].import_enabled]
+    await batch_service.update(batch_id, totals={"total_tabs": len(enabled)})
+
     total_rows = 0
     total_imported = 0
+    total_failed = 0
+    total_skipped = 0
+    done_tabs = 0
     all_new: list[uuid.UUID] = []
-    for ws in worksheets:
+    for ws in enabled:
         tab = tabs[ws["gid"]]
-        if not tab.import_enabled:
-            continue
+        await batch_service.update(batch_id, meta={"current_step": f"Reading “{ws['title']}”"})
         try:
             headers, rows = await asyncio.to_thread(
                 google_sheets.read_project_sheet, source.spreadsheet_id, ws["title"]
             )
         except Exception as exc:  # noqa: BLE001 - one bad tab must not stop the rest
             log.warning("tab_read_failed", tab=ws["title"], error=repr(exc))
+            await batch_service.add_log(
+                batch_id, f"Tab “{ws['title']}” could not be read: {exc}",
+                level="error", row_ref=ws["title"],
+            )
             continue
         mapping = (
             dict(source.column_mapping) if source.column_mapping else import_parse.auto_map(headers)
@@ -232,6 +252,7 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
             filename=f"sheet:{source.spreadsheet_id}:{ws['title']}",
             column_mapping=mapping,
             status=ImportStatus.PENDING,
+            batch_id=batch_id,
         )
         db.add(imp)
         await db.flush()
@@ -244,9 +265,27 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         all_new.extend(new_ids)
         total_rows += len(rows)
         total_imported += refreshed.imported_rows if refreshed else len(new_ids)
+        total_failed += refreshed.error_rows if refreshed else 0
+        total_skipped += refreshed.duplicate_rows if refreshed else 0
         tab.row_count = len(rows)
         tab.last_synced_at = _now()
         source.last_sync_import_id = imp.id
+        done_tabs += 1
+        await batch_service.update(
+            batch_id,
+            totals={
+                "done_tabs": done_tabs, "total": total_rows, "done": total_rows,
+                "ok": total_imported, "failed": total_failed, "skipped": total_skipped,
+            },
+        )
+        await batch_service.add_log(
+            batch_id,
+            f"Tab “{ws['title']}”: {len(rows)} rows — {refreshed.imported_rows if refreshed else 0} "
+            f"imported, {refreshed.error_rows if refreshed else 0} failed",
+            level="warn" if (refreshed and refreshed.error_rows) else "info",
+            row_ref=ws["title"],
+            data={"import_id": str(imp.id)},
+        )
 
     # Remove legacy single-tab rows (imported before multi-tab existed, sheet_tab NULL)
     # now superseded by the tab-aware imports above.
@@ -263,10 +302,14 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     source.updated_count = max(0, total_imported - len(all_new))
     await db.commit()
 
+    await batch_service.update(batch_id, meta={"current_step": "Finished"})
+    await batch_service.finish(batch_id)
+
     return {
-        "tabs": len([w for w in worksheets if tabs[w["gid"]].import_enabled]),
+        "tabs": len(enabled),
         "rows": total_rows,
         "new": len(all_new),
+        "batch_id": str(batch_id) if batch_id else None,
     }
 
 

@@ -138,12 +138,17 @@ class BacklinkDetail(BacklinkRow):
 
 
 class BacklinkFilters(BaseModel):
+    """Grid filters. ``status``/``rel``/``link_type``/``index_status``/
+    ``duplicate_status``/``assigned_user_label``/``source_domain`` accept a single
+    value OR a comma-separated multi-select list; the sentinel ``(blanks)``
+    matches NULL/empty (see ``backlink_service._apply_filters``)."""
+
     project_id: uuid.UUID | None = None
-    status: OverallStatus | None = None
+    status: str | None = None
     issue_label: str | None = None
     score_min: int | None = Field(default=None, ge=0, le=100)
     score_max: int | None = Field(default=None, ge=0, le=100)
-    rel: RelType | None = None
+    rel: str | None = None
     indexability: Indexability | None = None
     robots_status: str | None = None
     canonical_status: str | None = None
@@ -174,6 +179,9 @@ class RecheckRequest(BaseModel):
     only_failed: bool = False
     only_warnings: bool = False
     priority: bool = False
+    # Freshness-based recheck: only links last checked more than N days ago
+    # (or never checked). None/0 = no freshness constraint (force everything).
+    older_than_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class RecheckResponse(BaseModel):

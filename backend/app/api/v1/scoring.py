@@ -99,10 +99,23 @@ async def rescore(
     payload: RescoreRequest, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
 ) -> RescoreResult:
-    result = await rescore_service.rescore(
-        db, workspace_id=ctx.workspace_id, scope=payload.scope,
-        scope_ref_id=payload.scope_ref_id, preview=payload.preview,
-    )
+    from app.services import batch_service
+
+    batch_id = None
+    if not payload.preview:
+        batch_id = await batch_service.start(
+            "rescore", ctx.workspace_id,
+            project_id=payload.scope_ref_id if payload.scope == "project" else None,
+            label=f"Re-score ({payload.scope})", started_by=ctx.user.id,
+        )
+    try:
+        result = await rescore_service.rescore(
+            db, workspace_id=ctx.workspace_id, scope=payload.scope,
+            scope_ref_id=payload.scope_ref_id, preview=payload.preview,
+        )
+    except Exception as exc:  # noqa: BLE001 — close the batch, then surface the error
+        await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])
+        raise
     if not payload.preview:
         await audit_service.record(
             db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id,
@@ -111,4 +124,14 @@ async def rescore(
             summary=f"Re-scored {result['changed']}/{result['total']} ({payload.scope})",
         )
         await db.commit()
+        await batch_service.update(
+            batch_id,
+            totals={"total": result["total"], "done": result["total"], "ok": result["changed"]},
+        )
+        await batch_service.add_log(
+            batch_id,
+            f"{result['changed']} of {result['total']} links changed "
+            f"(average {result['avg_score_delta']:+} points).",
+        )
+        await batch_service.finish(batch_id)
     return RescoreResult(**result)

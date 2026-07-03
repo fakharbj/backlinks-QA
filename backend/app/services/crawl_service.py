@@ -9,9 +9,9 @@ imports avoids a service↔worker import cycle.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import AuthContext
@@ -46,6 +46,14 @@ async def select_recheck_ids(
         stmt = stmt.where(effective == OverallStatus.FAIL)
     if req.only_warnings:
         stmt = stmt.where(effective == OverallStatus.WARNING)
+    if req.older_than_days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=req.older_than_days)
+        stmt = stmt.where(
+            or_(
+                BacklinkRecord.last_checked_at.is_(None),
+                BacklinkRecord.last_checked_at <= cutoff,
+            )
+        )
     stmt = stmt.limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 

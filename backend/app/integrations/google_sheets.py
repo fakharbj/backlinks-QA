@@ -102,21 +102,42 @@ def read_main_sheet() -> list[dict[str, str]]:
     ]
 
 
+def _unique_headers(raw: list) -> list[str]:
+    """Normalise a header row: blanks become ``column_N`` and duplicates get a
+    ``_2``/``_3`` suffix. Write-back adds result columns to live sheets, after
+    which ``get_all_records`` refuses the sheet ("header row ... not unique") —
+    so we read raw values ourselves and keep syncing regardless of header state."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for i, cell in enumerate(raw):
+        name = str(cell).strip() or f"column_{i + 1}"
+        n = seen.get(name, 0)
+        seen[name] = n + 1
+        out.append(name if n == 0 else f"{name}_{n + 1}")
+    return out
+
+
 def read_project_sheet(
     spreadsheet_id: str, tab: str | None = None
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """Return (headers, rows) for a project sheet; rows are dicts keyed by header."""
+    """Return (headers, rows) for a project sheet; rows are dicts keyed by header.
+    Tolerates duplicate/blank header cells (common after write-back)."""
     client = _client()
     ws = _open_worksheet(client, spreadsheet_id, tab)
-    records = ws.get_all_records()
-    headers: list[str] = []
-    try:
-        headers = [str(h) for h in ws.row_values(1)]
-    except Exception:  # noqa: BLE001
-        if records:
-            headers = list(records[0].keys())
-    # Normalise every cell to a string (sheets return ints/floats for numeric cells).
-    rows = [{str(k): ("" if v is None else str(v)) for k, v in r.items()} for r in records]
+    values = ws.get_all_values()
+    if not values:
+        return [], []
+    headers = _unique_headers(values[0])
+    rows: list[dict[str, str]] = []
+    for raw_row in values[1:]:
+        if not any(str(c).strip() for c in raw_row):
+            continue  # skip fully blank rows
+        rows.append(
+            {
+                headers[i]: ("" if i >= len(raw_row) or raw_row[i] is None else str(raw_row[i]))
+                for i in range(len(headers))
+            }
+        )
     return headers, rows
 
 

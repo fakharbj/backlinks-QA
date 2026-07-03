@@ -44,6 +44,8 @@ class Report(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     filters: Mapped[dict] = mapped_column(JSONB, default=dict)  # frozen filter snapshot
+    # Operations-layer batch this run belongs to (Phase 9; nullable pre-9 rows).
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     file_key: Mapped[str | None] = mapped_column(String(500))
     file_size: Mapped[int | None] = mapped_column(Integer)
     row_count: Mapped[int | None] = mapped_column(Integer)

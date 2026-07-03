@@ -42,6 +42,8 @@ class Import(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=ImportStatus.PENDING,
         nullable=False,
     )
+    # Operations-layer batch this run belongs to (Phase 9; nullable pre-9 rows).
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     total_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     imported_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
