@@ -38,7 +38,7 @@ import {
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   AlertRule,
@@ -54,6 +54,9 @@ import {
   AssignmentEvent,
   BacklinkDetail,
   BacklinkRow,
+  Batch,
+  BatchLog,
+  ImportRowError,
   CompetitorDomain,
   CompetitorSummary,
   ConflictGroup,
@@ -78,7 +81,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "alerts" | "reports" | "team" | "employees" | "scoring" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "team" | "employees" | "scoring" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -90,7 +93,17 @@ export function WorkspaceApp() {
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectIdState] = useState<string>("");
   const [tab, setTabState] = useState<Tab>("overview");
-  const [notice, setNotice] = useState<string>("");
+  // Toast stack: every onNotice(text) becomes a stacked, auto-dismissing toast.
+  const [toasts, setToasts] = useState<Array<{ id: number; text: string; kind: "info" | "error" }>>([]);
+  const setNotice = (text: string) => {
+    if (!text) return;
+    const id = Date.now() + Math.random();
+    const kind = /fail|error|could not|couldn't|denied|invalid|not found/i.test(text)
+      ? ("error" as const)
+      : ("info" as const);
+    setToasts((t) => [...t.slice(-3), { id, text, kind }]);
+    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 6500);
+  };
 
   // ── Context persistence ───────────────────────────────────────────────
   // The URL (?project&tab) is the source of truth so refresh, deep links and
@@ -247,7 +260,32 @@ export function WorkspaceApp() {
               onNotice={setNotice}
             />
           </div>
-          {notice ? <Notice text={notice} onClose={() => setNotice("")} /> : null}
+          <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[380px] max-w-[92vw] flex-col gap-2">
+            {toasts.map((t) => (
+              <div
+                key={t.id}
+                className={clsx(
+                  "pointer-events-auto flex items-start gap-2.5 rounded-xl border bg-panel/95 p-3 text-sm shadow-pop backdrop-blur",
+                  t.kind === "error" ? "border-danger/40" : "border-ocean/40"
+                )}
+              >
+                <span
+                  className={clsx(
+                    "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+                    t.kind === "error" ? "bg-danger" : "bg-ocean"
+                  )}
+                />
+                <span className="flex-1 break-words text-ink">{t.text}</span>
+                <button
+                  onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))}
+                  className="shrink-0 text-muted hover:text-ink"
+                  aria-label="Dismiss"
+                >
+                  <XCircle className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
           {tab === "overview" ? (
             <Overview token={token} projectId={activeProjectId} />
           ) : null}
@@ -264,6 +302,9 @@ export function WorkspaceApp() {
             <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "sheets" ? <SheetsDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "batches" ? (
+            <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+          ) : null}
           {tab === "alerts" ? (
             <AlertsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -371,7 +412,7 @@ const WORKSPACE_NAV: NavGroup[] = [
       ["competitors", "Competitors", Swords]
     ]
   },
-  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet]] },
+  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet], ["batches", "Batches", History]] },
   { label: "Output", items: [["alerts", "Alerts", Bell], ["reports", "Reports", FileSpreadsheet]] },
   {
     label: "Workspace",
@@ -395,7 +436,7 @@ const PROJECT_NAV: NavGroup[] = [
       ["competitors", "Competitors", Swords]
     ]
   },
-  { label: "Ingest", items: [["imports", "Imports", Upload]] },
+  { label: "Ingest", items: [["imports", "Imports", Upload], ["batches", "Batches", History]] },
   {
     label: "Insights",
     items: [
@@ -911,14 +952,23 @@ function Backlinks({
   const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, issueLabel, debouncedSearch]
     .filter(Boolean).length;
 
+  // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
+  const toks = (v: string) => (v ? v.split(",") : []);
+  const toggleTok = (v: string, setter: (s: string) => void, tok: string) => {
+    const list = toks(v);
+    setter(
+      (list.includes(tok) ? list.filter((x) => x !== tok) : [...list, tok]).join(",")
+    );
+  };
+
   // One-click QA presets — each toggles the underlying filter, so they compose.
   const chips: Array<[string, boolean, () => void]> = [
-    ["Failing", status === "FAIL", () => setStatus(status === "FAIL" ? "" : "FAIL")],
-    ["Needs review", status === "NEEDS_MANUAL_REVIEW", () => setStatus(status === "NEEDS_MANUAL_REVIEW" ? "" : "NEEDS_MANUAL_REVIEW")],
+    ["Failing", toks(status).includes("FAIL"), () => toggleTok(status, setStatus, "FAIL")],
+    ["Needs review", toks(status).includes("NEEDS_MANUAL_REVIEW"), () => toggleTok(status, setStatus, "NEEDS_MANUAL_REVIEW")],
     ["Link missing", issueLabel === "LINK_MISSING", () => setIssueLabel(issueLabel === "LINK_MISSING" ? "" : "LINK_MISSING")],
-    ["Nofollow", rel === "nofollow", () => setRel(rel === "nofollow" ? "" : "nofollow")],
-    ["Not indexed", indexFilter === "not_indexed", () => setIndexFilter(indexFilter === "not_indexed" ? "" : "not_indexed")],
-    ["Duplicates", dupFilter === "duplicate", () => setDupFilter(dupFilter === "duplicate" ? "" : "duplicate")]
+    ["Nofollow", toks(rel).includes("nofollow"), () => toggleTok(rel, setRel, "nofollow")],
+    ["Not indexed", toks(indexFilter).includes("not_indexed"), () => toggleTok(indexFilter, setIndexFilter, "not_indexed")],
+    ["Duplicates", toks(dupFilter).includes("duplicate"), () => toggleTok(dupFilter, setDupFilter, "duplicate")]
   ];
 
   const query = useMemo(() => {
@@ -939,16 +989,28 @@ function Backlinks({
     enabled: Boolean(token),
     queryFn: () => api<Page<BacklinkRow>>(`/backlinks?${query}`, { token })
   });
+  const [staleDays, setStaleDays] = useState("");
   const recheck = useMutation({
     mutationFn: () =>
       api<{ job_id: string; queued: number }>("/backlinks/recheck", {
         token,
         method: "POST",
-        body: JSON.stringify({ project_id: projectId || null, priority: true })
+        body: JSON.stringify({
+          project_id: projectId || null,
+          priority: true,
+          older_than_days: staleDays ? Number(staleDays) : null
+        })
       }),
     onSuccess: (data) => {
-      onNotice(`Queued ${data.queued} backlinks`);
+      onNotice(
+        data.queued
+          ? `Recheck started — ${data.queued} link${data.queued === 1 ? "" : "s"} queued.`
+          : staleDays
+            ? `Nothing to recheck — everything was checked within ${staleDays} days.`
+            : "Nothing to recheck."
+      );
       queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (err: Error) => onNotice(err.message)
   });
@@ -983,6 +1045,17 @@ function Backlinks({
               {indexCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
               Check index
             </button>
+            <select
+              value={staleDays}
+              onChange={(e) => setStaleDays(e.target.value)}
+              title="Only recheck links whose last check is older than this"
+              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+            >
+              <option value="">Recheck: everything</option>
+              <option value="10">Older than 10 days</option>
+              <option value="20">Older than 20 days</option>
+              <option value="30">Older than 30 days</option>
+            </select>
             <button
               onClick={() => recheck.mutate()}
               className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
@@ -1024,63 +1097,60 @@ function Backlinks({
             placeholder="Search URL or anchor…"
             className="h-9 w-56 rounded-xl border border-line bg-panel shadow-card px-3 text-sm focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
           />
-          <select
-            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="">All statuses</option>
-            <option value="PASS">Pass</option>
-            <option value="WARNING">Warning</option>
-            <option value="FAIL">Fail</option>
-            <option value="UNKNOWN">Unknown</option>
-            <option value="NEEDS_MANUAL_REVIEW">Review</option>
-            <option value="PENDING">Pending</option>
-          </select>
-          <select
-            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-            value={rel}
-            onChange={(event) => setRel(event.target.value)}
-          >
-            <option value="">Any rel</option>
-            <option value="dofollow">Dofollow</option>
-            <option value="nofollow">Nofollow</option>
-            <option value="sponsored">Sponsored</option>
-            <option value="ugc">UGC</option>
-          </select>
-          <select
-            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-            value={linkType}
-            onChange={(event) => setLinkType(event.target.value)}
-          >
-            <option value="">All link types</option>
-            {(linkTypes.data || []).map((lt) => (
-              <option key={lt.id} value={lt.name}>{lt.name}</option>
-            ))}
-          </select>
-          <select
-            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-            value={dupFilter}
-            onChange={(event) => setDupFilter(event.target.value)}
-          >
-            <option value="">All links</option>
-            <option value="duplicate">Duplicates only</option>
-            <option value="dup_cross_project">Cross-project dup</option>
-            <option value="dup_cross_user">Cross-user dup</option>
-            <option value="dup_same_project">Same-project dup</option>
-            <option value="unique">Unique only</option>
-          </select>
-          <select
-            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-            value={indexFilter}
-            onChange={(event) => setIndexFilter(event.target.value)}
-          >
-            <option value="">Any index</option>
-            <option value="indexed">Indexed</option>
-            <option value="not_indexed">Not indexed</option>
-            <option value="uncertain">Index uncertain</option>
-            <option value="unchecked">Index unchecked</option>
-          </select>
+          <FilterMultiSelect
+            label="Status"
+            options={[
+              { value: "PASS", label: "Pass" },
+              { value: "WARNING", label: "Warning" },
+              { value: "FAIL", label: "Fail" },
+              { value: "UNKNOWN", label: "Couldn't check" },
+              { value: "NEEDS_MANUAL_REVIEW", label: "Needs review" },
+              { value: "PENDING", label: "Pending" }
+            ]}
+            selected={toks(status)}
+            onChange={(v) => setStatus(v.join(","))}
+          />
+          <FilterMultiSelect
+            label="Rel"
+            options={[
+              { value: "dofollow", label: "Dofollow" },
+              { value: "nofollow", label: "Nofollow" },
+              { value: "sponsored", label: "Sponsored" },
+              { value: "ugc", label: "UGC" }
+            ]}
+            selected={toks(rel)}
+            onChange={(v) => setRel(v.join(","))}
+          />
+          <FilterMultiSelect
+            label="Link type"
+            withBlanks
+            options={(linkTypes.data || []).map((lt) => ({ value: lt.name }))}
+            selected={toks(linkType)}
+            onChange={(v) => setLinkType(v.join(","))}
+          />
+          <FilterMultiSelect
+            label="Duplicates"
+            options={[
+              { value: "duplicate", label: "Any duplicate" },
+              { value: "dup_same_project", label: "Same project" },
+              { value: "dup_cross_project", label: "Used by another project" },
+              { value: "dup_cross_user", label: "Added by another user" },
+              { value: "unique", label: "Unique only" }
+            ]}
+            selected={toks(dupFilter)}
+            onChange={(v) => setDupFilter(v.join(","))}
+          />
+          <FilterMultiSelect
+            label="Index"
+            options={[
+              { value: "indexed", label: "Indexed" },
+              { value: "not_indexed", label: "Not indexed" },
+              { value: "uncertain", label: "Index unclear" },
+              { value: "unchecked", label: "Not checked yet" }
+            ]}
+            selected={toks(indexFilter)}
+            onChange={(v) => setIndexFilter(v.join(","))}
+          />
           <select
             className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
             value={sort}
@@ -1114,7 +1184,7 @@ function Backlinks({
                 onClick={() => setSelectedId(row.id)}
                 className="cursor-pointer hover:bg-field/70"
               >
-                <Td><Status value={row.override_status || row.status} /></Td>
+                <Td><Status value={row.override_status || row.status} reason={row.top_issue_label} /></Td>
                 <Td><span className="font-semibold">{row.score ?? "-"}</span></Td>
                 <Td>
                   <Url value={row.source_page_url} />
@@ -1134,7 +1204,7 @@ function Backlinks({
                 <Td><Url value={row.target_url} /></Td>
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
-                <Td>{formatSiteMetric(row.extra?.metrics)}</Td>
+                <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
                 <Td>{row.top_issue_label ?? (row.issue_count ? `${row.issue_count} issues` : "-")}</Td>
                 <Td>{formatDate(row.last_checked_at)}</Td>
               </tr>
@@ -1518,6 +1588,237 @@ function ImportDesk({
           {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
           Queue import
         </button>
+      </div>
+    </section>
+  );
+}
+
+const BATCH_KIND_LABEL: Record<string, string> = {
+  import: "Import",
+  sheet_sync: "Sheet sync",
+  writeback: "Write-back",
+  crawl: "Check",
+  recheck: "Recheck",
+  index_check: "Index check",
+  duplicate_scan: "Duplicate scan",
+  rescore: "Re-score",
+  competitor_import: "Competitor upload",
+  report: "Report"
+};
+
+function BatchProgress({ totals }: { totals: Record<string, number> }) {
+  const total = Number(totals.total || 0);
+  const done = Number(totals.done ?? totals.ok ?? 0);
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-2 w-28 overflow-hidden rounded-full bg-field">
+        <div className="h-full rounded-full bg-ocean transition-all" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-muted">
+        {done}/{total || "?"}
+      </span>
+    </div>
+  );
+}
+
+function BatchesDesk({
+  token,
+  projectId,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+}) {
+  const [kind, setKind] = useState("");
+  const [statusF, setStatusF] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [errorImportId, setErrorImportId] = useState<string | null>(null);
+
+  const qs = () => {
+    const p = new URLSearchParams();
+    if (kind) p.set("kind", kind);
+    if (statusF) p.set("status", statusF);
+    if (projectId) p.set("project_id", projectId);
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  };
+  const batches = useQuery({
+    queryKey: ["batches", token, kind, statusF, projectId],
+    enabled: Boolean(token),
+    queryFn: () => api<Batch[]>(`/batches${qs()}`, { token }),
+    // Live progress: poll while anything is running.
+    refetchInterval: (q) =>
+      (q.state.data || []).some((b) => b.status === "running" || b.status === "pending") ? 3000 : false
+  });
+  const logs = useQuery({
+    queryKey: ["batch-logs", token, openId],
+    enabled: Boolean(token) && Boolean(openId),
+    queryFn: () => api<BatchLog[]>(`/batches/${openId}/logs`, { token })
+  });
+  const rowErrors = useQuery({
+    queryKey: ["import-errors", token, errorImportId],
+    enabled: Boolean(token) && Boolean(errorImportId),
+    queryFn: () =>
+      api<{ total_errors: number; rows: ImportRowError[] }>(
+        `/imports/${errorImportId}/errors.json`,
+        { token }
+      )
+  });
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Batches</h2>
+        <p className="text-sm text-muted">
+          Every run in one place — imports, sheet syncs, checks, duplicate scans, re-scores and
+          reports — with live progress, counters and logs.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <select value={kind} onChange={(e) => setKind(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+          <option value="">All kinds</option>
+          {Object.entries(BATCH_KIND_LABEL).map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+        <select value={statusF} onChange={(e) => setStatusF(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+          <option value="">All statuses</option>
+          {["running", "completed", "partial", "failed", "pending"].map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr>
+                <Th>What ran</Th><Th>Status</Th><Th>Progress</Th><Th>Counters</Th><Th>Started</Th><Th>Duration</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(batches.data || []).map((b) => {
+                const open = openId === b.id;
+                const dur =
+                  b.finished_at
+                    ? `${Math.max(1, Math.round((new Date(b.finished_at).getTime() - new Date(b.started_at).getTime()) / 1000))}s`
+                    : "…";
+                const counterBits = Object.entries(b.counters || {})
+                  .filter(([, v]) => Number(v) > 0)
+                  .map(([k, v]) => `${k.replaceAll("_", " ")}: ${v}`);
+                return (
+                  <Fragment key={b.id}>
+                    <tr
+                      onClick={() => {
+                        setOpenId(open ? null : b.id);
+                        setErrorImportId(null);
+                      }}
+                      className={clsx("cursor-pointer hover:bg-field/60", open && "bg-ocean/5")}
+                    >
+                      <Td>
+                        <div className="font-medium text-ink">{BATCH_KIND_LABEL[b.kind] || b.kind}</div>
+                        <div className="max-w-[320px] truncate text-xs text-muted">{b.label || "—"}</div>
+                      </Td>
+                      <Td><Status value={b.status} /></Td>
+                      <Td><BatchProgress totals={b.totals || {}} /></Td>
+                      <Td>
+                        <span className="text-xs text-muted">
+                          {counterBits.length ? counterBits.join(" · ") : "—"}
+                        </span>
+                      </Td>
+                      <Td>{formatDate(b.started_at)}</Td>
+                      <Td>{dur}</Td>
+                    </tr>
+                    {open ? (
+                      <tr>
+                        <td colSpan={6} className="bg-field/40 p-4">
+                          {b.error ? (
+                            <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-sm text-danger">
+                              Stopped because: {b.error}
+                            </div>
+                          ) : null}
+                          {b.meta?.current_step ? (
+                            <div className="mb-2 text-xs text-muted">Current step: {String(b.meta.current_step)}</div>
+                          ) : null}
+                          <div className="space-y-1">
+                            {(logs.data || []).map((l, i) => (
+                              <div key={i} className="flex items-start gap-2 text-xs">
+                                <span
+                                  className={clsx(
+                                    "mt-1 h-1.5 w-1.5 shrink-0 rounded-full",
+                                    l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-ocean"
+                                  )}
+                                />
+                                <span className="text-muted">{formatDate(l.created_at)}</span>
+                                <span className="flex-1 text-ink">{l.message}</span>
+                                {l.data && (l.data as Record<string, unknown>).import_id ? (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setErrorImportId(String((l.data as Record<string, unknown>).import_id));
+                                    }}
+                                    className="shrink-0 font-medium text-ocean hover:underline"
+                                  >
+                                    View row errors
+                                  </button>
+                                ) : null}
+                              </div>
+                            ))}
+                            {logs.isLoading ? <div className="text-xs text-muted">Loading logs…</div> : null}
+                            {!logs.isLoading && !(logs.data || []).length ? (
+                              <div className="text-xs text-muted">No log entries for this run.</div>
+                            ) : null}
+                          </div>
+                          {errorImportId ? (
+                            <div className="mt-3 rounded-lg border border-line bg-panel p-2">
+                              <div className="mb-1.5 flex items-center justify-between">
+                                <span className="text-xs font-semibold text-ink">
+                                  Row errors {rowErrors.data ? `(${rowErrors.data.total_errors})` : ""}
+                                </span>
+                                <button onClick={() => setErrorImportId(null)} className="text-xs text-ocean hover:underline">
+                                  Close
+                                </button>
+                              </div>
+                              <div className="max-h-64 overflow-y-auto">
+                                {(rowErrors.data?.rows || []).map((r) => (
+                                  <div key={r.row_number} className="border-b border-line py-1.5 text-xs last:border-0">
+                                    <span className="font-semibold text-ink">Row {r.row_number}:</span>{" "}
+                                    <span className="text-danger">{r.error}</span>
+                                    <div className="mt-0.5 break-all text-muted">
+                                      {Object.entries(r.raw || {})
+                                        .filter(([, v]) => v)
+                                        .slice(0, 6)
+                                        .map(([k, v]) => `${k}: ${v}`)
+                                        .join(" · ")}
+                                    </div>
+                                  </div>
+                                ))}
+                                {rowErrors.isLoading ? <div className="text-xs text-muted">Loading…</div> : null}
+                                {!rowErrors.isLoading && !(rowErrors.data?.rows || []).length ? (
+                                  <div className="text-xs text-muted">No row errors recorded.</div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          {batches.isLoading ? (
+            <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+          ) : null}
+          {!batches.isLoading && !(batches.data || []).length ? (
+            <Empty label="No runs yet — imports, syncs and checks will appear here." />
+          ) : null}
+        </div>
       </div>
     </section>
   );
@@ -3668,20 +3969,74 @@ function Notice({ text, onClose }: { text: string; onClose: () => void }) {
   );
 }
 
-function Status({ value }: { value: string }) {
+// Plain-English help for every status a non-technical user can meet.
+// Each entry answers: what happened / what should you do next.
+const STATUS_HELP: Record<string, { label?: string; what: string; next: string }> = {
+  PASS: { what: "The link is live and everything we check looked good.", next: "Nothing to do." },
+  WARNING: {
+    what: "The link works, but something reduces its value (e.g. nofollow, weak page, redirects).",
+    next: "Open the link to see which checks lowered the score."
+  },
+  FAIL: {
+    what: "A serious problem was found — the link is missing, the page is dead, or it can't be indexed.",
+    next: "Open the link to see the exact reason, then fix or replace it."
+  },
+  UNKNOWN: {
+    label: "Couldn't check",
+    what: "We couldn't reach the page this time (timeout or a temporary server problem).",
+    next: "It will retry automatically — or use Recheck to try now."
+  },
+  NEEDS_MANUAL_REVIEW: {
+    label: "Needs review",
+    what: "We couldn't decide automatically — usually bot protection or conflicting signals on the page.",
+    next: "Open the page yourself and confirm; the reason is shown in the Issue column."
+  },
+  PENDING: { what: "This link hasn't been checked yet.", next: "It's queued — results appear after the first check." },
+  indexed: { what: "Google shows this page in its index.", next: "Nothing to do." },
+  not_indexed: { what: "Google does not show this page in its index.", next: "Low-value for SEO until indexed — consider requesting indexing or replacing." },
+  uncertain: { label: "Index unclear", what: "The index check couldn't give a clear yes/no.", next: "Re-run the index check later." },
+  unchecked: { what: "Index status hasn't been checked yet.", next: "Use “Check index”." },
+  dup_same_project: { label: "Duplicate (same project)", what: "The same page URL appears more than once in this project.", next: "Keep one and remove the extras in the sheet." },
+  dup_cross_project: { label: "Used by another project", what: "This page URL is already used by a different project.", next: "Check the Duplicates desk to see where the original lives." },
+  dup_cross_user: { label: "Added by another user", what: "This page URL was already added by a different team member.", next: "Coordinate to avoid paying for the same placement twice." },
+  duplicate: { what: "This link is a duplicate of another record.", next: "See the Duplicates desk for the full group." },
+  unique: { what: "No other record uses this page URL.", next: "Nothing to do." },
+  completed: { what: "This run finished successfully.", next: "Nothing to do." },
+  partial: { what: "This run finished, but some rows failed.", next: "Open it to see the failed rows and why." },
+  failed: { what: "This run stopped with an error.", next: "Open it to see the reason; fix and retry." },
+  running: { what: "This run is still working.", next: "Progress updates live — no need to refresh." },
+  pending: { what: "This run is queued and will start shortly.", next: "Nothing to do." }
+};
+
+function Status({ value, reason }: { value: string; reason?: string | null }) {
   const tone =
     value === "PASS" || value === "completed"
       ? "bg-ocean/10 text-ocean border-ocean/30"
       : value === "FAIL" || value === "failed"
         ? "bg-danger/10 text-danger border-danger/30"
-        : value === "WARNING"
+        : value === "WARNING" || value === "partial" || value === "running"
           ? "bg-ember/10 text-ember border-ember/30"
           : value === "NEEDS_MANUAL_REVIEW"
             ? "bg-plum/10 text-plum border-plum/30"
             : "bg-field text-muted border-line";
+  const help = STATUS_HELP[value];
+  const label = (help?.label || value).replaceAll("_", " ");
   return (
-    <span className={clsx("inline-flex rounded-full border px-2 py-1 text-xs font-semibold", tone)}>
-      {value.replaceAll("_", " ")}
+    <span className="group relative inline-flex">
+      <span className={clsx("inline-flex cursor-default rounded-full border px-2 py-1 text-xs font-semibold", tone)}>
+        {label}
+      </span>
+      {help ? (
+        <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-72 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
+          <span className="block text-xs font-normal normal-case text-ink">{help.what}</span>
+          {reason ? (
+            <span className="mt-1 block text-xs font-medium normal-case text-ember">
+              Why: {String(reason).replaceAll("_", " ").toLowerCase()}
+            </span>
+          ) : null}
+          <span className="mt-1 block text-[11px] font-normal normal-case text-muted">→ {help.next}</span>
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -3691,6 +4046,103 @@ function Severity({ value }: { value: string }) {
     <span className={clsx("rounded px-2 py-1 text-xs font-semibold", severityClass(value))}>
       {value}
     </span>
+  );
+}
+
+function FilterMultiSelect({
+  label,
+  options,
+  selected,
+  onChange,
+  withBlanks = false
+}: {
+  label: string;
+  options: Array<{ value: string; label?: string; count?: number }>;
+  selected: string[];
+  onChange: (vals: string[]) => void;
+  withBlanks?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  const all = withBlanks ? [...options, { value: "(blanks)", label: "(Blanks)" }] : options;
+  const shown = all.filter((o) =>
+    (o.label || o.value).toLowerCase().includes(q.trim().toLowerCase())
+  );
+  const toggle = (v: string) =>
+    onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={clsx(
+          "flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm transition",
+          selected.length
+            ? "border-ocean bg-ocean/10 font-medium text-ocean"
+            : "border-line bg-panel text-ink hover:border-ocean/40"
+        )}
+      >
+        {label}
+        {selected.length ? (
+          <span className="rounded-full bg-ocean px-1.5 text-[11px] font-bold text-white dark:text-slate-900">
+            {selected.length}
+          </span>
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 text-muted" />
+        )}
+      </button>
+      {open ? (
+        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-panel p-2 shadow-pop">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search…"
+            autoFocus
+            className="mb-1.5 h-8 w-full rounded-md border border-line bg-panel px-2 text-xs focus:border-ocean focus:outline-none"
+          />
+          <div className="mb-1 flex items-center justify-between px-1 text-[11px] font-medium">
+            <button
+              type="button"
+              onClick={() => onChange(shown.map((o) => o.value))}
+              className="text-ocean hover:underline"
+            >
+              Select all
+            </button>
+            <button type="button" onClick={() => onChange([])} className="text-muted hover:underline">
+              Clear
+            </button>
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {shown.map((o) => (
+              <label
+                key={o.value}
+                className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 text-sm hover:bg-field"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(o.value)}
+                  onChange={() => toggle(o.value)}
+                  className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+                />
+                <span className="flex-1 truncate text-ink">{o.label || o.value}</span>
+                {o.count != null ? <span className="text-xs text-muted">{o.count}</span> : null}
+              </label>
+            ))}
+            {!shown.length ? <div className="p-2 text-center text-xs text-muted">No matches</div> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -4212,6 +4664,15 @@ function formatDate(value: string | null) {
 
 function compactNum(n: number) {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
+}
+
+// Tooltip: how fresh the metric numbers are ("Checked recently" wording).
+function metricAgeTitle(m?: SiteMetrics | null): string {
+  const fetched = m?.fetched_at;
+  if (!fetched) return "Metrics not checked yet";
+  const days = Math.floor((Date.now() - new Date(fetched).getTime()) / 86400000);
+  if (days <= 0) return "Checked today (reused if checked again soon — no extra API call)";
+  return `Checked ${days} day${days === 1 ? "" : "s"} ago — reused while fresh to save API calls`;
 }
 
 // Compact grid cell: Similarweb → "#12.3K • 1.2M", Moz → "DA 50 / Spam 2".

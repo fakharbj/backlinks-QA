@@ -137,6 +137,31 @@ export type RescoreResult = {
   transitions: Record<string, number>;
 };
 
+export type Batch = {
+  id: string;
+  kind: string;
+  status: string;
+  label: string | null;
+  project_id: string | null;
+  started_by: string | null;
+  totals: Record<string, number>;
+  counters: Record<string, number>;
+  meta: Record<string, unknown>;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type BatchLog = {
+  level: string;
+  message: string;
+  row_ref: string | null;
+  data: Record<string, unknown>;
+  created_at: string;
+};
+
+export type ImportRowError = { row_number: number; error: string; raw: Record<string, string> };
+
 export type CompetitorSheet = {
   id: string;
   name: string;
