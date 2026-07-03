@@ -110,6 +110,14 @@ async def users(
         prev_rows = await _window(db, ctx, t0 - span, t0, project_id)
         previous = {r["user_label"]: r for r in prev_rows}
 
+    # TeamLead scoping: managers with member assignments only see their people.
+    from app.services.workforce_service import visible_labels
+
+    scope = await visible_labels(db, ctx)
+    if scope is not None:
+        current = [r for r in current if r["user_label"] in scope]
+        previous = {k: v for k, v in previous.items() if k in scope}
+
     out = []
     for r in current:
         prev = previous.get(r["user_label"])

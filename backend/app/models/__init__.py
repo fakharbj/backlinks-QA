@@ -43,6 +43,7 @@ from app.models.workforce import (  # noqa: F401
     LeaveRequest,
     LinkTypeProductivity,
     TaskAssignment,
+    TeamLeadAssignment,
     UserProductivityOverride,
     WorkingDay,
 )

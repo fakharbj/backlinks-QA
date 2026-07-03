@@ -85,6 +85,27 @@ class WorkingDay(UUIDPrimaryKeyMixin, Base):
     is_working: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class TeamLeadAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Which team members (by sheet user label) a TeamLead/manager oversees.
+
+    When a manager has assignments, people-facing views (performance, day
+    reports, leave lists) are restricted to those labels; admins and managers
+    without assignments see everything (backward-compatible default).
+    """
+
+    __tablename__ = "teamlead_users"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "manager_user_id", "member_label", name="uq_teamlead_member"
+        ),
+        Index("ix_teamlead_users_manager", "workspace_id", "manager_user_id"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    manager_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    member_label: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
 class LeaveRequest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "leave_requests"
     __table_args__ = (Index("ix_leave_requests_ws_status", "workspace_id", "status"),)

@@ -21,11 +21,31 @@ from app.models.workforce import (
     LeaveRequest,
     LinkTypeProductivity,
     TaskAssignment,
+    TeamLeadAssignment,
     UserProductivityOverride,
     WorkingDay,
 )
 
 _DEFAULT_LPH = 5.0
+
+
+async def visible_labels(db: AsyncSession, ctx: AuthContext) -> set[str] | None:
+    """TeamLead scoping: a manager WITH member assignments sees only those user
+    labels in people-facing views. Admins — and managers with no assignments —
+    see everyone (``None`` = unrestricted)."""
+    from app.core.rbac import Role
+
+    if ctx.role != Role.MANAGER:
+        return None
+    rows = (
+        await db.execute(
+            select(TeamLeadAssignment.member_label).where(
+                TeamLeadAssignment.workspace_id == ctx.workspace_id,
+                TeamLeadAssignment.manager_user_id == ctx.user.id,
+            )
+        )
+    ).scalars().all()
+    return set(rows) or None
 
 
 # ── Productivity ─────────────────────────────────────────────────────────────
@@ -202,6 +222,9 @@ async def day_report(
     rows = (
         await db.execute(stmt.order_by(TaskAssignment.day.desc(), TaskAssignment.user_label))
     ).scalars().all()
+    scope = await visible_labels(db, ctx)
+    if scope is not None:
+        rows = [r for r in rows if r.user_label in scope]
     if not rows:
         return []
 
@@ -341,7 +364,11 @@ async def list_leaves(
     if status in ("pending", "approved", "rejected"):
         stmt = stmt.where(LeaveRequest.status == status)
     stmt = stmt.order_by(LeaveRequest.created_at.desc()).limit(limit)
-    return list((await db.execute(stmt)).scalars().all())
+    rows = list((await db.execute(stmt)).scalars().all())
+    scope = await visible_labels(db, ctx)
+    if scope is not None:
+        rows = [r for r in rows if r.user_label in scope]
+    return rows
 
 
 async def decide_leave(

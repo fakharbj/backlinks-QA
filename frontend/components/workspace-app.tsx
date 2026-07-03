@@ -3031,6 +3031,19 @@ function ReportsDesk({
 
   const activeType = REPORT_TYPES.find((t) => t.value === type);
 
+  // In-app report viewer (paginated over the stored file — no download needed).
+  const [viewReport, setViewReport] = useState<Report | null>(null);
+  const [viewOffset, setViewOffset] = useState(0);
+  const viewRows = useQuery({
+    queryKey: ["report-rows", token, viewReport?.id, viewOffset],
+    enabled: Boolean(token) && Boolean(viewReport),
+    queryFn: () =>
+      api<{ headers: string[]; rows: string[][]; total: number; offset: number }>(
+        `/reports/${viewReport!.id}/rows?offset=${viewOffset}&limit=50`,
+        { token }
+      )
+  });
+
   return (
     <section className="space-y-4">
       {/* ── Builder ─────────────────────────────────────────────── */}
@@ -3208,7 +3221,15 @@ function ReportsDesk({
         </div>
         <div className="space-y-3">
           {groups.map((versions) => (
-            <ReportGroup key={versions[0].id} versions={versions} onDownload={download} />
+            <ReportGroup
+              key={versions[0].id}
+              versions={versions}
+              onDownload={download}
+              onView={(r) => {
+                setViewReport(r);
+                setViewOffset(0);
+              }}
+            />
           ))}
           {reports.isLoading ? <Empty label="Loading reports…" /> : null}
           {!reports.isLoading && !groups.length ? (
@@ -3216,6 +3237,74 @@ function ReportsDesk({
           ) : null}
         </div>
       </div>
+
+      {viewReport ? (
+        <div className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-semibold text-ink">{viewReport.title}</h3>
+              <p className="text-xs text-muted">
+                {viewRows.data ? `${viewRows.data.total.toLocaleString()} rows` : "Loading…"}
+                {viewRows.data && viewRows.data.total > 50
+                  ? ` · showing ${viewOffset + 1}–${Math.min(viewOffset + 50, viewRows.data.total)}`
+                  : ""}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                disabled={viewOffset === 0}
+                onClick={() => setViewOffset((o) => Math.max(0, o - 50))}
+                className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
+              >
+                ← Prev
+              </button>
+              <button
+                disabled={!viewRows.data || viewOffset + 50 >= viewRows.data.total}
+                onClick={() => setViewOffset((o) => o + 50)}
+                className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
+              >
+                Next →
+              </button>
+              <button
+                onClick={() => setViewReport(null)}
+                className="text-xs font-medium text-ocean hover:underline"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="max-h-[480px] overflow-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-field uppercase text-muted">
+                <tr>
+                  {(viewRows.data?.headers || []).map((h, i) => (
+                    <th key={i} className="whitespace-nowrap px-3 py-2 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {(viewRows.data?.rows || []).map((r, i) => (
+                  <tr key={i} className="hover:bg-field/60">
+                    {r.map((c, j) => (
+                      <td key={j} className="max-w-[280px] truncate px-3 py-1.5 align-top text-ink" title={c}>
+                        {c}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {viewRows.isLoading ? (
+              <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+            ) : null}
+            {viewRows.isError ? (
+              <div className="p-4 text-center text-sm text-danger">
+                {(viewRows.error as Error)?.message || "Could not open this report."}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -3238,10 +3327,12 @@ function FilterSummary({ filters }: { filters?: Record<string, unknown> }) {
 
 function ReportGroup({
   versions,
-  onDownload
+  onDownload,
+  onView
 }: {
   versions: Report[];
   onDownload: (r: Report) => void;
+  onView: (r: Report) => void;
 }) {
   const [open, setOpen] = useState(false);
   const latest = versions[0];
@@ -3272,6 +3363,14 @@ function ReportGroup({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Status value={latest.status.toUpperCase()} />
+          {latest.status === "completed" && latest.format !== "pdf" ? (
+            <button
+              onClick={() => onView(latest)}
+              className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              View
+            </button>
+          ) : null}
           <button
             disabled={latest.status !== "completed"}
             onClick={() => onDownload(latest)}
@@ -5533,6 +5632,39 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
     onError: (err: Error) => onNotice(err.message)
   });
 
+  const resetPw = useMutation({
+    mutationFn: (userId: string) =>
+      api<{ temp_password: string }>(`/team/members/${userId}/reset-password`, {
+        token,
+        method: "POST"
+      }),
+    onSuccess: (r) => {
+      window.prompt(
+        "New temporary password (shown once — copy it and hand it to the user):",
+        r.temp_password
+      );
+      onNotice("Password reset — temporary password shown.");
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+  const leads = useQuery({
+    queryKey: ["team-leads", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () =>
+      api<Array<{ manager_user_id: string; labels: string[] }>>("/team/leads", { token })
+  });
+  const [leadDrafts, setLeadDrafts] = useState<Record<string, string>>({});
+  const saveLeads = useMutation({
+    mutationFn: (p: { manager_user_id: string; labels: string[] }) =>
+      api<{ message: string }>("/team/leads", { token, method: "PUT", body: JSON.stringify(p) }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["team-leads"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+
   const remove = useMutation({
     mutationFn: (userId: string) =>
       api<{ message: string }>(`/team/members/${userId}`, { token, method: "DELETE" }),
@@ -5664,6 +5796,13 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                   <Td>
                     <div className="flex items-center justify-end gap-2">
                       <button
+                        onClick={() => resetPw.mutate(m.user_id)}
+                        title="Set a new temporary password for this user"
+                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field"
+                      >
+                        Reset password
+                      </button>
+                      <button
                         onClick={() => toggleActive.mutate({ userId: m.user_id, active: !m.is_active })}
                         className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field"
                       >
@@ -5690,6 +5829,48 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           {!members.isLoading && !members.data?.length ? <Empty label="No members yet" /> : null}
         </div>
       </section>
+
+      {(members.data || []).some((m) => m.role === "manager") ? (
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Team lead assignments" />
+          <p className="border-b border-line px-4 py-2.5 text-xs text-muted">
+            Give each Team Lead (Manager role) the people they oversee — comma-separated user
+            names as they appear in the sheets. With names set, that lead only sees those people
+            in Performance, Tasks and Leave. Leave empty to let them see everyone.
+          </p>
+          <div className="divide-y divide-line">
+            {(members.data || [])
+              .filter((m) => m.role === "manager")
+              .map((m) => {
+                const saved = (leads.data || []).find((l) => l.manager_user_id === m.user_id);
+                const value = leadDrafts[m.user_id] ?? (saved?.labels || []).join(", ");
+                return (
+                  <div key={m.user_id} className="flex flex-wrap items-center gap-2 p-3">
+                    <span className="w-44 truncate text-sm font-medium text-ink">{m.full_name}</span>
+                    <input
+                      value={value}
+                      onChange={(e) => setLeadDrafts((d) => ({ ...d, [m.user_id]: e.target.value }))}
+                      placeholder="e.g. alex, tony, tim"
+                      className="h-9 min-w-[240px] flex-1 rounded-lg border border-line bg-panel px-2 text-sm"
+                    />
+                    <button
+                      onClick={() =>
+                        saveLeads.mutate({
+                          manager_user_id: m.user_id,
+                          labels: value.split(",").map((s) => s.trim()).filter(Boolean)
+                        })
+                      }
+                      disabled={saveLeads.isPending}
+                      className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                  </div>
+                );
+              })}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

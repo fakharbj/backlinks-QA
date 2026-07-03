@@ -96,3 +96,57 @@ async def download_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -
         media_type=_REPORT_MEDIA_TYPES.get(fmt, "application/octet-stream"),
         headers={"Content-Disposition": f'attachment; filename="{safe}.{fmt}"'},
     )
+
+
+@router.get("/{report_id}/rows")
+async def report_rows(
+    report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    offset: int = 0, limit: int = 100,
+) -> dict:
+    """View a completed report inside the app (paginated) — no download needed.
+    Parses the stored CSV/XLSX; PDFs are download-only."""
+    import csv as _csv
+    import io as _io
+
+    report = await report_service.get_report(db, ctx, report_id)
+    if report.status is not ReportStatus.COMPLETED or not report.file_key:
+        raise ValidationAppError("Report is not ready yet")
+    fmt = report.format.value if hasattr(report.format, "value") else str(report.format)
+    if fmt == "pdf":
+        raise ValidationAppError("PDF reports can't be shown as a table — download instead.")
+    try:
+        data = await get_bytes_async(settings.S3_BUCKET_REPORTS, report.file_key)
+    except Exception as exc:  # noqa: BLE001
+        raise ValidationAppError(
+            "The report file could not be read — regenerate the report and try again."
+        ) from exc
+
+    offset = max(0, offset)
+    limit = max(1, min(limit, 500))
+    headers: list[str] = []
+    rows: list[list[str]] = []
+    total = 0
+    if fmt == "csv":
+        reader = _csv.reader(_io.StringIO(data.decode("utf-8-sig", errors="replace")))
+        for i, row in enumerate(reader):
+            if i == 0:
+                headers = row
+                continue
+            total += 1
+            if offset < total <= offset + limit:
+                rows.append(row)
+    else:  # xlsx
+        from openpyxl import load_workbook
+
+        wb = load_workbook(_io.BytesIO(data), read_only=True)
+        ws = wb.active
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            vals = ["" if c is None else str(c) for c in row]
+            if i == 0:
+                headers = vals
+                continue
+            total += 1
+            if offset < total <= offset + limit:
+                rows.append(vals)
+        wb.close()
+    return {"headers": headers, "rows": rows, "total": total, "offset": offset}

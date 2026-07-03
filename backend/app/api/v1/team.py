@@ -128,3 +128,93 @@ async def remove_member(
     )
     await db.commit()
     return Message(message="Member removed")
+
+
+# ── TeamLead member assignments (Phase 9) ────────────────────────────────────
+from pydantic import BaseModel  # noqa: E402
+
+
+class TeamLeadLabels(BaseModel):
+    manager_user_id: uuid.UUID
+    labels: list[str]
+
+
+@router.get("/leads")
+async def list_teamlead_assignments(
+    db: ReadSession, ctx: AuthContext = Depends(require(Permission.MANAGE_USERS))
+) -> list[dict]:
+    from sqlalchemy import select
+
+    from app.models.workforce import TeamLeadAssignment
+
+    rows = (
+        await db.execute(
+            select(TeamLeadAssignment).where(
+                TeamLeadAssignment.workspace_id == ctx.workspace_id
+            )
+        )
+    ).scalars().all()
+    grouped: dict[str, list[str]] = {}
+    for r in rows:
+        grouped.setdefault(str(r.manager_user_id), []).append(r.member_label)
+    return [{"manager_user_id": k, "labels": sorted(v)} for k, v in grouped.items()]
+
+
+@router.put("/leads", response_model=Message)
+async def set_teamlead_assignments(
+    payload: TeamLeadLabels, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_USERS)),
+) -> Message:
+    """Replace the set of member labels a TeamLead oversees (empty list = sees all)."""
+    from sqlalchemy import delete as sa_delete
+
+    from app.models.workforce import TeamLeadAssignment
+
+    await db.execute(
+        sa_delete(TeamLeadAssignment).where(
+            TeamLeadAssignment.workspace_id == ctx.workspace_id,
+            TeamLeadAssignment.manager_user_id == payload.manager_user_id,
+        )
+    )
+    labels = sorted({l.strip()[:200] for l in payload.labels if l.strip()})
+    for label in labels[:100]:
+        db.add(
+            TeamLeadAssignment(
+                workspace_id=ctx.workspace_id,
+                manager_user_id=payload.manager_user_id,
+                member_label=label,
+            )
+        )
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="teamlead_users", entity_id=payload.manager_user_id,
+        summary=f"TeamLead now oversees {len(labels)} member(s)",
+    )
+    await db.commit()
+    return Message(message=f"Saved — this team lead now sees {len(labels) or 'ALL'} member(s)")
+
+
+@router.post("/members/{user_id}/reset-password")
+async def reset_member_password(
+    user_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_USERS)),
+) -> dict:
+    """Admin password reset: sets a new temporary password and returns it ONCE
+    (hand it to the user; they should change it after logging in)."""
+    import secrets
+
+    from app.core.errors import NotFoundError
+    from app.core.security import hash_password
+
+    members = await team_service.list_members(db, ctx)
+    target = next((u for m, u in members if u.id == user_id), None)
+    if target is None:
+        raise NotFoundError("Member not found in this workspace")
+    temp = f"Reset-{secrets.token_urlsafe(9)}"
+    target.password_hash = hash_password(temp)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="user", entity_id=user_id, summary="Password reset by admin",
+    )
+    await db.commit()
+    return {"temp_password": temp}
