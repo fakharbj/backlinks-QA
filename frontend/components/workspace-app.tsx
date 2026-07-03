@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   BarChart3,
   Bell,
+  CalendarDays,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -81,7 +82,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "performance" | "team" | "employees" | "scoring" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "performance" | "tasks" | "team" | "employees" | "scoring" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -310,6 +311,9 @@ export function WorkspaceApp() {
           {tab === "performance" ? (
             <PerformanceDesk token={token} projectId={activeProjectId} />
           ) : null}
+          {tab === "tasks" ? (
+            <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} />
+          ) : null}
           {tab === "alerts" ? (
             <AlertsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -423,6 +427,7 @@ const WORKSPACE_NAV: NavGroup[] = [
     label: "Workspace",
     items: [
       ["performance", "Performance", Activity],
+      ["tasks", "Tasks & Calendar", CalendarDays],
       ["team", "Team", Users],
       ["employees", "Employees", UserCog],
       ["scoring", "Scoring", SlidersHorizontal],
@@ -448,6 +453,7 @@ const PROJECT_NAV: NavGroup[] = [
     items: [
       ["analytics", "Analytics", BarChart3],
       ["performance", "Performance", Activity],
+      ["tasks", "Tasks", CalendarDays],
       ["reports", "Reports", FileSpreadsheet],
       ["alerts", "Alerts", Bell]
     ]
@@ -1673,6 +1679,363 @@ function ImportDesk({
           Queue import
         </button>
       </div>
+    </section>
+  );
+}
+
+function TasksDesk({
+  token,
+  projectId,
+  projects,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  projects: Project[];
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const weekAgoIso = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const [from, setFrom] = useState(weekAgoIso);
+  const [to, setTo] = useState(todayIso);
+
+  type DayRow = {
+    id: string; day: string; project_id: string; user_label: string; hours: number;
+    link_type_names: string[]; expected_links: number; actual_links: number;
+    completion_pct: number | null; excused: boolean; excuse_reason: string | null; note: string | null;
+  };
+  const report = useQuery({
+    queryKey: ["day-report", token, from, to, projectId],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<DayRow[]>(
+        `/workforce/day-report?date_from=${from}&date_to=${to}${projectId ? `&project_id=${projectId}` : ""}`,
+        { token }
+      )
+  });
+  const productivity = useQuery({
+    queryKey: ["productivity", token],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ global: Array<{ link_type_name: string; links_per_hour: number }> }>(
+        "/workforce/productivity",
+        { token }
+      )
+  });
+  const leaves = useQuery({
+    queryKey: ["leaves", token],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<Array<{ id: string; user_label: string; start_date: string; end_date: string; reason: string | null; status: string }>>(
+        "/workforce/leaves",
+        { token }
+      )
+  });
+  const [calCursor, setCalCursor] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  });
+  const calendar = useQuery({
+    queryKey: ["work-calendar", token, calCursor.year, calCursor.month],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<Array<{ day: string; is_working: boolean; is_override: boolean }>>(
+        `/workforce/calendar?year=${calCursor.year}&month=${calCursor.month}`,
+        { token }
+      )
+  });
+
+  // ── Add-assignment form ──────────────────────────────────────────────
+  const [fDay, setFDay] = useState(todayIso);
+  const [fUser, setFUser] = useState("");
+  const [fProject, setFProject] = useState(projectId || "");
+  const [fHours, setFHours] = useState("4");
+  const [fTypes, setFTypes] = useState("");
+  const linkTypes = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+  const addAssignment = useMutation({
+    mutationFn: () =>
+      api<{ id: string; expected_links: number }>("/workforce/assignments", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          project_id: fProject || projectId, user_label: fUser.trim(), day: fDay,
+          hours: Number(fHours) || 0,
+          link_type_names: fTypes ? fTypes.split(",") : []
+        })
+      }),
+    onSuccess: (r) => {
+      onNotice(`Assigned — ${r.expected_links} links expected for that day.`);
+      queryClient.invalidateQueries({ queryKey: ["day-report"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const removeAssignment = useMutation({
+    mutationFn: (id: string) =>
+      api<{ message: string }>(`/workforce/assignments/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Assignment removed");
+      queryClient.invalidateQueries({ queryKey: ["day-report"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const saveProductivity = useMutation({
+    mutationFn: (p: { link_type_name: string; links_per_hour: number }) =>
+      api<{ message: string }>("/workforce/productivity", {
+        token,
+        method: "PUT",
+        body: JSON.stringify(p)
+      }),
+    onSuccess: () => {
+      onNotice("Productivity saved");
+      queryClient.invalidateQueries({ queryKey: ["productivity"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const toggleDay = useMutation({
+    mutationFn: (p: { day: string; is_working: boolean }) =>
+      api<{ message: string }>("/workforce/calendar", { token, method: "PUT", body: JSON.stringify(p) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["work-calendar"] }),
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const [lvUser, setLvUser] = useState("");
+  const [lvFrom, setLvFrom] = useState(todayIso);
+  const [lvTo, setLvTo] = useState(todayIso);
+  const requestLeave = useMutation({
+    mutationFn: () =>
+      api<{ id: string }>("/workforce/leaves", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ user_label: lvUser.trim(), start_date: lvFrom, end_date: lvTo })
+      }),
+    onSuccess: () => {
+      onNotice("Leave request submitted");
+      queryClient.invalidateQueries({ queryKey: ["leaves"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const decideLeave = useMutation({
+    mutationFn: (p: { id: string; approve: boolean }) =>
+      api<{ status: string }>(`/workforce/leaves/${p.id}?approve=${p.approve}`, { token, method: "PATCH" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["leaves"] });
+      queryClient.invalidateQueries({ queryKey: ["day-report"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name || "—";
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Tasks & calendar</h2>
+        <p className="text-sm text-muted">
+          Plan each person&apos;s day (hours × link types → expected links), then track completion
+          against that day&apos;s plan. Approved leave and non-working days don&apos;t count against anyone.
+        </p>
+      </div>
+
+      {/* Assign */}
+      <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+        <SectionTitle title="Assign work" flush />
+        <div className="flex flex-wrap items-end gap-2 pt-3">
+          <input type="date" value={fDay} onChange={(e) => setFDay(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input value={fUser} onChange={(e) => setFUser(e.target.value)} placeholder="User (sheet name)…" className="h-9 w-40 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <select value={fProject} onChange={(e) => setFProject(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+            <option value="">Project…</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <input type="number" min={0} max={24} step={0.5} value={fHours} onChange={(e) => setFHours(e.target.value)} className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-sm" title="Hours" />
+          <FilterMultiSelect
+            label="Link types"
+            options={(linkTypes.data || []).map((lt) => ({ value: lt.name }))}
+            selected={fTypes ? fTypes.split(",") : []}
+            onChange={(v) => setFTypes(v.join(","))}
+          />
+          <button
+            onClick={() => addAssignment.mutate()}
+            disabled={addAssignment.isPending || !fUser.trim() || !(fProject || projectId)}
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          >
+            {addAssignment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Assign
+          </button>
+          <span className="text-xs text-muted">Expected links are calculated from the productivity settings below.</span>
+        </div>
+      </section>
+
+      {/* Day report */}
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">Plan vs done</h3>
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+            –
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr>
+                <Th>Date</Th><Th>User</Th><Th>Project</Th><Th>Hours</Th><Th>Link types</Th>
+                <Th>Expected</Th><Th>Done</Th><Th>Completion</Th><Th>{" "}</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(report.data || []).map((r) => (
+                <tr key={r.id} className="hover:bg-field/60">
+                  <Td>{r.day}</Td>
+                  <Td><span className="font-medium text-ink">{r.user_label}</span></Td>
+                  <Td>{projectName(r.project_id)}</Td>
+                  <Td>{r.hours}h</Td>
+                  <Td><span className="text-xs text-muted">{r.link_type_names.join(", ") || "—"}</span></Td>
+                  <Td>{r.expected_links}</Td>
+                  <Td>{r.actual_links}</Td>
+                  <Td>
+                    {r.excused ? (
+                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title={r.excuse_reason || ""}>
+                        Excused — {r.excuse_reason}
+                      </span>
+                    ) : r.completion_pct == null ? (
+                      "—"
+                    ) : (
+                      <span
+                        className={clsx(
+                          "rounded px-2 py-0.5 text-xs font-semibold",
+                          r.completion_pct >= 100 ? "bg-ocean/10 text-ocean"
+                            : r.completion_pct >= 60 ? "bg-ember/10 text-ember"
+                              : "bg-danger/10 text-danger"
+                        )}
+                      >
+                        {r.completion_pct}%
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    <button
+                      onClick={() => removeAssignment.mutate(r.id)}
+                      className="text-xs text-muted hover:text-danger hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {report.isLoading ? (
+            <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+          ) : null}
+          {!report.isLoading && !(report.data || []).length ? (
+            <Empty label="No assignments in this period — add one above." />
+          ) : null}
+        </div>
+      </section>
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        {/* Productivity settings */}
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Productivity (links per hour)" />
+          <div className="divide-y divide-line">
+            {(productivity.data?.global || []).map((g) => (
+              <div key={g.link_type_name} className="flex items-center justify-between gap-3 p-3">
+                <span className="text-sm font-medium text-ink">{g.link_type_name}</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.5}
+                  defaultValue={g.links_per_hour}
+                  onBlur={(e) => {
+                    const v = Number(e.target.value);
+                    if (v > 0 && v !== g.links_per_hour)
+                      saveProductivity.mutate({ link_type_name: g.link_type_name, links_per_hour: v });
+                  }}
+                  className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
+                />
+              </div>
+            ))}
+            {!(productivity.data?.global || []).length ? <Empty label="No link types yet." /> : null}
+          </div>
+        </section>
+
+        {/* Working-days calendar */}
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex items-center justify-between border-b border-line p-3">
+            <h3 className="text-sm font-semibold text-ink">Working days</h3>
+            <div className="flex items-center gap-2 text-sm">
+              <button onClick={() => setCalCursor((c) => (c.month === 1 ? { year: c.year - 1, month: 12 } : { ...c, month: c.month - 1 }))} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">←</button>
+              <span className="font-medium text-ink">{calCursor.year}-{String(calCursor.month).padStart(2, "0")}</span>
+              <button onClick={() => setCalCursor((c) => (c.month === 12 ? { year: c.year + 1, month: 1 } : { ...c, month: c.month + 1 }))} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">→</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-7 gap-1 p-3">
+            {(calendar.data || []).map((d) => (
+              <button
+                key={d.day}
+                onClick={() => toggleDay.mutate({ day: d.day, is_working: !d.is_working })}
+                title={`${d.day} — ${d.is_working ? "working day" : "day off"} (click to change)`}
+                className={clsx(
+                  "h-9 rounded-lg border text-xs font-medium transition",
+                  d.is_working
+                    ? "border-ocean/30 bg-ocean/10 text-ocean"
+                    : "border-line bg-field text-muted"
+                )}
+              >
+                {Number(d.day.slice(8))}
+              </button>
+            ))}
+          </div>
+          <p className="border-t border-line p-2.5 text-[11px] text-muted">
+            Default: Monday–Saturday working, Sunday off. Click any date to override. Off days don&apos;t
+            count against anyone&apos;s completion.
+          </p>
+        </section>
+      </div>
+
+      {/* Leave */}
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="Leave requests" />
+        <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
+          <input value={lvUser} onChange={(e) => setLvUser(e.target.value)} placeholder="User…" className="h-9 w-36 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input type="date" value={lvFrom} onChange={(e) => setLvFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input type="date" value={lvTo} onChange={(e) => setLvTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <button
+            onClick={() => requestLeave.mutate()}
+            disabled={requestLeave.isPending || !lvUser.trim()}
+            className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
+          >
+            Request leave
+          </button>
+        </div>
+        <div className="divide-y divide-line">
+          {(leaves.data || []).map((l) => (
+            <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
+              <div>
+                <span className="font-medium text-ink">{l.user_label}</span>{" "}
+                <span className="text-muted">{l.start_date} → {l.end_date}{l.reason ? ` · ${l.reason}` : ""}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Status value={l.status === "approved" ? "completed" : l.status === "rejected" ? "failed" : "pending"} />
+                {l.status === "pending" ? (
+                  <>
+                    <button onClick={() => decideLeave.mutate({ id: l.id, approve: true })} className="text-xs font-medium text-ocean hover:underline">Approve</button>
+                    <button onClick={() => decideLeave.mutate({ id: l.id, approve: false })} className="text-xs font-medium text-danger hover:underline">Reject</button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          ))}
+          {!leaves.isLoading && !(leaves.data || []).length ? <Empty label="No leave requests." /> : null}
+        </div>
+      </section>
     </section>
   );
 }
