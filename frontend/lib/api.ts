@@ -47,6 +47,7 @@ export type ConflictSummary = {
   open: number;
   resolved: number;
   by_scope: Record<string, number>;
+  weekly?: Array<{ week: string; new_groups: number }>;
 };
 
 export type ProjectDomain = {

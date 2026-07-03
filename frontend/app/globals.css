@@ -87,3 +87,18 @@ textarea {
 *::-webkit-scrollbar-thumb:hover {
   background: rgb(var(--muted) / 0.55);
 }
+
+/* Gentle desk transition when switching tabs/context */
+@keyframes deskIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.desk-enter {
+  animation: deskIn 0.22s ease-out;
+}

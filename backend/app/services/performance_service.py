@@ -132,9 +132,31 @@ async def users(
                     "global_new_domains": 0, "previous": prev,
                 }
             )
+    # GSC-style weekly series over the same window (links / new domains / indexed).
+    where, wparams = _scope(ctx, project_id)
+    wparams |= {"t0": t0, "t1": t1}
+    weekly_sql = _bind(
+        f"""
+        SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week,
+               count(*) AS links,
+               count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
+               count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM backlink_records e
+                   WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
+                     AND e.created_at < b.created_at
+               )) AS new_domains
+        FROM backlink_records b
+        WHERE {where} AND b.created_at >= :t0 AND b.created_at < :t1
+        GROUP BY 1 ORDER BY 1 ASC
+        """,
+        wparams,
+    )
+    weekly = [dict(r) for r in (await db.execute(weekly_sql, wparams)).mappings().all()]
+
     return {
         "from": t0.isoformat(),
         "to": t1.isoformat(),
         "compared_to_previous": compare,
         "users": out,
+        "weekly": weekly,
     }

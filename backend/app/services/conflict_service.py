@@ -224,7 +224,29 @@ async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
         if status == "resolved":
             resolved += n
         by_scope[scope] = by_scope.get(scope, 0) + n
-    return {"total": total, "open": open_, "resolved": resolved, "by_scope": by_scope}
+
+    # Trend: duplicate groups first found per week (last 12 weeks) for the chart.
+    from sqlalchemy import text as _text
+
+    weekly = [
+        dict(r)
+        for r in (
+            await db.execute(
+                _text(
+                    "SELECT to_char(date_trunc('week', detected_at), 'YYYY-MM-DD') AS week, "
+                    "count(*) AS new_groups "
+                    "FROM backlink_conflicts "
+                    "WHERE workspace_id = :ws AND detected_at >= now() - interval '84 days' "
+                    "GROUP BY 1 ORDER BY 1"
+                ),
+                {"ws": ctx.workspace_id},
+            )
+        ).mappings().all()
+    ]
+    return {
+        "total": total, "open": open_, "resolved": resolved,
+        "by_scope": by_scope, "weekly": weekly,
+    }
 
 
 async def list_conflicts(

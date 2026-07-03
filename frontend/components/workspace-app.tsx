@@ -15,6 +15,7 @@ import {
   Gauge,
   Globe,
   History,
+  Info,
   Layers,
   Link2,
   Loader2,
@@ -250,7 +251,7 @@ export function WorkspaceApp() {
             />
           </div>
         </aside>
-        <section className="min-w-0 flex-1 space-y-5">
+        <section key={`${tab}-${activeProjectId}`} className="desk-enter min-w-0 flex-1 space-y-5">
           <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} />
           <div className="lg:hidden">
             <ProjectPanel
@@ -835,22 +836,14 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
           </div>
         </div>
         {(trends.data?.weekly || []).length ? (
-          <div className="space-y-1.5 border-t border-line p-4">
-            {(() => {
-              const weeks = trends.data?.weekly || [];
-              const max = Math.max(1, ...weeks.map((w) => w.links));
-              return weeks.map((w) => (
-                <div key={w.week} className="flex items-center gap-3 text-xs">
-                  <span className="w-20 shrink-0 text-muted">wk {w.week.slice(5)}</span>
-                  <span className="flex h-2.5 flex-1 overflow-hidden rounded-full bg-field">
-                    <span className="h-full bg-ocean" style={{ width: `${(w.links / max) * 100}%` }} />
-                  </span>
-                  <span className="w-40 shrink-0 text-right text-muted">
-                    {w.links} links · {w.new_domains} new domains
-                  </span>
-                </div>
-              ));
-            })()}
+          <div className="border-t border-line p-4">
+            <TrendChart
+              labels={(trends.data?.weekly || []).map((w) => w.week)}
+              series={[
+                { name: "Links added", cssVar: "--ocean", values: (trends.data?.weekly || []).map((w) => w.links) },
+                { name: "New source domains", cssVar: "--plum", values: (trends.data?.weekly || []).map((w) => w.new_domains) }
+              ]}
+            />
           </div>
         ) : null}
       </section>
@@ -1037,6 +1030,8 @@ function Backlinks({
   const [indexFilter, setIndexFilter] = useState("");
   const [rel, setRel] = useState("");
   const [linkType, setLinkType] = useState("");
+  const [userF, setUserF] = useState("");
+  const [domainF, setDomainF] = useState("");
   const [issueLabel, setIssueLabel] = useState("");
   const [sort, setSort] = useState("score");
   const [search, setSearch] = useState("");
@@ -1061,6 +1056,29 @@ function Backlinks({
   });
   const projectName = (id: string) =>
     (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+  // User + source-domain options with live counts (same engine as Analytics).
+  const facetsQ = useQuery({
+    queryKey: ["bl-facets", token, projectId],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<AnalyticsResponse>("/analytics/query", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          filters: projectId ? { project_id: projectId } : {},
+          facets: ["user", "source_domain"]
+        })
+      })
+  });
+  const facetOpts = (dim: string) =>
+    (facetsQ.data?.facets?.[dim] || [])
+      // "(unassigned)"/"(none)" buckets are covered by the "(Blanks)" option.
+      .filter((o) => !String(o.value).startsWith("("))
+      .map((o) => ({
+        value: String(o.value),
+        label: String(o.label || o.value),
+        count: Number(o.count) || 0
+      }));
 
   const clearFilters = () => {
     setStatus("");
@@ -1068,10 +1086,12 @@ function Backlinks({
     setIndexFilter("");
     setRel("");
     setLinkType("");
+    setUserF("");
+    setDomainF("");
     setIssueLabel("");
     setSearch("");
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, issueLabel, debouncedSearch]
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch]
     .filter(Boolean).length;
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
@@ -1101,11 +1121,13 @@ function Backlinks({
     if (indexFilter) params.set("index_status", indexFilter);
     if (rel) params.set("rel", rel);
     if (linkType) params.set("link_type", linkType);
+    if (userF) params.set("assigned_user_label", userF);
+    if (domainF) params.set("source_domain", domainF);
     if (issueLabel) params.set("issue_label", issueLabel);
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (sort) params.set("sort", sort);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, issueLabel, debouncedSearch, sort]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, sort]);
   const backlinks = useQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -1159,6 +1181,28 @@ function Backlinks({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <ExportButton
+              onClick={async () => {
+                try {
+                  const p2 = new URLSearchParams(query);
+                  p2.set("limit", "200");
+                  p2.set("with_total", "false");
+                  const page = await api<Page<BacklinkRow>>(`/backlinks?${p2.toString()}`, { token });
+                  downloadCsv(
+                    "backlinks.csv",
+                    ["Source URL", "Target URL", "Status", "Score", "Type", "User", "Index", "HTTP", "Rel", "Duplicate", "Added", "Checked"],
+                    page.items.map((r) => [
+                      r.source_page_url, r.target_url, r.override_status || r.status, r.score,
+                      r.link_type, r.assigned_user_label, r.index_status, r.http_status,
+                      r.current_rel, r.duplicate_status, r.created_at, r.last_checked_at
+                    ])
+                  );
+                  onNotice(`Exported ${page.items.length} links (current filters).`);
+                } catch (e) {
+                  onNotice(e instanceof Error ? e.message : "Export failed");
+                }
+              }}
+            />
             <button
               onClick={() => indexCheck.mutate()}
               className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
@@ -1273,6 +1317,20 @@ function Backlinks({
             selected={toks(indexFilter)}
             onChange={(v) => setIndexFilter(v.join(","))}
           />
+          <FilterMultiSelect
+            label="User"
+            withBlanks
+            options={facetOpts("user")}
+            selected={toks(userF)}
+            onChange={(v) => setUserF(v.join(","))}
+          />
+          <FilterMultiSelect
+            label="Source domain"
+            withBlanks
+            options={facetOpts("source_domain")}
+            selected={toks(domainF)}
+            onChange={(v) => setDomainF(v.join(","))}
+          />
           <select
             className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
             value={sort}
@@ -1285,7 +1343,7 @@ function Backlinks({
         </div>
       </div>
       <div className="overflow-x-auto scrollbar-thin">
-        <table className="min-w-[1480px] w-full border-collapse text-left text-sm">
+        <table className="min-w-[1560px] w-full border-collapse text-left text-sm">
           <thead className="bg-field text-xs uppercase text-muted">
             <tr>
               <Th>Status</Th>
@@ -1295,6 +1353,7 @@ function Backlinks({
               <Th>Type</Th>
               <Th>User</Th>
               {!projectId ? <Th>Project</Th> : null}
+              <Th>Index</Th>
               <Th>HTTP</Th>
               <Th>Rel</Th>
               <Th>Rank / Visits</Th>
@@ -1326,7 +1385,6 @@ function Backlinks({
                       {(row.duplicate_status || "duplicate").replace("dup_", "").replace(/_/g, " ")}
                     </span>
                   ) : null}
-                  {row.index_status ? <IndexBadge value={row.index_status} /> : null}
                 </Td>
                 <Td><Url value={row.target_url} /></Td>
                 <Td><span className="whitespace-nowrap text-xs">{row.link_type || "—"}</span></Td>
@@ -1338,6 +1396,7 @@ function Backlinks({
                     </span>
                   </Td>
                 ) : null}
+                <Td>{row.index_status ? <IndexBadge value={row.index_status} /> : <span className="text-xs text-muted">—</span>}</Td>
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
                 <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
@@ -2087,6 +2146,121 @@ function TasksDesk({
   );
 }
 
+// ── Shared: GSC-style chart, CSV export, help tips ──────────────────────────
+function TrendChart({
+  labels,
+  series,
+  height = 170
+}: {
+  labels: string[];
+  series: Array<{ name: string; cssVar: string; values: number[] }>;
+  height?: number;
+}) {
+  const W = 640;
+  const H = height;
+  const PADX = 34;
+  const PADY = 22;
+  const max = Math.max(1, ...series.flatMap((s) => s.values));
+  const x = (i: number) =>
+    labels.length <= 1 ? W / 2 : PADX + (i * (W - PADX * 2)) / (labels.length - 1);
+  const y = (v: number) => H - PADY - (v / max) * (H - PADY * 2);
+  if (!labels.length) return <Empty label="Not enough data for a chart yet." />;
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap gap-3 px-1">
+        {series.map((s) => (
+          <span key={s.name} className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
+            <span className="h-2 w-2 rounded-full" style={{ background: `rgb(var(${s.cssVar}))` }} />
+            {s.name}
+          </span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img">
+        {[0, 0.5, 1].map((f) => (
+          <g key={f}>
+            <line
+              x1={PADX} x2={W - PADX} y1={y(max * f)} y2={y(max * f)}
+              stroke="rgb(var(--line))" strokeWidth="1" strokeDasharray={f === 0 ? "" : "3 4"}
+            />
+            <text x={PADX - 6} y={y(max * f) + 3} textAnchor="end" fontSize="9" fill="rgb(var(--muted))">
+              {Math.round(max * f)}
+            </text>
+          </g>
+        ))}
+        {series.map((s) => {
+          const pts = s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+          const area = `M ${x(0)},${y(s.values[0] ?? 0)} ${s.values
+            .map((v, i) => `L ${x(i)},${y(v)}`)
+            .join(" ")} L ${x(s.values.length - 1)},${H - PADY} L ${x(0)},${H - PADY} Z`;
+          return (
+            <g key={s.name}>
+              <path d={area} fill={`rgb(var(${s.cssVar}) / 0.10)`} />
+              <polyline
+                points={pts} fill="none" stroke={`rgb(var(${s.cssVar}))`}
+                strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"
+              />
+              {s.values.map((v, i) => (
+                <circle key={i} cx={x(i)} cy={y(v)} r="3" fill={`rgb(var(${s.cssVar}))`}>
+                  <title>{`${labels[i]} — ${s.name}: ${v}`}</title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+        {labels.map((l, i) =>
+          labels.length <= 8 || i === 0 || i === labels.length - 1 || i % Math.ceil(labels.length / 6) === 0 ? (
+            <text key={i} x={x(i)} y={H - 6} textAnchor="middle" fontSize="9" fill="rgb(var(--muted))">
+              {l.slice(5)}
+            </text>
+          ) : null
+        )}
+      </svg>
+    </div>
+  );
+}
+
+function downloadCsv(
+  filename: string,
+  headers: string[],
+  rows: Array<Array<string | number | null | undefined>>
+) {
+  const esc = (v: string | number | null | undefined) => {
+    const s = v == null ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+  };
+  const body = [headers.map(esc).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\n");
+  const url = URL.createObjectURL(new Blob([`﻿${body}`], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ExportButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title="Download what you see as a CSV file"
+      className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+    >
+      <Download className="h-3.5 w-3.5" /> Export
+    </button>
+  );
+}
+
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex align-middle">
+      <Info className="h-3.5 w-3.5 cursor-help text-muted transition group-hover:text-ocean" />
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-1.5 hidden w-72 -translate-x-1/2 rounded-lg border border-line bg-panel p-2.5 text-left text-xs font-normal normal-case leading-snug text-ink shadow-pop group-hover:block">
+        {text}
+      </span>
+    </span>
+  );
+}
+
 function DeltaPill({ now, prev }: { now: number; prev?: number | null }) {
   if (prev == null) return null;
   const d = now - prev;
@@ -2108,6 +2282,7 @@ const TIMEFRAMES: Array<[string, string]> = [
 
 function PerformanceDesk({ token, projectId }: { token: string | null; projectId: string }) {
   const [days, setDays] = useState("30");
+  const [openUser, setOpenUser] = useState<string | null>(null);
 
   type PerfUser = {
     user_label: string; links: number; indexed: number; pass: number; fail: number;
@@ -2119,34 +2294,78 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
     queryKey: ["performance", token, days, projectId],
     enabled: Boolean(token),
     queryFn: () =>
-      api<{ from: string; to: string; users: PerfUser[] }>(
+      api<{
+        from: string; to: string; users: PerfUser[];
+        weekly: Array<{ week: string; links: number; new_domains: number; indexed: number }>;
+      }>(
         `/performance/users?days=${days}&compare=true${projectId ? `&project_id=${projectId}` : ""}`,
         { token }
       )
   });
+  // Drill-down: the open user's weakest links (like the Backlinks tab, inline).
+  const userLinks = useQuery({
+    queryKey: ["perf-user-links", token, openUser, projectId],
+    enabled: Boolean(token) && Boolean(openUser),
+    queryFn: () => {
+      const p = new URLSearchParams({ limit: "8", sort: "score" });
+      p.set("assigned_user_label", openUser as string);
+      if (projectId) p.set("project_id", projectId);
+      return api<Page<BacklinkRow>>(`/backlinks?${p.toString()}`, { token });
+    }
+  });
 
   const users = perf.data?.users || [];
+  const weekly = perf.data?.weekly || [];
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-ink">Team performance</h2>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+            Team performance
+            <HelpTip text="Links created, new source domains and quality per person. 'New (project)' = first-ever link from that domain inside the project; 'New (overall)' = first time the domain appears anywhere. Small green/red numbers compare with the previous equal-length period. Click a row to see that person's weakest links." />
+          </h2>
           <p className="text-sm text-muted">
-            Links created, new source domains and quality per person
-            {projectId ? " — this project only" : " — all projects"}. Small numbers show the
-            change vs the previous period.
+            {projectId ? "This project only." : "All projects."} Click a person for details.
           </p>
         </div>
-        <select
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-          className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
-        >
-          {TIMEFRAMES.map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <ExportButton
+            disabled={!users.length}
+            onClick={() =>
+              downloadCsv(
+                "team-performance.csv",
+                ["User", "Links", "New domains (project)", "New domains (overall)", "Indexed", "Pass", "Fail", "Duplicates", "Avg score"],
+                users.map((u) => [
+                  u.user_label, u.links, u.project_new_domains, u.global_new_domains,
+                  u.indexed, u.pass, u.fail, u.duplicates, u.avg_score
+                ])
+              )
+            }
+          />
+          <select
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+          >
+            {TIMEFRAMES.map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </div>
       </div>
+
+      {weekly.length ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <TrendChart
+            labels={weekly.map((w) => w.week)}
+            series={[
+              { name: "Links created", cssVar: "--ocean", values: weekly.map((w) => w.links) },
+              { name: "New source domains", cssVar: "--plum", values: weekly.map((w) => w.new_domains) },
+              { name: "Indexed", cssVar: "--ember", values: weekly.map((w) => w.indexed) }
+            ]}
+          />
+        </section>
+      ) : null}
 
       <div className="rounded-xl border border-line bg-panel shadow-card">
         <div className="overflow-x-auto">
@@ -2173,19 +2392,59 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
             </thead>
             <tbody className="divide-y divide-line">
               {users.map((u) => (
-                <tr key={u.user_label} className="hover:bg-field/60">
-                  <Td><span className="font-medium text-ink">{u.user_label}</span></Td>
-                  <Td>{u.links}<DeltaPill now={u.links} prev={u.previous?.links} /></Td>
-                  <Td>{u.project_new_domains}<DeltaPill now={u.project_new_domains} prev={u.previous?.project_new_domains} /></Td>
-                  <Td>{u.global_new_domains}<DeltaPill now={u.global_new_domains} prev={u.previous?.global_new_domains} /></Td>
-                  <Td>{u.indexed} · {pct(u.indexed, u.links)}</Td>
-                  <Td>
-                    <span className="text-ocean">{u.pass}</span> /{" "}
-                    <span className="text-danger">{u.fail}</span>
-                  </Td>
-                  <Td><span className="text-plum">{u.duplicates}</span></Td>
-                  <Td>{u.avg_score ?? "-"}</Td>
-                </tr>
+                <Fragment key={u.user_label}>
+                  <tr
+                    onClick={() => setOpenUser(openUser === u.user_label ? null : u.user_label)}
+                    className={clsx("cursor-pointer hover:bg-field/60", openUser === u.user_label && "bg-ocean/5")}
+                  >
+                    <Td><span className="font-medium text-ocean hover:underline">{u.user_label}</span></Td>
+                    <Td>{u.links}<DeltaPill now={u.links} prev={u.previous?.links} /></Td>
+                    <Td>{u.project_new_domains}<DeltaPill now={u.project_new_domains} prev={u.previous?.project_new_domains} /></Td>
+                    <Td>{u.global_new_domains}<DeltaPill now={u.global_new_domains} prev={u.previous?.global_new_domains} /></Td>
+                    <Td>{u.indexed} · {pct(u.indexed, u.links)}</Td>
+                    <Td>
+                      <span className="text-ocean">{u.pass}</span> /{" "}
+                      <span className="text-danger">{u.fail}</span>
+                    </Td>
+                    <Td><span className="text-plum">{u.duplicates}</span></Td>
+                    <Td>{u.avg_score ?? "-"}</Td>
+                  </tr>
+                  {openUser === u.user_label ? (
+                    <tr>
+                      <td colSpan={8} className="bg-field/40 p-4">
+                        <div className="mb-2 flex flex-wrap gap-2 text-xs">
+                          <span className="rounded-full bg-ocean/10 px-2.5 py-1 font-medium text-ocean">Pass {u.pass}</span>
+                          <span className="rounded-full bg-danger/10 px-2.5 py-1 font-medium text-danger">Fail {u.fail}</span>
+                          <span className="rounded-full bg-plum/10 px-2.5 py-1 font-medium text-plum">Duplicates {u.duplicates}</span>
+                          <span className="rounded-full bg-field px-2.5 py-1 font-medium text-muted">Indexed {pct(u.indexed, u.links)}</span>
+                          <span className="rounded-full bg-field px-2.5 py-1 font-medium text-muted">Avg score {u.avg_score ?? "—"}</span>
+                        </div>
+                        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+                          Weakest links (lowest score first)
+                        </div>
+                        {userLinks.isLoading ? (
+                          <div className="p-2 text-xs text-muted">Loading…</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {(userLinks.data?.items || []).map((r) => (
+                              <div key={r.id} className="flex items-center gap-2 text-xs">
+                                <Status value={r.override_status || r.status} reason={r.top_issue_label} />
+                                <span className="w-8 text-right font-semibold">{r.score ?? "-"}</span>
+                                <a href={r.source_page_url} target="_blank" rel="noreferrer" className="flex-1 truncate text-ocean hover:underline">
+                                  {r.source_page_url}
+                                </a>
+                                <span className="shrink-0 text-muted">{r.link_type || ""}</span>
+                              </div>
+                            ))}
+                            {!(userLinks.data?.items || []).length ? (
+                              <div className="text-xs text-muted">No links in this scope.</div>
+                            ) : null}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -2299,6 +2558,21 @@ function BatchesDesk({
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
+        <ExportButton
+          disabled={!(batches.data || []).length}
+          onClick={() =>
+            downloadCsv(
+              "batches.csv",
+              ["Kind", "Label", "Status", "Total", "OK", "Failed", "Skipped", "Counters", "Started", "Finished", "Error"],
+              (batches.data || []).map((b) => [
+                BATCH_KIND_LABEL[b.kind] || b.kind, b.label, b.status,
+                b.totals?.total, b.totals?.ok, b.totals?.failed, b.totals?.skipped,
+                Object.entries(b.counters || {}).map(([k, v]) => `${k}=${v}`).join("; "),
+                b.started_at, b.finished_at, b.error
+              ])
+            )
+          }
+        />
       </div>
 
       <div className="rounded-xl border border-line bg-panel shadow-card">
@@ -4700,12 +4974,34 @@ function ConflictsDesk({
   const s = summary.data;
   return (
     <section className="space-y-4">
+      <div>
+        <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+          Duplicates
+          <HelpTip text="Two or more records pointing at the same page. 'Same project' = the page appears twice in one project (remove the extras). 'Used by another project' or 'Added by another user' = coordinate so you don't pay twice for the same placement. 'New (7 days)' shows groups found recently; 'Previously found' shows older, already-known ones." />
+        </h2>
+        <p className="text-sm text-muted">Every group shows why it's a duplicate and where the original lives.</p>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Metric label="Duplicate groups" value={s?.total ?? 0} icon={Layers} tone="ink" />
         <Metric label="Open" value={s?.open ?? 0} icon={AlertTriangle} tone="ember" />
         <Metric label="Cross-project" value={s?.by_scope?.cross_project ?? 0} icon={Link2} tone="plum" />
         <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean" />
       </div>
+
+      {(s?.weekly || []).length ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+            New duplicate groups per week
+          </div>
+          <TrendChart
+            height={130}
+            labels={(s?.weekly || []).map((w) => w.week)}
+            series={[
+              { name: "New duplicate groups", cssVar: "--ember", values: (s?.weekly || []).map((w) => w.new_groups) }
+            ]}
+          />
+        </section>
+      ) : null}
 
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -4746,6 +5042,19 @@ function ConflictsDesk({
             >
               Previously found
             </button>
+            <ExportButton
+              disabled={!(conflicts.data || []).length}
+              onClick={() =>
+                downloadCsv(
+                  "duplicate-groups.csv",
+                  ["Page URL", "Type", "Status", "Links in group", "First found"],
+                  (conflicts.data || []).map((g) => [
+                    g.canonical_url, g.scope, g.resolution_status, g.member_count,
+                    g.detected_at || g.created_at
+                  ])
+                )
+              }
+            />
             <button
               onClick={() => rebuild.mutate()}
               className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
@@ -5488,19 +5797,18 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
             ([dim, key, label]) => {
               const opts = q.data?.facets?.[dim] || [];
               return (
-                <select
+                <FilterMultiSelect
                   key={dim}
-                  className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-                  value={filters[key] || ""}
-                  onChange={(e) => setFilter(key, e.target.value)}
-                >
-                  <option value="">{label}: all</option>
-                  {opts.map((o) => (
-                    <option key={String(o.value)} value={String(o.value)}>
-                      {String(o.label || o.value)} ({o.count})
-                    </option>
-                  ))}
-                </select>
+                  label={label}
+                  withBlanks
+                  options={opts.map((o) => ({
+                    value: String(o.value),
+                    label: String(o.label || o.value),
+                    count: Number(o.count) || 0
+                  }))}
+                  selected={filters[key] ? filters[key].split(",") : []}
+                  onChange={(vals) => setFilter(key, vals.join(","))}
+                />
               );
             }
           )}
@@ -5564,8 +5872,25 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
 
       {/* Group-by pivot */}
       <div className="rounded-xl border border-line bg-panel shadow-card">
-        <div className="flex items-center justify-between border-b border-line p-3">
-          <h3 className="text-sm font-semibold text-ink">Breakdown</h3>
+        <div className="flex items-center justify-between gap-2 border-b border-line p-3">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+            Breakdown
+            <HelpTip text="Pick what to group the filtered links by (user, project, link type…). Every row shows totals, quality and index stats for that group. Click a row to see the exact links behind the numbers." />
+          </h3>
+          <div className="flex items-center gap-2">
+          <ExportButton
+            disabled={!(q.data?.groups || []).length}
+            onClick={() =>
+              downloadCsv(
+                `analytics-by-${groupBy}.csv`,
+                ["Group", "Total", "Avg score", "Pass", "Warning", "Fail", "Indexed", "Nofollow", "Duplicates"],
+                (q.data?.groups || []).map((g) => [
+                  (g.label && String(g.label)) || String(g.key), g.total, g.avg_score,
+                  g.pass, g.warning, g.fail, g.indexed, g.nofollow, g.duplicates
+                ])
+              )
+            }
+          />
           <select
             className="h-9 rounded-md border border-line bg-panel px-3 text-sm"
             value={groupBy}
@@ -5578,6 +5903,7 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
               <option key={v} value={v}>Group by {l}</option>
             ))}
           </select>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-[900px] w-full text-left text-sm">

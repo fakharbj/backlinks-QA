@@ -28,10 +28,19 @@ def test_empty_values_skipped():
 
 def test_known_filters_add_clauses():
     where, params = a._build_where(_ctx(), {"status": "FAIL", "rel": "nofollow"})
-    assert "coalesce(b.override_status, b.status) = :status" in where
-    assert params["status"] == "FAIL"
-    assert "b.current_rel = :rel" in where
-    assert params["rel"] == "nofollow"
+    assert "coalesce(b.override_status, b.status)::text IN (:status_0)" in where
+    assert params["status_0"] == "FAIL"
+    assert "b.current_rel::text IN (:rel_0)" in where
+    assert params["rel_0"] == "nofollow"
+
+
+def test_multi_select_filters_build_in_lists():
+    where, params = a._build_where(_ctx(), {"status": "FAIL,WARNING", "link_type": "Web2.0,(blanks)"})
+    assert "IN (:status_0, :status_1)" in where
+    assert params["status_0"] == "FAIL" and params["status_1"] == "WARNING"
+    # "(blanks)" becomes a NULL/empty branch OR'ed with the IN list.
+    assert "b.link_type IS NULL OR b.link_type = ''" in where
+    assert params["link_type_0"] == "Web2.0"
 
 
 def test_index_unchecked_is_null_check():
@@ -60,8 +69,8 @@ def test_facet_exclude_drops_own_filter():
     # When faceting on 'status', the status filter itself must be excluded so the
     # facet shows counts for every status under the other filters.
     where, _ = a._build_where(_ctx(), {"status": "FAIL", "rel": "nofollow"}, exclude="status")
-    assert "= :status" not in where
-    assert "b.current_rel = :rel" in where
+    assert ":status_0" not in where
+    assert "b.current_rel::text IN (:rel_0)" in where
 
 
 def test_dimensions_are_whitelisted():

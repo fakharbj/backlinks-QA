@@ -38,6 +38,8 @@ class ConflictSummaryOut(BaseModel):
     open: int = 0
     resolved: int = 0
     by_scope: dict[str, int] = {}
+    # Duplicate groups first found per week (last 12 weeks) — for the trend chart.
+    weekly: list[dict] = []
 
 
 class ConflictResolve(BaseModel):

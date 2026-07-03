@@ -35,6 +35,32 @@ def _eq(col: str, key: str):
     return lambda v: (f"{col} = :{key}", {key: v})
 
 
+def _eq_multi(col: str, key: str, *, lower: bool = False):
+    """Single value OR comma-separated multi-select; ``(blanks)`` matches NULL/''.
+    Emits ``col IN (...)`` with individually-bound params (never interpolated)."""
+
+    def build(v):
+        parts = [p.strip() for p in str(v).split(",") if p.strip()]
+        want_blanks = any(p.lower() == "(blanks)" for p in parts)
+        vals = [p.lower() if lower else p for p in parts if p.lower() != "(blanks)"]
+        conds, params = [], {}
+        if vals:
+            names = []
+            for i, val in enumerate(vals[:50]):
+                pname = f"{key}_{i}"
+                names.append(f":{pname}")
+                params[pname] = val
+            conds.append(f"{col} IN ({', '.join(names)})")
+        if want_blanks:
+            conds.append(f"({col} IS NULL OR {col} = '')")
+        if not conds:
+            return None
+        clause = conds[0] if len(conds) == 1 else "(" + " OR ".join(conds) + ")"
+        return (clause, params)
+
+    return build
+
+
 def _ilike_search(v):
     return (
         "(b.source_page_url ILIKE :q OR b.target_url ILIKE :q "
@@ -52,17 +78,31 @@ def _http_class(v):
 
 
 def _index_status(v):
-    if v == "unchecked":
-        return ("b.index_status IS NULL", {})
-    return ("b.index_status = :index_status", {"index_status": v})
+    conds, params = [], {}
+    for i, part in enumerate([p.strip() for p in str(v).split(",") if p.strip()][:10]):
+        if part == "unchecked":
+            conds.append("b.index_status IS NULL")
+        else:
+            params[f"index_status_{i}"] = part
+            conds.append(f"b.index_status = :index_status_{i}")
+    if not conds:
+        return None
+    return ("(" + " OR ".join(conds) + ")", params)
 
 
 def _duplicate_status(v):
-    if v == "duplicate":
-        return ("b.is_duplicate IS TRUE", {})
-    if v == "unique":
-        return ("(b.is_duplicate IS NOT TRUE)", {})
-    return ("b.duplicate_status = :duplicate_status", {"duplicate_status": v})
+    conds, params = [], {}
+    for i, part in enumerate([p.strip() for p in str(v).split(",") if p.strip()][:10]):
+        if part == "duplicate":
+            conds.append("b.is_duplicate IS TRUE")
+        elif part == "unique":
+            conds.append("(b.is_duplicate IS NOT TRUE)")
+        else:
+            params[f"duplicate_status_{i}"] = part
+            conds.append(f"b.duplicate_status = :duplicate_status_{i}")
+    if not conds:
+        return None
+    return ("(" + " OR ".join(conds) + ")", params)
 
 
 def _date_clause(lhs_op: str, key: str, v, *, next_day: bool = False):
@@ -80,16 +120,17 @@ def _date_clause(lhs_op: str, key: str, v, *, next_day: bool = False):
 
 
 _FILTERS: dict[str, Callable] = {
-    "project_id": lambda v: ("b.project_id = :project_id", {"project_id": v}),
-    "assigned_user_label": _eq("b.assigned_user_label", "assigned_user_label"),
-    "link_type": _eq("b.link_type", "link_type"),
-    "rel": _eq("b.current_rel", "rel"),
+    # Multi-select capable (comma lists + "(blanks)"), matching the Backlinks grid.
+    "project_id": _eq_multi("b.project_id::text", "project_id"),
+    "assigned_user_label": _eq_multi("b.assigned_user_label", "assigned_user_label"),
+    "link_type": _eq_multi("b.link_type", "link_type"),
+    "rel": _eq_multi("b.current_rel::text", "rel"),
     "indexability": _eq("b.indexability", "indexability"),
     "vendor_id": lambda v: ("b.vendor_id = :vendor_id", {"vendor_id": v}),
     "campaign_id": lambda v: ("b.campaign_id = :campaign_id", {"campaign_id": v}),
-    "source_domain": lambda v: ("b.source_domain = :source_domain", {"source_domain": str(v).lower()}),
+    "source_domain": _eq_multi("b.source_domain", "source_domain", lower=True),
     "target_domain": _eq("b.target_domain", "target_domain"),
-    "status": lambda v: (f"{_EFF} = :status", {"status": v}),
+    "status": _eq_multi(f"{_EFF}::text", "status"),
     "index_status": _index_status,
     "duplicate_status": _duplicate_status,
     "http_class": _http_class,
