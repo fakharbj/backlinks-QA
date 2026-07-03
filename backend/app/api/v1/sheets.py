@@ -103,6 +103,89 @@ async def writeback_one(
     )
 
 
+@router.get("/{sheet_id}/mapping")
+async def get_mapping(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> dict:
+    """Column-mapping settings: the sheet's real headers (read live from the
+    first enabled tab), the mapping in effect (manual override or auto-detected),
+    the canonical fields available, and the write-back column choices."""
+    import asyncio
+
+    from app.models.sheet_tab import GoogleSheetTab
+    from app.services import import_parse
+    from app.services.sheet_sync_service import _WRITEBACK_HEADERS
+
+    source = await db.get(SheetSource, sheet_id)
+    if source is None or source.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Sheet source not found")
+
+    headers: list[str] = []
+    header_error: str | None = None
+    try:
+        tab = (
+            await db.execute(
+                select(GoogleSheetTab)
+                .where(
+                    GoogleSheetTab.sheet_source_id == sheet_id,
+                    GoogleSheetTab.import_enabled.is_(True),
+                )
+                .order_by(GoogleSheetTab.tab_name)
+            )
+        ).scalars().first()
+        headers, _rows = await asyncio.to_thread(
+            google_sheets.read_project_sheet, source.spreadsheet_id,
+            tab.tab_name if tab else None,
+        )
+    except Exception as exc:  # noqa: BLE001 — mapping UI still works without live headers
+        header_error = str(exc)[:300]
+
+    auto = import_parse.auto_map(headers) if headers else {}
+    manual = dict(source.column_mapping or {})
+    return {
+        "headers": headers,
+        "header_error": header_error,
+        "mapping": manual or auto,
+        "is_manual": bool(manual),
+        "auto_mapping": auto,
+        "fields": import_parse.CANONICAL_FIELDS,
+        "writeback_options": list(_WRITEBACK_HEADERS),
+        "writeback_columns": (source.writeback_columns or {}).get("columns")
+        or list(_WRITEBACK_HEADERS),
+    }
+
+
+@router.put("/{sheet_id}/mapping")
+async def put_mapping(
+    sheet_id: uuid.UUID, payload: dict, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> dict:
+    """Save manual column mapping ({header: field}) and/or the write-back column
+    selection. An empty mapping restores auto-detection."""
+    from app.services import import_parse
+    from app.services.sheet_sync_service import _WRITEBACK_HEADERS
+
+    source = await db.get(SheetSource, sheet_id)
+    if source is None or source.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Sheet source not found")
+
+    raw_mapping = payload.get("column_mapping")
+    if isinstance(raw_mapping, dict):
+        valid_fields = set(import_parse.CANONICAL_FIELDS)
+        source.column_mapping = {
+            str(h)[:200]: f for h, f in raw_mapping.items() if f in valid_fields
+        }
+    raw_wb = payload.get("writeback_columns")
+    if isinstance(raw_wb, list):
+        chosen = [c for c in raw_wb if c in _WRITEBACK_HEADERS]
+        source.writeback_columns = {"columns": chosen or list(_WRITEBACK_HEADERS)}
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="sheet_mapping", entity_id=sheet_id,
+        summary=f"Column mapping updated for '{source.project_name}'",
+    )
+    await db.commit()
+    return {"message": "Mapping saved — it will be used on the next sync."}
+
+
 def _tab_out(t) -> SheetTabOut:
     return SheetTabOut(
         id=t.id, gid=t.gid, tab_name=t.tab_name, link_type_name=t.link_type_name,

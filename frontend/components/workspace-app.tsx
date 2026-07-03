@@ -6061,17 +6061,64 @@ function SheetsDesk({
     queryFn: () => api<SheetSource[]>("/sheets", { token })
   });
 
+  // ── Realtime sync progress: poll sheet_sync runs while any is active ────
+  const syncBatches = useQuery({
+    queryKey: ["sheet-sync-batches", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Batch[]>("/batches?kind=sheet_sync&limit=20", { token }),
+    refetchInterval: (q) =>
+      (q.state.data || []).some((b) => b.status === "running" || b.status === "pending") ? 2500 : 10000
+  });
+  const runningFor = (sourceId: string) =>
+    (syncBatches.data || []).find(
+      (b) =>
+        (b.status === "running" || b.status === "pending") &&
+        String((b.meta as Record<string, unknown>)?.sheet_source_id || "") === sourceId
+    );
+  // Completion detection → toast with the NEW-links result + refresh the table.
+  const prevRunning = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const nowRunning = new Set(
+      (syncBatches.data || []).filter((b) => b.status === "running" || b.status === "pending").map((b) => b.id)
+    );
+    prevRunning.current.forEach((id) => {
+      if (!nowRunning.has(id)) {
+        const done = (syncBatches.data || []).find((b) => b.id === id);
+        if (done) {
+          const newLinks = Number(done.counters?.new_links ?? 0);
+          const failed = Number(done.totals?.failed ?? 0);
+          onNotice(
+            done.status === "failed"
+              ? `Sync failed: ${done.error || "see Batches for details"}`
+              : `Sync finished — ${newLinks} new link${newLinks === 1 ? "" : "s"} added` +
+                  (failed ? `, ${failed} row(s) failed` : "") + "."
+          );
+          queryClient.invalidateQueries({ queryKey: ["sheets"] });
+          queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+        }
+      }
+    });
+    prevRunning.current = nowRunning;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncBatches.data]);
+
+  const [mappingFor, setMappingFor] = useState<string | null>(null);
+
   const syncAll = useMutation({
     mutationFn: () => api<{ message: string }>("/sheets/sync", { method: "POST", token }),
     onSuccess: (r) => {
       onNotice(r.message || "Main sheet sync started");
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["sheet-sync-batches"] }), 1200);
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ["sheets"] }), 1500);
     },
     onError: (e: Error) => onNotice(e.message)
   });
   const syncOne = useMutation({
     mutationFn: (id: string) => api<{ message: string }>(`/sheets/${id}/sync`, { method: "POST", token }),
-    onSuccess: (r) => onNotice(r.message || "Sync started"),
+    onSuccess: (r) => {
+      onNotice(r.message || "Sync started — progress shows below.");
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["sheet-sync-batches"] }), 1200);
+    },
     onError: (e: Error) => onNotice(e.message)
   });
   const writeBack = useMutation({
@@ -6130,50 +6177,107 @@ function SheetsDesk({
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {(sheets.data || []).map((s) => (
-              <tr key={s.id}>
-                <Td>
-                  <div className="font-medium text-ink">{s.project_name}</div>
-                  <div className="max-w-[280px] truncate text-xs text-muted" title={s.source_url || ""}>
-                    {s.source_url}
-                  </div>
-                </Td>
-                <Td>
-                  <span
-                    className={clsx(
-                      "rounded px-2 py-0.5 text-xs font-medium",
-                      s.last_sync_status === "ok" && "bg-ocean/10 text-ocean",
-                      s.last_sync_status === "error" && "bg-danger/10 text-danger",
-                      s.last_sync_status === "running" && "bg-ember/10 text-ember",
-                      !s.last_sync_status && "bg-field text-muted"
-                    )}
-                    title={s.last_sync_error || ""}
-                  >
-                    {s.last_sync_status || "never"}
-                  </span>
-                </Td>
-                <Td>{s.row_count}</Td>
-                <Td>{s.imported_count} / {s.updated_count}</Td>
-                <Td>{formatDate(s.last_synced_at)}</Td>
-                <Td>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => syncOne.mutate(s.id)}
-                      className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" /> Sync
-                    </button>
-                    <button
-                      onClick={() => writeBack.mutate(s.id)}
-                      title="Write QA/index results back to result columns in the sheet"
-                      className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
-                    >
-                      <Upload className="h-3.5 w-3.5" /> Write back
-                    </button>
-                  </div>
-                </Td>
-              </tr>
-            ))}
+            {(sheets.data || []).map((s) => {
+              const live = runningFor(s.id);
+              const newCount = Math.max(0, s.imported_count - s.updated_count);
+              return (
+                <Fragment key={s.id}>
+                  <tr>
+                    <Td>
+                      <div className="font-medium text-ink">{s.project_name}</div>
+                      <div className="max-w-[280px] truncate text-xs text-muted" title={s.source_url || ""}>
+                        {s.source_url}
+                      </div>
+                    </Td>
+                    <Td>
+                      {live ? (
+                        <span className="flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium text-ember">
+                          <Loader2 className="h-3 w-3 animate-spin" /> syncing…
+                        </span>
+                      ) : (
+                        <span
+                          className={clsx(
+                            "rounded px-2 py-0.5 text-xs font-medium",
+                            s.last_sync_status === "ok" && "bg-ocean/10 text-ocean",
+                            s.last_sync_status === "error" && "bg-danger/10 text-danger",
+                            s.last_sync_status === "running" && "bg-ember/10 text-ember",
+                            !s.last_sync_status && "bg-field text-muted"
+                          )}
+                          title={s.last_sync_error || ""}
+                        >
+                          {s.last_sync_status || "never"}
+                        </span>
+                      )}
+                    </Td>
+                    <Td>{s.row_count}</Td>
+                    <Td>
+                      <span title="New = links added for the first time. Refreshed = rows that already existed and were just updated from the sheet.">
+                        <span className="font-semibold text-ocean">{newCount} new</span>
+                        <span className="text-muted"> · {s.updated_count} refreshed</span>
+                      </span>
+                    </Td>
+                    <Td>{formatDate(s.last_synced_at)}</Td>
+                    <Td>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => syncOne.mutate(s.id)}
+                          disabled={Boolean(live)}
+                          className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-50"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" /> Sync
+                        </button>
+                        <button
+                          onClick={() => writeBack.mutate(s.id)}
+                          title="Write QA/index results back to result columns in the sheet"
+                          className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
+                        >
+                          <Upload className="h-3.5 w-3.5" /> Write back
+                        </button>
+                        <button
+                          onClick={() => setMappingFor(mappingFor === s.id ? null : s.id)}
+                          title="Choose which sheet column feeds each field, and which result columns write-back uses"
+                          className={clsx(
+                            "flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition",
+                            mappingFor === s.id
+                              ? "border-ocean bg-ocean/10 text-ocean"
+                              : "border-line text-ink hover:bg-field"
+                          )}
+                        >
+                          <SlidersHorizontal className="h-3.5 w-3.5" /> Mapping
+                        </button>
+                      </div>
+                    </Td>
+                  </tr>
+                  {live ? (
+                    <tr>
+                      <td colSpan={6} className="bg-ocean/5 px-4 py-2.5">
+                        <div className="flex flex-wrap items-center gap-3 text-xs">
+                          <BatchProgress totals={live.totals || {}} />
+                          <span className="text-muted">
+                            {String((live.meta as Record<string, unknown>)?.current_step || "Working…")}
+                          </span>
+                          {Number(live.counters?.new_links ?? 0) > 0 ? (
+                            <span className="font-medium text-ocean">
+                              {Number(live.counters?.new_links)} new so far
+                            </span>
+                          ) : null}
+                          <span className="text-muted">
+                            {Number(live.totals?.done_tabs ?? 0)}/{Number(live.totals?.total_tabs ?? 0)} tabs
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  {mappingFor === s.id ? (
+                    <tr>
+                      <td colSpan={6} className="bg-field/40 p-4">
+                        <SheetMappingEditor token={token} sheetId={s.id} onNotice={onNotice} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
         {!sheets.isLoading && !sheets.data?.length ? (
@@ -6181,6 +6285,144 @@ function SheetsDesk({
         ) : null}
       </div>
     </section>
+  );
+}
+
+function SheetMappingEditor({
+  token,
+  sheetId,
+  onNotice
+}: {
+  token: string | null;
+  sheetId: string;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  type MappingData = {
+    headers: string[];
+    header_error: string | null;
+    mapping: Record<string, string>;
+    is_manual: boolean;
+    auto_mapping: Record<string, string>;
+    fields: string[];
+    writeback_options: string[];
+    writeback_columns: string[];
+  };
+  const data = useQuery({
+    queryKey: ["sheet-mapping", token, sheetId],
+    enabled: Boolean(token),
+    queryFn: () => api<MappingData>(`/sheets/${sheetId}/mapping`, { token })
+  });
+  const [draft, setDraft] = useState<Record<string, string> | null>(null);
+  const [wb, setWb] = useState<string[] | null>(null);
+  const mapping = draft ?? data.data?.mapping ?? {};
+  const wbCols = wb ?? data.data?.writeback_columns ?? [];
+
+  const save = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>(`/sheets/${sheetId}/mapping`, {
+        token,
+        method: "PUT",
+        body: JSON.stringify({ column_mapping: mapping, writeback_columns: wbCols })
+      }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["sheet-mapping", token, sheetId] });
+      setDraft(null);
+      setWb(null);
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const fieldLabel = (f: string) => f.replaceAll("_", " ");
+  if (data.isLoading) {
+    return <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>;
+  }
+  const d = data.data;
+  if (!d) return <Empty label="Could not load mapping." />;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+        Column mapping
+        <HelpTip text="Tell the sync which sheet column feeds each field. Auto-detect handles common names ('Source URL', 'User', 'Anchor'…); set a column manually when your sheet uses different wording. '(ignored)' columns are simply skipped." />
+        <span className="rounded-full bg-field px-2 py-0.5 text-[10px] font-semibold uppercase text-muted">
+          {d.is_manual ? "Manual" : "Auto-detected"}
+        </span>
+      </div>
+      {d.header_error ? (
+        <div className="rounded-lg border border-ember/30 bg-ember/10 p-2 text-xs text-ember">
+          Couldn&apos;t read the sheet&apos;s headers right now: {d.header_error}
+        </div>
+      ) : null}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {(d.headers.length ? d.headers : Object.keys(mapping)).map((h) => (
+          <label key={h} className="text-xs">
+            <span className="mb-0.5 block truncate font-medium text-ink" title={h}>{h}</span>
+            <select
+              value={mapping[h] || ""}
+              onChange={(e) =>
+                setDraft((prev) => {
+                  const next = { ...(prev ?? d.mapping) };
+                  if (e.target.value) next[h] = e.target.value;
+                  else delete next[h];
+                  return next;
+                })
+              }
+              className="h-8 w-full rounded-lg border border-line bg-panel px-2 text-xs"
+            >
+              <option value="">(ignored)</option>
+              {d.fields.map((f) => (
+                <option key={f} value={f}>{fieldLabel(f)}</option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </div>
+      <div>
+        <div className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink">
+          Write-back columns
+          <HelpTip text="Which result columns 'Write back' adds to the sheet. They always go into their own block to the right of your data — your input columns are never touched, and re-syncing keeps working." />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {d.writeback_options.map((c) => (
+            <label key={c} className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-xs hover:bg-field">
+              <input
+                type="checkbox"
+                checked={wbCols.includes(c)}
+                onChange={() =>
+                  setWb((prev) => {
+                    const cur = prev ?? d.writeback_columns;
+                    return cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c];
+                  })
+                }
+                className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+              />
+              {c}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => save.mutate()}
+          disabled={save.isPending}
+          className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+        >
+          {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+          Save mapping
+        </button>
+        <button
+          onClick={() => {
+            setDraft({});
+            setWb(d.writeback_options);
+          }}
+          title="Clear manual choices — the next sync auto-detects columns again"
+          className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field"
+        >
+          Reset to auto
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -264,8 +264,11 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         new_ids = await import_service.process(db, imp.id)
         refreshed = await db.get(Import, imp.id)
         all_new.extend(new_ids)
+        tab_imported = refreshed.imported_rows if refreshed else len(new_ids)
+        tab_new = len(new_ids)
+        tab_existing = max(0, tab_imported - tab_new)
         total_rows += len(rows)
-        total_imported += refreshed.imported_rows if refreshed else len(new_ids)
+        total_imported += tab_imported
         total_failed += refreshed.error_rows if refreshed else 0
         total_skipped += refreshed.duplicate_rows if refreshed else 0
         tab.row_count = len(rows)
@@ -278,15 +281,37 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
                 "done_tabs": done_tabs, "total": total_rows, "done": total_rows,
                 "ok": total_imported, "failed": total_failed, "skipped": total_skipped,
             },
+            counters_inc={"new_links": tab_new, "already_there": tab_existing},
         )
+        # Honest per-tab accounting: NEW links vs rows that already existed
+        # (those are just refreshed) — plus which links are actually new.
         await batch_service.add_log(
             batch_id,
-            f"Tab “{ws['title']}”: {len(rows)} rows — {refreshed.imported_rows if refreshed else 0} "
-            f"imported, {refreshed.error_rows if refreshed else 0} failed",
+            f"Tab “{ws['title']}”: {len(rows)} rows — "
+            f"{tab_new} NEW link{'s' if tab_new != 1 else ''}, "
+            f"{tab_existing} already there (refreshed), "
+            f"{refreshed.error_rows if refreshed else 0} failed",
             level="warn" if (refreshed and refreshed.error_rows) else "info",
             row_ref=ws["title"],
-            data={"import_id": str(imp.id)},
+            data={"import_id": str(imp.id), "new_links": tab_new},
         )
+        if new_ids:
+            from sqlalchemy import bindparam
+            from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+            from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+            sample_stmt = text(
+                "SELECT source_page_url FROM backlink_records WHERE id = ANY(:ids) LIMIT 10"
+            ).bindparams(bindparam("ids", type_=PG_ARRAY(PG_UUID(as_uuid=True))))
+            sample = (
+                await db.execute(sample_stmt, {"ids": list(new_ids[:10])})
+            ).scalars().all()
+            more = f" (+{len(new_ids) - len(sample)} more)" if len(new_ids) > len(sample) else ""
+            await batch_service.add_log(
+                batch_id,
+                f"New in “{ws['title']}”: " + ", ".join(sample) + more,
+                row_ref=ws["title"],
+            )
 
     # Remove legacy single-tab rows (imported before multi-tab existed, sheet_tab NULL)
     # now superseded by the tab-aware imports above.
@@ -331,6 +356,12 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     except Exception as exc:  # noqa: BLE001 — counters are best-effort
         log.warning("dup_counter_failed", error=repr(exc))
 
+    await batch_service.add_log(
+        batch_id,
+        f"Sync finished: {len(all_new)} NEW link{'s' if len(all_new) != 1 else ''} added, "
+        f"{max(0, total_imported - len(all_new))} already existed (refreshed), "
+        f"{total_failed} failed.",
+    )
     await batch_service.update(batch_id, meta={"current_step": "Finished"})
     await batch_service.finish(batch_id)
 
@@ -361,6 +392,12 @@ async def writeback_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dic
         )
     ).scalars().all()
 
+    # Which result columns to write — configurable per sheet (Mapping settings);
+    # default = all of them.
+    chosen = (source.writeback_columns or {}).get("columns") or list(_WRITEBACK_HEADERS)
+    chosen = [c for c in _WRITEBACK_HEADERS if c in chosen]  # keep canonical order
+    col_idx = [_WRITEBACK_HEADERS.index(c) for c in chosen]
+
     # Group rows by their sub-sheet/tab so each tab is written back to itself.
     by_tab: dict[str | None, dict[int, list]] = {}
     for bl in backlinks:
@@ -369,13 +406,14 @@ async def writeback_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dic
         except (TypeError, ValueError):
             continue
         status = bl.override_status or bl.status
-        by_tab.setdefault(bl.sheet_tab, {})[sheet_row] = [
+        full = [
             status.value if status else "",
             bl.score if bl.score is not None else "",
             bl.index_status or "unchecked",
             bl.duplicate_status or "unique",
             bl.last_checked_at.strftime("%Y-%m-%d %H:%M") if bl.last_checked_at else "",
         ]
+        by_tab.setdefault(bl.sheet_tab, {})[sheet_row] = [full[i] for i in col_idx]
     if not by_tab:
         return {"rows": 0}
 
@@ -386,7 +424,7 @@ async def writeback_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dic
         try:
             await asyncio.to_thread(
                 google_sheets.write_back,
-                source.spreadsheet_id, tab, _WRITEBACK_HEADERS, values_by_row,
+                source.spreadsheet_id, tab, chosen, values_by_row,
             )
             written += 1
         except Exception as exc:  # noqa: BLE001 - write-back failure must not crash
