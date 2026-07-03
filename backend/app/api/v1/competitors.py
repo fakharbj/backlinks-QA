@@ -44,6 +44,21 @@ async def list_sheets(project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> l
     return [CompetitorSheetOut.model_validate(r) for r in rows]
 
 
+@router.delete("/sheets/{sheet_id}")
+async def delete_sheet(
+    sheet_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> dict:
+    name = await competitor_service.delete_sheet(db, ctx, sheet_id)
+    await audit_service.record(
+        db, action=AuditAction.DELETE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="competitor_sheet", entity_id=sheet_id,
+        summary=f"Deleted competitor upload '{name}'",
+    )
+    await db.commit()
+    return {"message": f"Upload “{name}” deleted and opportunities recalculated"}
+
+
 @router.get("/domains", response_model=list[CompetitorDomainOut])
 async def list_domains(
     project_id: uuid.UUID,

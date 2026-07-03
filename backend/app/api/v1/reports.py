@@ -74,6 +74,24 @@ async def get_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Rep
     return ReportOut.model_validate(await report_service.get_report(db, ctx, report_id))
 
 
+@router.delete("/{report_id}")
+async def delete_report(
+    report_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EXPORT_REPORTS)),
+) -> dict:
+    """Delete one report version. The stored file becomes unreferenced (no
+    storage-delete API here) — harmless, and regenerating creates a fresh key."""
+    report = await report_service.get_report(db, ctx, report_id)
+    title = report.title
+    await db.delete(report)
+    await audit_service.record(
+        db, action=AuditAction.DELETE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="report", entity_id=report_id, summary=f"Deleted report {title[:120]}",
+    )
+    await db.commit()
+    return {"message": "Report deleted"}
+
+
 @router.get("/{report_id}/download")
 async def download_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> StreamingResponse:
     report = await report_service.get_report(db, ctx, report_id)

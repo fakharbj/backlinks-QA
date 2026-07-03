@@ -178,6 +178,21 @@ async def override_backlink(
     return BacklinkRow.model_validate(bl)
 
 
+@router.delete("/{backlink_id}", response_model=Message)
+async def delete_backlink(
+    backlink_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> Message:
+    source_url = await backlink_service.delete_backlink(db, ctx, backlink_id)
+    await audit_service.record(
+        db, action=AuditAction.DELETE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="backlink", entity_id=backlink_id,
+        summary=f"Deleted backlink {source_url[:120]}",
+    )
+    await db.commit()
+    return Message(message="Backlink deleted")
+
+
 @router.post("/{backlink_id}/recheck", response_model=RecheckResponse)
 async def recheck_one(
     backlink_id: uuid.UUID, db: DbSession,

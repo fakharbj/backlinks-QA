@@ -76,7 +76,22 @@ async def update_project(
 
 
 async def delete_project(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> None:
+    """Delete a project and everything that belongs to it. Backlinks, imports,
+    sheets and competitor sheets cascade via FKs; the tables below reference the
+    project without an FK, so they're cleaned explicitly. Batches are KEPT as
+    historical audit (their project shows as '—' afterwards)."""
+    from sqlalchemy import text as _text
+
     project = await get_project(db, ctx, project_id)
+    for table in (
+        "task_assignments",
+        "competitor_source_domains",
+        "competitor_domain_decisions",
+    ):
+        await db.execute(
+            _text(f"DELETE FROM {table} WHERE workspace_id = :ws AND project_id = :pid"),  # noqa: S608 — fixed table list
+            {"ws": ctx.workspace_id, "pid": project_id},
+        )
     await db.delete(project)
 
 

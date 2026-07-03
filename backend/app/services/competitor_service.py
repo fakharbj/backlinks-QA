@@ -161,6 +161,23 @@ async def recompute_domains(
     return {"domains": row.get("domains", 0), "new": row.get("new", 0), "existing": row.get("existing", 0)}
 
 
+async def delete_sheet(db: AsyncSession, ctx: AuthContext, sheet_id: uuid.UUID) -> str:
+    """Delete one competitor upload and its links, then rebuild the domain
+    comparison so opportunity counts stay truthful. Returns the sheet name."""
+    sheet = await db.get(CompetitorSheet, sheet_id)
+    if sheet is None or sheet.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Competitor upload not found")
+    await _ensure_project(db, ctx, sheet.project_id)
+    name, project_id = sheet.name, sheet.project_id
+    await db.execute(
+        delete(CompetitorBacklink).where(CompetitorBacklink.competitor_sheet_id == sheet_id)
+    )
+    await db.delete(sheet)
+    await db.flush()
+    await recompute_domains(db, ctx.workspace_id, project_id)
+    return name
+
+
 async def list_sheets(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> list[CompetitorSheet]:
     await _ensure_project(db, ctx, project_id)
     return list(

@@ -60,6 +60,7 @@ import {
   BatchLog,
   ImportRowError,
   CompetitorDomain,
+  CompetitorSheet,
   CompetitorSummary,
   ConflictGroup,
   ConflictSummary,
@@ -1605,6 +1606,18 @@ function BacklinkDetailDrawer({
     onError: (err: Error) => onNotice(err.message)
   });
 
+  const deleteLink = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>(`/backlinks/${backlinkId}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Backlink deleted");
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      onClose();
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+
   const override = useMutation({
     mutationFn: (payload: { status: string; note: string }) =>
       api<BacklinkRow>(`/backlinks/${backlinkId}/override`, {
@@ -1633,6 +1646,18 @@ function BacklinkDetailDrawer({
             <p className="truncate text-xs text-muted">{data?.source_page_url}</p>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (window.confirm("Delete this backlink? Its history stays in past runs, but the link disappears from every list and count.")) {
+                  deleteLink.mutate();
+                }
+              }}
+              title="Delete this backlink (admins/editors only)"
+              className="grid h-9 w-9 place-items-center rounded-md border border-danger/40 text-danger transition hover:bg-danger/10"
+              aria-label="Delete backlink"
+            >
+              {deleteLink.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            </button>
             <button
               onClick={() => recheck.mutate()}
               className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
@@ -2680,6 +2705,16 @@ function BatchesDesk({
         { token }
       )
   });
+  const queryClient = useQueryClient();
+  const deleteBatch = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/batches/${id}`, { token, method: "DELETE" }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      setOpenId(null);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
 
   return (
     <section className="space-y-4">
@@ -2772,6 +2807,19 @@ function BatchesDesk({
                           ) : null}
                           {b.meta?.current_step ? (
                             <div className="mb-2 text-xs text-muted">Current step: {String(b.meta.current_step)}</div>
+                          ) : null}
+                          {b.status !== "running" ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm("Remove this run and its logs from history? (Admin only)")) {
+                                  deleteBatch.mutate(b.id);
+                                }
+                              }}
+                              className="mb-2 flex items-center gap-1.5 text-xs font-medium text-danger hover:underline"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" /> Remove from history
+                            </button>
                           ) : null}
                           <div className="space-y-1">
                             {(logs.data || []).map((l, i) => (
@@ -2898,6 +2946,22 @@ function CompetitorDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const sheets = useQuery({
+    queryKey: ["competitor-sheets", token, projectId],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () => api<CompetitorSheet[]>(`/competitors/sheets?project_id=${projectId}`, { token })
+  });
+  const deleteSheet = useMutation({
+    mutationFn: (id: string) =>
+      api<{ message: string }>(`/competitors/sheets/${id}`, { token, method: "DELETE" }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["competitor-sheets"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-summary"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
   const checkMetrics = useMutation({
     mutationFn: () =>
       api<{ checked: number; from_cache: number; api_calls: number; skipped_fresh: number }>(
@@ -3000,6 +3064,35 @@ function CompetitorDesk({
           </button>
         </div>
       </section>
+
+      {(sheets.data || []).length ? (
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Uploads" />
+          <div className="divide-y divide-line">
+            {(sheets.data || []).map((sh) => (
+              <div key={sh.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
+                <div className="min-w-0">
+                  <span className="font-medium text-ink">{sh.name}</span>{" "}
+                  <span className="text-xs text-muted">
+                    {sh.total_rows} links · {sh.new_domains} new / {sh.existing_domains} existing · {formatDate(sh.created_at)}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete upload “${sh.name}” and its ${sh.total_rows} competitor links? Opportunities will be recalculated.`)) {
+                      deleteSheet.mutate(sh.id);
+                    }
+                  }}
+                  className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
+                  aria-label={`Delete upload ${sh.name}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-3">
@@ -3206,6 +3299,15 @@ function AlertsDesk({
     },
     onError: (err: Error) => onNotice(err.message)
   });
+  const deleteRule = useMutation({
+    mutationFn: (id: string) =>
+      api<{ message: string }>(`/alert-rules/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Alert rule deleted");
+      queryClient.invalidateQueries({ queryKey: ["alerts"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
 
   return (
     <section className="space-y-5">
@@ -3334,7 +3436,18 @@ function AlertsDesk({
                     {rule.is_active ? "" : " · paused"}
                   </div>
                 </div>
-                <Severity value={rule.min_severity} />
+                <div className="flex items-center gap-2">
+                  <Severity value={rule.min_severity} />
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Delete alert rule “${rule.name}”?`)) deleteRule.mutate(rule.id);
+                    }}
+                    className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
+                    aria-label={`Delete rule ${rule.name}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             ))}
             {!alerts.isLoading && !alerts.data?.length ? <Empty label="No alert rules yet" /> : null}
@@ -3530,6 +3643,16 @@ function ReportsDesk({
   }
 
   const activeType = REPORT_TYPES.find((t) => t.value === type);
+
+  const deleteReport = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/reports/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Report deleted");
+      queryClient.invalidateQueries({ queryKey: ["reports"] });
+      setViewReport(null);
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
 
   // In-app report viewer (paginated over the stored file — no download needed).
   const [viewReport, setViewReport] = useState<Report | null>(null);
@@ -3729,6 +3852,7 @@ function ReportsDesk({
                 setViewReport(r);
                 setViewOffset(0);
               }}
+              onDelete={(r) => deleteReport.mutate(r.id)}
             />
           ))}
           {reports.isLoading ? <Empty label="Loading reports…" /> : null}
@@ -3828,11 +3952,13 @@ function FilterSummary({ filters }: { filters?: Record<string, unknown> }) {
 function ReportGroup({
   versions,
   onDownload,
-  onView
+  onView,
+  onDelete
 }: {
   versions: Report[];
   onDownload: (r: Report) => void;
   onView: (r: Report) => void;
+  onDelete: (r: Report) => void;
 }) {
   const [open, setOpen] = useState(false);
   const latest = versions[0];
@@ -3872,6 +3998,16 @@ function ReportGroup({
             </button>
           ) : null}
           <button
+            onClick={() => {
+              if (window.confirm(`Delete report “${latest.title}” (latest version)?`)) onDelete(latest);
+            }}
+            title="Delete this report version"
+            className="grid h-9 w-9 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
+            aria-label="Delete report"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+          <button
             disabled={latest.status !== "completed"}
             onClick={() => onDownload(latest)}
             className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
@@ -3901,13 +4037,25 @@ function ReportGroup({
                       {r.row_count ?? "—"} links · {(r.format || "").toUpperCase()} · {formatDate(r.created_at)}
                     </span>
                   </div>
-                  <button
-                    disabled={r.status !== "completed"}
-                    onClick={() => onDownload(r)}
-                    className="flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Download className="h-3.5 w-3.5" /> Download
-                  </button>
+                  <span className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => {
+                        if (window.confirm("Delete this older report version?")) onDelete(r);
+                      }}
+                      title="Delete this version"
+                      className="grid h-7 w-7 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
+                      aria-label="Delete report version"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      disabled={r.status !== "completed"}
+                      onClick={() => onDownload(r)}
+                      className="flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Download className="h-3.5 w-3.5" /> Download
+                    </button>
+                  </span>
                 </div>
               ))}
             </div>
@@ -4926,6 +5074,33 @@ function SettingsDesk({
     onError: (e: Error) => onNotice(e.message)
   });
 
+  const projectsForName = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const deleteProject = useMutation({
+    mutationFn: async (typedName: string) => {
+      const current = (projectsForName.data || []).find((p) => p.id === projectId);
+      if (!current) throw new Error("Project not found.");
+      if (typedName.toLowerCase() !== current.name.trim().toLowerCase()) {
+        throw new Error("The name you typed doesn't match — nothing was deleted.");
+      }
+      return api<{ message: string }>(`/projects/${projectId}`, { token, method: "DELETE" });
+    },
+    onSuccess: () => {
+      onNotice("Project deleted.");
+      try {
+        localStorage.setItem("ls_project", "");
+        localStorage.setItem("ls_tab", "overview");
+      } catch {
+        /* ignore */
+      }
+      window.location.href = `${window.location.pathname}?tab=overview`;
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
   const s = settings.data;
   return (
     <section className="space-y-5">
@@ -5049,6 +5224,31 @@ function SettingsDesk({
             Per‑parameter scoring weights live in <strong>Global Settings → Scoring</strong> and can
             be overridden per project there.
           </p>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-danger/30 bg-danger/5">
+        <SectionTitle title="Danger zone" />
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+          <p className="max-w-md text-sm text-muted">
+            Deleting this project removes <strong className="text-ink">all of its backlinks,
+            imports, sheets, competitor data and tasks</strong>. Past runs stay in Batches for
+            audit. This cannot be undone.
+          </p>
+          <button
+            onClick={() => {
+              const name = window.prompt(
+                "This permanently deletes the project and all its data.\nType the project name to confirm:"
+              );
+              if (name === null) return;
+              deleteProject.mutate(name.trim());
+            }}
+            disabled={deleteProject.isPending}
+            className="flex h-10 items-center gap-2 rounded-lg bg-danger px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+          >
+            {deleteProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Delete project
+          </button>
         </div>
       </section>
       </section>

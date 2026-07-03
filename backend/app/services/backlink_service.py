@@ -142,6 +142,51 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
     return stmt
 
 
+async def delete_backlink(db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID) -> str:
+    """Delete one backlink plus its live issue rows and duplicate-group
+    membership (groups left with fewer than 2 links are removed too). Crawl
+    history stays as immutable audit. Returns the deleted source URL."""
+    from sqlalchemy import delete as sa_delete
+
+    from app.models.conflict import BacklinkConflict, BacklinkConflictMember
+
+    bl = await db.get(BacklinkRecord, backlink_id)
+    if bl is None or bl.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Backlink not found")
+    ctx.assert_project(bl.project_id)
+    source_url = bl.source_page_url
+
+    await db.execute(sa_delete(BacklinkIssue).where(BacklinkIssue.backlink_id == backlink_id))
+    conflict_ids = list(
+        (
+            await db.execute(
+                select(BacklinkConflictMember.conflict_id).where(
+                    BacklinkConflictMember.backlink_id == backlink_id
+                )
+            )
+        ).scalars().all()
+    )
+    await db.execute(
+        sa_delete(BacklinkConflictMember).where(BacklinkConflictMember.backlink_id == backlink_id)
+    )
+    for cid in conflict_ids:
+        remaining = (
+            await db.execute(
+                select(func.count())
+                .select_from(BacklinkConflictMember)
+                .where(BacklinkConflictMember.conflict_id == cid)
+            )
+        ).scalar_one()
+        if remaining < 2:  # a "duplicate group" of one is no duplicate at all
+            await db.execute(
+                sa_delete(BacklinkConflictMember).where(BacklinkConflictMember.conflict_id == cid)
+            )
+            await db.execute(sa_delete(BacklinkConflict).where(BacklinkConflict.id == cid))
+    await db.delete(bl)
+    await db.flush()
+    return source_url
+
+
 def _sort_column(sort: str):
     if sort == "last_checked_at":
         return func.coalesce(BacklinkRecord.last_checked_at, _EPOCH)

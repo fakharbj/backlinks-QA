@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from app.core.deps import AuthCtx, ReadSession
+from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.errors import NotFoundError
-from app.models.batch import Batch
+from app.core.rbac import Permission
+from app.models.batch import Batch, BatchLog
 from app.services import batch_service
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -71,6 +72,23 @@ async def get_batch(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Batch
     if b is None or b.workspace_id != ctx.workspace_id:
         raise NotFoundError("Batch not found")
     return _out(b)
+
+
+@router.delete("/{batch_id}")
+async def delete_batch(
+    batch_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
+) -> dict:
+    """Remove one run from history (admin housekeeping; its logs go with it)."""
+    from sqlalchemy import delete as sa_delete
+
+    b = await db.get(Batch, batch_id)
+    if b is None or b.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Batch not found")
+    await db.execute(sa_delete(BatchLog).where(BatchLog.batch_id == batch_id))
+    await db.delete(b)
+    await db.commit()
+    return {"message": "Run removed from history"}
 
 
 @router.get("/{batch_id}/logs", response_model=list[BatchLogOut])
