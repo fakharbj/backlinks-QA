@@ -223,6 +223,15 @@ per-sheet progress row, completion toast), honest new-vs-refreshed accounting
 (`GET/PUT /sheets/{id}/mapping`, live headers, auto vs manual, audited PUT),
 configurable write-back columns (`sheet_sources.writeback_columns`).
 
+**Brief-perfection pass also shipped** (no new migration, 128 tests): sheet
+sync **auto-creates users** (`SHEETS_AUTO_CREATE_USERS`, Viewer + project-scoped,
+case-insensitive label matching, links unlinked catalog mappings, attributes
+rows; import resolves the User column via the catalog), Performance custom date
+range + custom compare window (`compare_from/to`) + user-vs-user side-by-side,
+Tasks **Schedule grid** (users×days) + per-user productivity override UI
+(`DELETE /workforce/productivity`), Team per-member **Projects** scoping column
+(`GET/PUT /team/members/{id}/projects`).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
