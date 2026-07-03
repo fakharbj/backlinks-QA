@@ -81,7 +81,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "team" | "employees" | "scoring" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "performance" | "team" | "employees" | "scoring" | "settings";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -294,7 +294,9 @@ export function WorkspaceApp() {
             <Backlinks token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "conflicts" ? <ConflictsDesk token={token} onNotice={setNotice} /> : null}
-          {tab === "domains" ? <SourceDomainsDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "domains" ? (
+            <SourceDomainsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+          ) : null}
           {tab === "competitors" ? (
             <CompetitorDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -304,6 +306,9 @@ export function WorkspaceApp() {
           {tab === "sheets" ? <SheetsDesk token={token} onNotice={setNotice} /> : null}
           {tab === "batches" ? (
             <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+          ) : null}
+          {tab === "performance" ? (
+            <PerformanceDesk token={token} projectId={activeProjectId} />
           ) : null}
           {tab === "alerts" ? (
             <AlertsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
@@ -417,6 +422,7 @@ const WORKSPACE_NAV: NavGroup[] = [
   {
     label: "Workspace",
     items: [
+      ["performance", "Performance", Activity],
       ["team", "Team", Users],
       ["employees", "Employees", UserCog],
       ["scoring", "Scoring", SlidersHorizontal],
@@ -441,6 +447,7 @@ const PROJECT_NAV: NavGroup[] = [
     label: "Insights",
     items: [
       ["analytics", "Analytics", BarChart3],
+      ["performance", "Performance", Activity],
       ["reports", "Reports", FileSpreadsheet],
       ["alerts", "Alerts", Bell]
     ]
@@ -719,6 +726,20 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
     queryFn: () =>
       api<Dashboard>(projectId ? `/dashboard?project_id=${projectId}` : "/dashboard", { token })
   });
+  const [trendDays, setTrendDays] = useState("30");
+  const trends = useQuery({
+    queryKey: ["dashboard-trends", token, projectId, trendDays],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{
+        new_links: number; new_domains: number; new_indexed: number;
+        prev_links: number; prev_domains: number;
+        weekly: Array<{ week: string; links: number; new_domains: number }>;
+      }>(
+        `/dashboard/trends?days=${trendDays}${projectId ? `&project_id=${projectId}` : ""}`,
+        { token }
+      )
+  });
 
   const stats = dashboard.data;
   return (
@@ -741,6 +762,69 @@ function Overview({ token, projectId }: { token: string | null; projectId: strin
         <Metric label="Review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum" />
         <Metric label="Avg score" value={stats?.totals.avg_score ?? "-"} icon={Gauge} tone="ink" />
       </div>
+
+      {/* Timeframe activity + previous-period comparison */}
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex items-center justify-between border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">Activity</h3>
+          <select
+            value={trendDays}
+            onChange={(e) => setTrendDays(e.target.value)}
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+          >
+            {TIMEFRAMES.map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </div>
+        <div className="grid gap-3 p-4 sm:grid-cols-3">
+          <div className="rounded-lg border border-line bg-field/50 p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">New links</div>
+            <div className="mt-1 text-2xl font-bold text-ink">
+              {trends.data?.new_links ?? 0}
+              <DeltaPill now={trends.data?.new_links ?? 0} prev={trends.data?.prev_links} />
+            </div>
+            <div className="text-[11px] text-muted">previous period: {trends.data?.prev_links ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-line bg-field/50 p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">
+              New source domains {projectId ? "(for this project)" : ""}
+            </div>
+            <div className="mt-1 text-2xl font-bold text-ink">
+              {trends.data?.new_domains ?? 0}
+              <DeltaPill now={trends.data?.new_domains ?? 0} prev={trends.data?.prev_domains} />
+            </div>
+            <div className="text-[11px] text-muted">previous period: {trends.data?.prev_domains ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-line bg-field/50 p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">Indexed (new links)</div>
+            <div className="mt-1 text-2xl font-bold text-ink">{trends.data?.new_indexed ?? 0}</div>
+            <div className="text-[11px] text-muted">
+              {pct(trends.data?.new_indexed ?? 0, trends.data?.new_links ?? 0)} of new links
+            </div>
+          </div>
+        </div>
+        {(trends.data?.weekly || []).length ? (
+          <div className="space-y-1.5 border-t border-line p-4">
+            {(() => {
+              const weeks = trends.data?.weekly || [];
+              const max = Math.max(1, ...weeks.map((w) => w.links));
+              return weeks.map((w) => (
+                <div key={w.week} className="flex items-center gap-3 text-xs">
+                  <span className="w-20 shrink-0 text-muted">wk {w.week.slice(5)}</span>
+                  <span className="flex h-2.5 flex-1 overflow-hidden rounded-full bg-field">
+                    <span className="h-full bg-ocean" style={{ width: `${(w.links / max) * 100}%` }} />
+                  </span>
+                  <span className="w-40 shrink-0 text-right text-muted">
+                    {w.links} links · {w.new_domains} new domains
+                  </span>
+                </div>
+              ));
+            })()}
+          </div>
+        ) : null}
+      </section>
+
       <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
         <section className="rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Issue Mix" />
@@ -1593,6 +1677,120 @@ function ImportDesk({
   );
 }
 
+function DeltaPill({ now, prev }: { now: number; prev?: number | null }) {
+  if (prev == null) return null;
+  const d = now - prev;
+  if (d === 0) return <span className="ml-1 text-[10px] text-muted">±0</span>;
+  return (
+    <span className={clsx("ml-1 text-[10px] font-semibold", d > 0 ? "text-ocean" : "text-danger")}>
+      {d > 0 ? "+" : ""}{d}
+    </span>
+  );
+}
+
+const TIMEFRAMES: Array<[string, string]> = [
+  ["30", "Last 30 days"],
+  ["90", "Last 3 months"],
+  ["180", "Last 6 months"],
+  ["365", "Last 12 months"],
+  ["3650", "All time"]
+];
+
+function PerformanceDesk({ token, projectId }: { token: string | null; projectId: string }) {
+  const [days, setDays] = useState("30");
+
+  type PerfUser = {
+    user_label: string; links: number; indexed: number; pass: number; fail: number;
+    duplicates: number; avg_score: number | null;
+    project_new_domains: number; global_new_domains: number;
+    previous: Omit<PerfUser, "previous"> | null;
+  };
+  const perf = useQuery({
+    queryKey: ["performance", token, days, projectId],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ from: string; to: string; users: PerfUser[] }>(
+        `/performance/users?days=${days}&compare=true${projectId ? `&project_id=${projectId}` : ""}`,
+        { token }
+      )
+  });
+
+  const users = perf.data?.users || [];
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Team performance</h2>
+          <p className="text-sm text-muted">
+            Links created, new source domains and quality per person
+            {projectId ? " — this project only" : " — all projects"}. Small numbers show the
+            change vs the previous period.
+          </p>
+        </div>
+        <select
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+        >
+          {TIMEFRAMES.map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr>
+                <Th>User</Th>
+                <Th>Links</Th>
+                <Th>
+                  <span title="First-ever link from that source domain within the project — even if the domain exists globally">
+                    New domains (project)
+                  </span>
+                </Th>
+                <Th>
+                  <span title="First-ever link from that source domain anywhere in the workspace">
+                    New domains (overall)
+                  </span>
+                </Th>
+                <Th>Indexed</Th>
+                <Th>Pass / Fail</Th>
+                <Th>Duplicates</Th>
+                <Th>Avg score</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {users.map((u) => (
+                <tr key={u.user_label} className="hover:bg-field/60">
+                  <Td><span className="font-medium text-ink">{u.user_label}</span></Td>
+                  <Td>{u.links}<DeltaPill now={u.links} prev={u.previous?.links} /></Td>
+                  <Td>{u.project_new_domains}<DeltaPill now={u.project_new_domains} prev={u.previous?.project_new_domains} /></Td>
+                  <Td>{u.global_new_domains}<DeltaPill now={u.global_new_domains} prev={u.previous?.global_new_domains} /></Td>
+                  <Td>{u.indexed} · {pct(u.indexed, u.links)}</Td>
+                  <Td>
+                    <span className="text-ocean">{u.pass}</span> /{" "}
+                    <span className="text-danger">{u.fail}</span>
+                  </Td>
+                  <Td><span className="text-plum">{u.duplicates}</span></Td>
+                  <Td>{u.avg_score ?? "-"}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {perf.isLoading ? (
+            <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+          ) : null}
+          {!perf.isLoading && !users.length ? (
+            <Empty label="No links created in this period." />
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const BATCH_KIND_LABEL: Record<string, string> = {
   import: "Import",
   sheet_sync: "Sheet sync",
@@ -1837,6 +2035,8 @@ function CompetitorDesk({
   const [name, setName] = useState("");
   const [pasted, setPasted] = useState("");
   const [cat, setCat] = useState("");
+  const [hideDismissed, setHideDismissed] = useState(true);
+  const [hideGuest, setHideGuest] = useState(false);
 
   const summary = useQuery({
     queryKey: ["competitor-summary", token, projectId],
@@ -1844,14 +2044,52 @@ function CompetitorDesk({
     queryFn: () => api<CompetitorSummary>(`/competitors/summary?project_id=${projectId}`, { token })
   });
   const domains = useQuery({
-    queryKey: ["competitor-domains", token, projectId, cat],
+    queryKey: ["competitor-domains", token, projectId, cat, hideDismissed, hideGuest],
     enabled: Boolean(token) && Boolean(projectId),
     queryFn: () =>
       api<CompetitorDomain[]>(
-        `/competitors/domains?project_id=${projectId}${cat ? `&category=${cat}` : ""}`,
+        `/competitors/domains?project_id=${projectId}${cat ? `&category=${cat}` : ""}` +
+          `&include_dismissed=${!hideDismissed}&exclude_guest_posts=${hideGuest}`,
         { token }
       )
   });
+  const decide = useMutation({
+    mutationFn: (p: { domain_key: string; status: string }) =>
+      api<CompetitorSummary>("/competitors/domains/decision", {
+        token,
+        method: "PATCH",
+        body: JSON.stringify({ project_id: projectId, ...p })
+      }),
+    onSuccess: (_r, p) => {
+      onNotice(p.status === "dismissed" ? `${p.domain_key} dismissed.` : `${p.domain_key} re-opened.`);
+      queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-summary"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const exportCsv = () => {
+    const rows = domains.data || [];
+    const head = "domain,status,competitor_links,our_links,indexed_pct,guest_post";
+    const body = rows
+      .map((d) =>
+        [
+          d.domain_key,
+          d.decision === "dismissed" ? "dismissed" : d.category,
+          d.url_count,
+          d.our_link_count,
+          d.our_indexed_pct ?? "",
+          d.has_guest_post ? "yes" : ""
+        ].join(",")
+      )
+      .join("\n");
+    const blob = new Blob([`${head}\n${body}`], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "competitor-opportunities.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
   const ingest = useMutation({
     mutationFn: () =>
       api<{ id: string }>("/competitors/ingest", {
@@ -1896,7 +2134,7 @@ function CompetitorDesk({
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
             rows={6}
-            placeholder={"https://blog.example.com/post-linking-to-competitor\nhttps://directory.example.com/listing, brand anchor, dofollow"}
+            placeholder={"https://blog.example.com/post-linking-to-competitor\nhttps://directory.example.com/listing, brand anchor, dofollow, Guest Post"}
             className="w-full rounded-md border border-line p-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ocean/20"
           />
           <button
@@ -1913,39 +2151,99 @@ function CompetitorDesk({
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-3">
           <h3 className="text-sm font-semibold text-ink">Competitor source domains</h3>
-          <select
-            value={cat}
-            onChange={(e) => setCat(e.target.value)}
-            className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
-          >
-            <option value="">All</option>
-            <option value="new_opportunity">New opportunities</option>
-            <option value="existing">Already have</option>
-          </select>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={cat}
+              onChange={(e) => setCat(e.target.value)}
+              className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
+            >
+              <option value="">All</option>
+              <option value="new_opportunity">New opportunities</option>
+              <option value="existing">Already have</option>
+            </select>
+            <button
+              onClick={() => setHideDismissed((v) => !v)}
+              className={clsx(
+                "h-8 rounded-full border px-3 text-xs font-medium transition",
+                hideDismissed ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+              )}
+            >
+              Hide dismissed
+            </button>
+            <button
+              onClick={() => setHideGuest((v) => !v)}
+              title="Hide domains whose competitor links are tagged Guest Post"
+              className={clsx(
+                "h-8 rounded-full border px-3 text-xs font-medium transition",
+                hideGuest ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+              )}
+            >
+              Hide guest posts
+            </button>
+            <button
+              onClick={exportCsv}
+              disabled={!(domains.data || []).length}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+            >
+              <Download className="h-3.5 w-3.5" /> Export CSV
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-field text-xs uppercase text-muted">
-              <tr><Th>Domain</Th><Th>Status</Th><Th>Competitor links</Th><Th>Our links</Th><Th>Indexed %</Th></tr>
+              <tr>
+                <Th>Domain</Th><Th>Status</Th><Th>Competitor links</Th><Th>Our links</Th><Th>Indexed %</Th><Th>Action</Th>
+              </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {(domains.data || []).map((d) => (
-                <tr key={d.id} className="hover:bg-field/60">
+                <tr key={d.id} className={clsx("hover:bg-field/60", d.decision === "dismissed" && "opacity-55")}>
                   <Td>
                     <a href={`https://${d.domain_key}`} target="_blank" rel="noreferrer" className="text-ocean hover:underline">
                       {d.domain_key}
                     </a>
+                    {d.has_guest_post ? (
+                      <span className="ml-1.5 rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum">
+                        Guest post
+                      </span>
+                    ) : null}
                   </Td>
                   <Td>
-                    {d.category === "new_opportunity" ? (
+                    {d.decision === "dismissed" ? (
+                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title={d.decision_reason || "Dismissed manually"}>
+                        Dismissed
+                      </span>
+                    ) : d.category === "new_opportunity" ? (
                       <span className="rounded bg-ocean/10 px-2 py-0.5 text-xs font-medium text-ocean">Opportunity</span>
                     ) : (
-                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted">Have it</span>
+                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title="Removed from opportunities because this project already has a link from this domain">
+                        Already used
+                      </span>
                     )}
                   </Td>
                   <Td>{d.url_count}</Td>
                   <Td>{d.our_link_count}</Td>
                   <Td>{d.our_indexed_pct != null ? `${d.our_indexed_pct}%` : "-"}</Td>
+                  <Td>
+                    {d.category === "new_opportunity" ? (
+                      d.decision === "dismissed" ? (
+                        <button
+                          onClick={() => decide.mutate({ domain_key: d.domain_key, status: "open" })}
+                          className="text-xs font-medium text-ocean hover:underline"
+                        >
+                          Re-open
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => decide.mutate({ domain_key: d.domain_key, status: "dismissed" })}
+                          className="text-xs font-medium text-muted hover:text-danger hover:underline"
+                        >
+                          Dismiss
+                        </button>
+                      )
+                    ) : null}
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -2658,11 +2956,93 @@ function ReportGroup({
   );
 }
 
+type ProjectDomainRow = {
+  domain_key: string;
+  project_links?: number;
+  indexed?: number;
+  avg_score?: number | null;
+  da?: number | null;
+  global_links?: number;
+  project_count?: number;
+};
+
+function ProjectDomainsPanel({ token, projectId }: { token: string | null; projectId: string }) {
+  const [mode, setMode] = useState<"used" | "available">("used");
+  const view = useQuery({
+    queryKey: ["sd-project-view", token, projectId],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () =>
+      api<{ used: ProjectDomainRow[]; available: ProjectDomainRow[]; used_count: number; available_count: number }>(
+        `/source-domains/project-view?project_id=${projectId}`,
+        { token }
+      )
+  });
+  const rows = mode === "used" ? view.data?.used || [] : view.data?.available || [];
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+        <h3 className="text-sm font-semibold text-ink">This project&apos;s source domains</h3>
+        <div className="flex gap-1.5">
+          <button
+            onClick={() => setMode("used")}
+            className={clsx(
+              "h-8 rounded-full border px-3 text-xs font-medium transition",
+              mode === "used" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+            )}
+          >
+            Used here ({view.data?.used_count ?? 0})
+          </button>
+          <button
+            onClick={() => setMode("available")}
+            title="Domains the workspace already knows, but this project has no link from yet — adding one counts as a NEW source domain for this project"
+            className={clsx(
+              "h-8 rounded-full border px-3 text-xs font-medium transition",
+              mode === "available" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+            )}
+          >
+            Available — not used yet ({view.data?.available_count ?? 0})
+          </button>
+        </div>
+      </div>
+      <div className="max-h-[340px] overflow-y-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="sticky top-0 bg-field text-xs uppercase text-muted">
+            <tr>
+              <Th>Domain</Th>
+              {mode === "used" ? <Th>Links here</Th> : <Th>Links elsewhere</Th>}
+              {mode === "used" ? <Th>Indexed</Th> : <Th>Projects using it</Th>}
+              <Th>DA</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((r) => (
+              <tr key={r.domain_key} className="hover:bg-field/60">
+                <Td><span className="break-all text-ink">{r.domain_key}</span></Td>
+                <Td>{mode === "used" ? r.project_links : r.global_links}</Td>
+                <Td>{mode === "used" ? (r.indexed ?? 0) : (r.project_count ?? 0)}</Td>
+                <Td>{r.da ?? "-"}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {view.isLoading ? (
+          <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+        ) : null}
+        {!view.isLoading && !rows.length ? (
+          <Empty label={mode === "used" ? "No domains used yet." : "Every known domain is already used here."} />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function SourceDomainsDesk({
   token,
+  projectId,
   onNotice
 }: {
   token: string | null;
+  projectId: string;
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -2736,6 +3116,7 @@ function SourceDomainsDesk({
           </button>
         </div>
       </div>
+      {projectId ? <ProjectDomainsPanel token={token} projectId={projectId} /> : null}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

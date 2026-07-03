@@ -182,12 +182,16 @@ export type CompetitorDomain = {
   our_link_count: number;
   our_indexed_pct: number | null;
   is_new: boolean;
+  decision: string;
+  decision_reason: string | null;
+  has_guest_post: boolean;
 };
 
 export type CompetitorSummary = {
   domains: number;
   new_opportunities: number;
   existing: number;
+  dismissed: number;
   competitor_links: number;
 };
 
