@@ -191,10 +191,23 @@ sync / imports / rechecks / duplicate scans / re-scores / reports) + **Batches d
 (non-ASCII Content-Disposition), duplicate-header sheets breaking sync after
 write-back (`_unique_headers`).
 
-**Next (per PHASE-9-PLAN §11–12):** P1 — project-wise source domains + duplicate
-new-vs-previous accounting, competitor opportunity lifecycle, user performance
-dashboard, global dashboard timeframe compare; P2 — tasks/productivity/calendar/
-leave module, TeamLead scoping, closed signup + admin create-user. Open questions
-in §15 (esp. Q1 "QA" metric, Q2 productivity baselines). Temp test account
-`qa-ui-test@linksentinel.local` exists (creds `/tmp/ls_qa_creds.txt` on the box) —
-remove when owners confirm.
+**Phase 9 P1+P2 also shipped** (migrations at `0022`): user Performance desk
+(project-new vs global-new source domains + previous-period deltas), Overview
+Activity trends w/ timeframe compare + weekly chart, Source-Domains project view
+(used vs available), competitor opportunity lifecycle (dismiss/re-open survives
+recompute, guest-post tag/exclude, CSV export), sync dup_new/dup_previous
+counters, **closed signup** (`ALLOW_PUBLIC_REGISTRATION=false`, bootstrap-safe;
+tests open it via conftest), and the **workforce module** (`workforce_service` +
+`/workforce`): task_assignments as immutable daily snapshots, links-per-hour
+productivity (global + user override; seeded 5/hr, Profile 30/hr — owners must
+correct), working-days calendar (Mon–Sat default), leave approve/reject →
+excusals in plan-vs-done. Tasks & Calendar desk in both navs.
+
+**Remaining (small):** TeamLead user-assignment scoping (manager role exists;
+per-user visibility map not yet), password-reset email flow, in-app report table
+viewer, task-sheet 2-way sync (P3, flagged off). Demo rows created during
+verification: assignment (alex · Jul 2 · Limo Black) + approved leave (alex
+Jul 10–11) — removable in the Tasks desk. Temp account
+`qa-ui-test@linksentinel.local` (creds `/tmp/ls_qa_creds.txt`) — remove when
+owners confirm. Open questions PHASE-9-PLAN §15 (Q1 "QA" metric, Q2 real
+productivity numbers).
