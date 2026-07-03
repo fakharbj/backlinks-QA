@@ -180,11 +180,21 @@ under `/api/v1` (nginx only proxies `/api/v1`) — reach them on the box at
 
 ## Current state
 
-Phases 0–7 deployed and live; 87 unit tests pass on the server; real data present
-(index sweep ran). Recently shipped: durable session/auto-refresh, company-vs-project
-dashboard scope switch, and the non-technical Reports redesign (guided builder +
-grouped version history + project names + filter summaries).
+Phases 0–8 live + **Phase 9 P0** (`docs/PHASE-9-PLAN.md` is the work queue).
+126 tests pass; migrations at `0020`. Phase 9 P0 shipped: unified **batch registry**
+(`batches`/`batch_logs`, fail-open `services/batch_service.py`, wired into sheet
+sync / imports / rechecks / duplicate scans / re-scores / reports) + **Batches desk**
+(live progress, logs, in-app row-error viewer), Sheets-style **multi-select filters**
+(comma lists + `(blanks)` sentinel in `backlink_service`), **toast stack**,
+**status tooltips** (`STATUS_HELP`), recheck-stale (10/20/30 days),
+`metric_check_history` + cached/fresh metric origin. Fixed: report-download 500
+(non-ASCII Content-Disposition), duplicate-header sheets breaking sync after
+write-back (`_unique_headers`).
 
-**Pending / offered:** (1) GitHub remote + one-command deploy; (2) scheduled report
-delivery (email/Sheets digest); (3) per-link-type QA rules; (4) optional one-time
-report renumber SQL (needs authorization); (5) user should rotate exposed keys.
+**Next (per PHASE-9-PLAN §11–12):** P1 — project-wise source domains + duplicate
+new-vs-previous accounting, competitor opportunity lifecycle, user performance
+dashboard, global dashboard timeframe compare; P2 — tasks/productivity/calendar/
+leave module, TeamLead scoping, closed signup + admin create-user. Open questions
+in §15 (esp. Q1 "QA" metric, Q2 productivity baselines). Temp test account
+`qa-ui-test@linksentinel.local` exists (creds `/tmp/ls_qa_creds.txt` on the box) —
+remove when owners confirm.
