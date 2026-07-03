@@ -209,6 +209,20 @@ people in Performance/Tasks/Leave), admin **Reset password** (one-time temp
 password, audited), and the **in-app report viewer** (`GET /reports/{id}/rows`
 parses stored CSV/XLSX; View button + paginated table in ReportsDesk).
 
+**Later increments** (migrations at `0025`, 127 tests): UX elevation (GSC-style
+`TrendChart`, analytics multi-select filters, drill-downs via `openBacklinks`
+f_* deep-link params, exports everywhere), modern project picker + distinct
+global/project dashboards, admin deletes everywhere (links/projects/reports/
+runs/competitor uploads/alert rules; typed-name confirm + audit), scale pass
+(`0025` composite indexes, keyset/sargable queries, 30s Redis micro-cache on
+dashboard trends, chunked rescore). **Sheets-sync UX** (no new migration):
+realtime sync progress in SheetsDesk (polls `/batches?kind=sheet_sync`, live
+per-sheet progress row, completion toast), honest new-vs-refreshed accounting
+(per-tab logs "X NEW, Y already there (refreshed)" + sample new URLs +
+`new_links`/`already_there` counters), manual column mapping per sheet
+(`GET/PUT /sheets/{id}/mapping`, live headers, auto vs manual, audited PUT),
+configurable write-back columns (`sheet_sources.writeback_columns`).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
