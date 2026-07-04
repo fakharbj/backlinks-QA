@@ -10,6 +10,8 @@ import {
   ChevronDown,
   ChevronUp,
   Download,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   Filter,
   Gauge,
@@ -250,9 +252,9 @@ export function WorkspaceApp() {
           setNotice("Refreshing workspace data");
         }}
       />
-      <section className="mx-auto flex w-full max-w-[1500px] gap-5 px-5 py-5">
-        <aside className="hidden w-[260px] shrink-0 lg:block">
-          <div className="sticky top-[76px]">
+      <section className="mx-auto flex w-full gap-5 px-5 py-4">
+        <aside className="hidden w-[248px] shrink-0 lg:block">
+          <div className="sticky top-[56px]">
             <Sidebar
               activeTab={tab}
               onTab={setTab}
@@ -357,6 +359,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [fullName, setFullName] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
   const [error, setError] = useState("");
@@ -398,14 +401,39 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
         >
           {mode === "register" ? (
             <>
-              <Field label="Full name" value={fullName} onChange={setFullName} />
-              <Field label="Workspace" value={workspaceName} onChange={setWorkspaceName} />
+              <Field label="Full name" value={fullName} onChange={setFullName} name="name" autoComplete="name" />
+              <Field label="Workspace" value={workspaceName} onChange={setWorkspaceName} name="organization" autoComplete="organization" />
             </>
           ) : null}
-          <Field label="Email" type="email" value={email} onChange={setEmail} />
-          <Field label="Password" type="password" value={password} onChange={setPassword} />
+          <Field label="Email" type="email" value={email} onChange={setEmail} name="email" autoComplete="email" />
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">Password</span>
+            <span className="relative block">
+              <input
+                type={showPw ? "text" : "password"}
+                name="password"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="h-10 w-full rounded-md border border-line bg-panel px-3 pr-10 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((v) => !v)}
+                title={showPw ? "Hide password" : "Show password"}
+                aria-label={showPw ? "Hide password" : "Show password"}
+                className="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded text-muted hover:bg-field hover:text-ink"
+              >
+                {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </span>
+          </label>
           {error ? <p className="rounded bg-danger/10 p-2 text-sm text-danger">{error}</p> : null}
-          <button className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+          <button
+            type="submit"
+            disabled={submit.isPending || !email.trim() || !password}
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          >
             {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             {mode === "login" ? "Sign in" : "Create account"}
           </button>
@@ -509,7 +537,7 @@ function ThemeToggle() {
       onClick={toggle}
       title={dark ? "Switch to light" : "Switch to dark"}
       aria-label="Toggle theme"
-      className="grid h-9 w-9 place-items-center rounded-xl border border-line bg-panel shadow-card text-muted transition hover:bg-field hover:text-ink"
+      className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-panel shadow-card text-muted transition hover:bg-field hover:text-ink"
     >
       {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
@@ -519,17 +547,19 @@ function ThemeToggle() {
 function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => void }) {
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-panel/70 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-3">
-        <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-white shadow-soft">
-            <Activity className="h-5 w-5" />
+      <div className="mx-auto flex w-full items-center justify-between px-5 py-1.5">
+        <div className="flex items-center gap-2.5">
+          <div className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-ocean to-plum text-white shadow-soft">
+            <Activity className="h-4 w-4" />
           </div>
-          <div>
-            <div className="text-base font-bold tracking-tight text-ink">LinkSentinel</div>
-            <div className="text-[11px] font-medium uppercase tracking-wide text-muted">Backlink QA operations</div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-bold tracking-tight text-ink">LinkSentinel</span>
+            <span className="hidden text-[10px] font-medium uppercase tracking-wide text-muted sm:inline">
+              Backlink QA operations
+            </span>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <ThemeToggle />
           <IconButton label="Refresh" onClick={onRefresh} icon={RefreshCw} />
           <IconButton label="Log out" onClick={onLogout} icon={LogOut} />
@@ -949,16 +979,16 @@ function Overview({
         <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink"
           help="All backlinks being monitored in this view. Click to open the full list."
           onClick={() => onOpenBacklinks({})} />
-        <Metric label="Pass" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean"
+        <Metric label="Qualified" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean"
           help="Links that are live and passed every check — nothing to do. Click to see them."
           onClick={() => onOpenBacklinks({ status: "PASS" })} />
-        <Metric label="Warning" value={stats?.totals.warning_count ?? 0} icon={AlertTriangle} tone="ember"
+        <Metric label="Needs improvement" value={stats?.totals.warning_count ?? 0} icon={AlertTriangle} tone="ember"
           help="Links that work but lost some value (e.g. nofollow, weak page, redirects). Click to review them."
           onClick={() => onOpenBacklinks({ status: "WARNING" })} />
-        <Metric label="Fail" value={stats?.totals.fail_count ?? 0} icon={XCircle} tone="danger"
+        <Metric label="Not qualified" value={stats?.totals.fail_count ?? 0} icon={XCircle} tone="danger"
           help="Serious problems — the link is missing, the page is dead, or it can't be indexed. Click to fix them."
           onClick={() => onOpenBacklinks({ status: "FAIL" })} />
-        <Metric label="Review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum"
+        <Metric label="Needs review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum"
           help="We couldn't decide automatically (usually bot protection on the site). Click to check them yourself."
           onClick={() => onOpenBacklinks({ status: "NEEDS_MANUAL_REVIEW" })} />
         <Metric label="Avg score" value={stats?.totals.avg_score ?? "-"} icon={Gauge} tone="ink"
@@ -1070,7 +1100,7 @@ function Overview({
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
-                    <tr><Th>Link type</Th><Th>Total</Th><Th>Pass</Th><Th>Fail</Th><Th>Avg</Th></tr>
+                    <tr><Th>Link type</Th><Th>Total</Th><Th>Qualified</Th><Th>Not qualified</Th><Th>Avg</Th></tr>
                   </thead>
                   <tbody className="divide-y divide-line">
                     {(stats.link_type_breakdown || []).map((r) => (
@@ -1080,7 +1110,7 @@ function Overview({
                         onClick={() => onOpenBacklinks({ link_type: r.link_type === "(none)" ? "(blanks)" : r.link_type })}
                         className="cursor-pointer hover:bg-field/60"
                       >
-                        <Td><span className="font-medium text-ocean hover:underline">{r.link_type}</span></Td>
+                        <Td><span className="font-medium text-ocean hover:underline">{linkTypeLabel(r.link_type)}</span></Td>
                         <Td>{r.total}</Td>
                         <Td><span className="text-ocean">{r.pass_count}</span></Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
@@ -1097,7 +1127,7 @@ function Overview({
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
-                    <tr><Th>User</Th><Th>Total</Th><Th>Pass %</Th><Th>Fail</Th><Th>Avg</Th></tr>
+                    <tr><Th>User</Th><Th>Total</Th><Th>Qualified %</Th><Th>Not qualified</Th><Th>Avg</Th></tr>
                   </thead>
                   <tbody className="divide-y divide-line">
                     {(stats.assigned_user_stats || []).map((r) => (
@@ -1168,7 +1198,7 @@ function Overview({
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
-                    <tr><Th>Domain</Th><Th>Links</Th><Th>Pass</Th><Th>Fail</Th><Th>Indexed %</Th></tr>
+                    <tr><Th>Domain</Th><Th>Links</Th><Th>Qualified</Th><Th>Not qualified</Th><Th>Indexed %</Th></tr>
                   </thead>
                   <tbody className="divide-y divide-line">
                     {(stats.top_source_domains || []).map((r) => (
@@ -1340,7 +1370,7 @@ function Backlinks({
 
   // One-click QA presets — each toggles the underlying filter, so they compose.
   const chips: Array<[string, boolean, () => void]> = [
-    ["Failing", toks(status).includes("FAIL"), () => toggleTok(status, setStatus, "FAIL")],
+    ["Not qualified", toks(status).includes("FAIL"), () => toggleTok(status, setStatus, "FAIL")],
     ["Needs review", toks(status).includes("NEEDS_MANUAL_REVIEW"), () => toggleTok(status, setStatus, "NEEDS_MANUAL_REVIEW")],
     ["Link missing", issueLabel === "LINK_MISSING", () => setIssueLabel(issueLabel === "LINK_MISSING" ? "" : "LINK_MISSING")],
     ["Nofollow", toks(rel).includes("nofollow"), () => toggleTok(rel, setRel, "nofollow")],
@@ -1503,7 +1533,7 @@ function Backlinks({
             options={[
               { value: "PASS", label: "Pass" },
               { value: "WARNING", label: "Warning" },
-              { value: "FAIL", label: "Fail" },
+              { value: "FAIL", label: "Not qualified" },
               { value: "UNKNOWN", label: "Couldn't check" },
               { value: "NEEDS_MANUAL_REVIEW", label: "Needs review" },
               { value: "PENDING", label: "Pending" }
@@ -1622,7 +1652,7 @@ function Backlinks({
                   ) : null}
                 </Td>
                 <Td><Url value={row.target_url} /></Td>
-                <Td><span className="whitespace-nowrap text-xs">{row.link_type || "—"}</span></Td>
+                <Td><span className="whitespace-nowrap text-xs" title={row.link_type || undefined}>{linkTypeLabel(row.link_type) || "—"}</span></Td>
                 <Td><span className="whitespace-nowrap text-xs font-medium text-ink">{row.assigned_user_label || "—"}</span></Td>
                 {!projectId ? (
                   <Td>
@@ -1637,7 +1667,7 @@ function Backlinks({
                 <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
                 <Td><IssueWord label={row.top_issue_label} count={row.issue_count} /></Td>
                 <Td><span className="whitespace-nowrap text-xs text-muted">{formatDate(row.created_at ?? null)}</span></Td>
-                <Td>{formatDate(row.last_checked_at)}</Td>
+                <Td><span className="whitespace-nowrap">{formatDate(row.last_checked_at)}</span></Td>
               </tr>
             ))}
           </tbody>
@@ -1944,7 +1974,7 @@ function OverrideForm({
       >
         <option value="PASS">Pass</option>
         <option value="WARNING">Warning</option>
-        <option value="FAIL">Fail</option>
+        <option value="FAIL">Not qualified</option>
         <option value="NEEDS_MANUAL_REVIEW">Review</option>
       </select>
       <input
@@ -2314,7 +2344,7 @@ function TasksDesk({
                                   {cell.map((r) => (
                                     <span
                                       key={r.id}
-                                      title={`${projectName(r.project_id)} — ${r.hours}h · ${r.link_type_names.join(", ") || "any type"} · ${r.actual_links}/${r.expected_links} done${r.excused ? ` · ${r.excuse_reason}` : ""}`}
+                                      title={`${projectName(r.project_id)} — ${r.hours}h · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"} · ${r.actual_links}/${r.expected_links} done${r.excused ? ` · ${r.excuse_reason}` : ""}`}
                                       className={clsx(
                                         "block rounded-md px-1.5 py-1 text-[11px] leading-tight",
                                         r.excused
@@ -2363,7 +2393,7 @@ function TasksDesk({
                   <Td><span className="font-medium text-ink">{r.user_label}</span></Td>
                   <Td>{projectName(r.project_id)}</Td>
                   <Td>{r.hours}h</Td>
-                  <Td><span className="text-xs text-muted">{r.link_type_names.join(", ") || "—"}</span></Td>
+                  <Td><span className="text-xs text-muted">{r.link_type_names.map(linkTypeLabel).join(", ") || "—"}</span></Td>
                   <Td>{r.expected_links}</Td>
                   <Td>{r.actual_links}</Td>
                   <Td>
@@ -2749,6 +2779,16 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
 
   const users = perf.data?.users || [];
   const weekly = perf.data?.weekly || [];
+  const [perfSort, setPerfSort] = useState("links");
+  const [perfDir, setPerfDir] = useState<"asc" | "desc">("desc");
+  const onPerfSort = (key: string) => {
+    if (perfSort === key) setPerfDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setPerfSort(key);
+      setPerfDir(key === "user_label" ? "asc" : "desc");
+    }
+  };
+  const sortedUsers = sortRows(users, perfSort, perfDir, (u, k) => (u as unknown as Record<string, unknown>)[k]);
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -2874,7 +2914,7 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
               ["New domains (overall)", a.global_new_domains, b.global_new_domains, false],
               ["Indexed", a.indexed, b.indexed, false],
               ["Pass", a.pass, b.pass, false],
-              ["Fail", a.fail, b.fail, true],
+              ["Not qualified", a.fail, b.fail, true],
               ["Duplicates", a.duplicates, b.duplicates, true],
               ["Avg score", a.avg_score, b.avg_score, false]
             ];
@@ -2908,26 +2948,21 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
           <table className="w-full text-left text-sm">
             <thead className="bg-field text-xs uppercase text-muted">
               <tr>
-                <Th>User</Th>
-                <Th>Links</Th>
-                <Th>
-                  <span title="First-ever link from that source domain within the project — even if the domain exists globally">
-                    New domains (project)
-                  </span>
-                </Th>
-                <Th>
-                  <span title="First-ever link from that source domain anywhere in the workspace">
-                    New domains (overall)
-                  </span>
-                </Th>
-                <Th>Indexed</Th>
-                <Th>Pass / Fail</Th>
-                <Th>Duplicates</Th>
-                <Th>Avg score</Th>
+                <SortTh label="User" sortKey="user_label" sort={perfSort} dir={perfDir} onSort={onPerfSort} />
+                <SortTh label="Links" sortKey="links" sort={perfSort} dir={perfDir} onSort={onPerfSort} />
+                <SortTh label="New domains (project)" sortKey="project_new_domains" sort={perfSort} dir={perfDir} onSort={onPerfSort}
+                  help="First-ever link from that source domain within the project — even if the domain exists globally. Click to sort." />
+                <SortTh label="New domains (overall)" sortKey="global_new_domains" sort={perfSort} dir={perfDir} onSort={onPerfSort}
+                  help="First-ever link from that source domain anywhere in the workspace. Click to sort." />
+                <SortTh label="Indexed" sortKey="indexed" sort={perfSort} dir={perfDir} onSort={onPerfSort} />
+                <SortTh label="Not qualified" sortKey="fail" sort={perfSort} dir={perfDir} onSort={onPerfSort}
+                  help="Qualified / Not qualified counts — sorted by the not-qualified number." />
+                <SortTh label="Duplicates" sortKey="duplicates" sort={perfSort} dir={perfDir} onSort={onPerfSort} />
+                <SortTh label="Avg score" sortKey="avg_score" sort={perfSort} dir={perfDir} onSort={onPerfSort} />
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {users.map((u) => (
+              {sortedUsers.map((u) => (
                 <Fragment key={u.user_label}>
                   <tr
                     onClick={() => setOpenUser(openUser === u.user_label ? null : u.user_label)}
@@ -2937,7 +2972,7 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
                     <Td>{u.links}<DeltaPill now={u.links} prev={u.previous?.links} /></Td>
                     <Td>{u.project_new_domains}<DeltaPill now={u.project_new_domains} prev={u.previous?.project_new_domains} /></Td>
                     <Td>{u.global_new_domains}<DeltaPill now={u.global_new_domains} prev={u.previous?.global_new_domains} /></Td>
-                    <Td>{u.indexed} · {pct(u.indexed, u.links)}</Td>
+                    <Td><span className="whitespace-nowrap">{u.indexed} <span className="text-xs text-muted">({pct(u.indexed, u.links)})</span></span></Td>
                     <Td>
                       <span className="text-ocean">{u.pass}</span> /{" "}
                       <span className="text-danger">{u.fail}</span>
@@ -2969,7 +3004,7 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
                                 <a href={r.source_page_url} target="_blank" rel="noreferrer" className="flex-1 truncate text-ocean hover:underline">
                                   {r.source_page_url}
                                 </a>
-                                <span className="shrink-0 text-muted">{r.link_type || ""}</span>
+                                <span className="shrink-0 text-muted">{linkTypeLabel(r.link_type) || ""}</span>
                               </div>
                             ))}
                             {!(userLinks.data?.items || []).length ? (
@@ -3159,7 +3194,7 @@ function BatchesDesk({
                           {counterBits.length ? counterBits.join(" · ") : "—"}
                         </span>
                       </Td>
-                      <Td>{formatDate(b.started_at)}</Td>
+                      <Td><span className="whitespace-nowrap">{formatDate(b.started_at)}</span></Td>
                       <Td>{dur}</Td>
                     </tr>
                     {open ? (
@@ -3837,7 +3872,7 @@ const REPORT_FACETS: Array<[string, string, string]> = [
 // Plain-language report types (non-technical labels + a one-line description).
 const REPORT_TYPES: Array<{ value: string; label: string; desc: string }> = [
   { value: "monthly_qa", label: "Full QA report", desc: "Every selected link with its full QA result, score, index and duplicate status." },
-  { value: "failed_links", label: "Problem links only", desc: "Only the links failing QA — the ones that need action." },
+  { value: "failed_links", label: "Problem links only", desc: "Only the links that are not qualified — the ones that need action." },
   { value: "change_history", label: "Change history", desc: "What changed over time: links lost, status flips, anchor / rel changes." },
   { value: "client", label: "Client summary", desc: "A clean, client-facing summary of backlink health." },
   { value: "vendor", label: "Vendor report", desc: "Results grouped for reviewing a vendor's delivered links." },
@@ -5910,12 +5945,16 @@ function Field({
   label,
   value,
   onChange,
-  type = "text"
+  type = "text",
+  name,
+  autoComplete
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  name?: string; // standard field name so browsers/password managers recognise it
+  autoComplete?: string;
 }) {
   return (
     <label className="block">
@@ -5923,6 +5962,8 @@ function Field({
       <input
         className="h-10 w-full rounded-xl border border-line bg-panel shadow-card px-3 text-sm shadow-sm transition focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
         type={type}
+        name={name}
+        autoComplete={autoComplete}
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />
@@ -5936,7 +5977,8 @@ function Metric({
   icon: Icon,
   tone,
   help,
-  onClick
+  onClick,
+  sub
 }: {
   label: string;
   value: number | string;
@@ -5944,6 +5986,7 @@ function Metric({
   tone: "ink" | "ocean" | "ember" | "danger" | "plum";
   help?: string;
   onClick?: () => void;
+  sub?: string; // plain-words context line, e.g. "6% of total" or "Previous period: 0"
 }) {
   const chip = {
     ink: "bg-field text-ink",
@@ -5957,7 +6000,7 @@ function Metric({
       onClick={onClick}
       title={onClick ? "Click to see these links" : undefined}
       className={clsx(
-        "rounded-xl border border-line bg-panel p-4 shadow-card transition hover:shadow-soft",
+        "rounded-xl border border-line bg-panel p-3.5 shadow-card transition hover:shadow-soft",
         onClick && "cursor-pointer hover:border-ocean/50"
       )}
     >
@@ -5970,7 +6013,8 @@ function Metric({
           <Icon className="h-4 w-4" />
         </span>
       </div>
-      <div className="mt-2 text-3xl font-bold tracking-tight text-ink">{value}</div>
+      <div className="mt-1.5 text-3xl font-bold tracking-tight text-ink">{value}</div>
+      {sub ? <div className="mt-0.5 text-[11px] font-medium text-muted">{sub}</div> : null}
     </div>
   );
 }
@@ -6056,7 +6100,7 @@ function IconButton({ label, onClick, icon: Icon }: { label: string; onClick: ()
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="grid h-9 w-9 place-items-center rounded-md border border-line bg-panel text-muted transition hover:bg-field hover:text-ink"
+      className="grid h-8 w-8 place-items-center rounded-md border border-line bg-panel text-muted transition hover:bg-field hover:text-ink"
     >
       <Icon className="h-4 w-4" />
     </button>
@@ -6077,12 +6121,18 @@ function Notice({ text, onClose }: { text: string; onClose: () => void }) {
 // Plain-English help for every status a non-technical user can meet.
 // Each entry answers: what happened / what should you do next.
 const STATUS_HELP: Record<string, { label?: string; what: string; next: string }> = {
-  PASS: { what: "The link is live and everything we check looked good.", next: "Nothing to do." },
+  PASS: {
+    label: "Qualified",
+    what: "The link is live and everything we check looked good.",
+    next: "Nothing to do."
+  },
   WARNING: {
+    label: "Needs improvement",
     what: "The link works, but something reduces its value (e.g. nofollow, weak page, redirects).",
     next: "Open the link to see which checks lowered the score."
   },
   FAIL: {
+    label: "Not qualified",
     what: "A serious problem was found — the link is missing, the page is dead, or it can't be indexed.",
     next: "Open the link to see the exact reason, then fix or replace it."
   },
@@ -6096,7 +6146,11 @@ const STATUS_HELP: Record<string, { label?: string; what: string; next: string }
     what: "We couldn't decide automatically — usually bot protection or conflicting signals on the page.",
     next: "Open the page yourself and confirm; the reason is shown in the Issue column."
   },
-  PENDING: { what: "This link hasn't been checked yet.", next: "It's queued — results appear after the first check." },
+  PENDING: {
+    label: "QA pending",
+    what: "This link hasn't been QA-checked yet.",
+    next: "Use “Check QA pending” in the Backlinks list to check it — checks don't start on their own."
+  },
   indexed: { what: "Google shows this page in its index.", next: "Nothing to do." },
   not_indexed: { what: "Google does not show this page in its index.", next: "Low-value for SEO until indexed — consider requesting indexing or replacing." },
   uncertain: { label: "Index unclear", what: "The index check couldn't give a clear yes/no.", next: "Re-run the index check later." },
@@ -6493,7 +6547,7 @@ function SheetsDesk({
                         <span className="text-muted"> · {s.updated_count} refreshed</span>
                       </span>
                     </Td>
-                    <Td>{formatDate(s.last_synced_at)}</Td>
+                    <Td><span className="whitespace-nowrap">{formatDate(s.last_synced_at)}</span></Td>
                     <Td>
                       <div className="flex gap-1">
                         <button
@@ -6910,20 +6964,31 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
         </div>
       </div>
 
-      {/* Summary cards */}
+      {/* Summary cards — number first, share-of-total as its own line, click = filter */}
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Metric label="Total" value={total} icon={Link2} tone="ink"
+          sub="Links matching the filters"
           help="How many links match the filters above. Change a filter and this updates instantly." />
-        <Metric label="Indexed" value={`${Number(s.indexed || 0)} · ${pct(Number(s.indexed || 0), total)}`} icon={CheckCircle2} tone="ocean"
-          help="Links whose page Google shows in its index — these actually help SEO." />
+        <Metric label="Indexed" value={Number(s.indexed || 0)} icon={CheckCircle2} tone="ocean"
+          sub={`${pct(Number(s.indexed || 0), total)} of total`}
+          help="Links whose page Google shows in its index — these actually help SEO. Click to filter to them."
+          onClick={() => { setFilters((f) => ({ ...f, index_status: "indexed" })); setDrillKey(null); }} />
         <Metric label="Not indexed" value={Number(s.not_indexed || 0)} icon={XCircle} tone="danger"
-          help="Google does not show these pages — low SEO value until they get indexed." />
-        <Metric label="Failing" value={`${Number(s.fail || 0)} · ${pct(Number(s.fail || 0), total)}`} icon={XCircle} tone="danger"
-          help="Links with a serious problem (missing, dead page, blocked). These need action." />
-        <Metric label="Nofollow" value={`${Number(s.nofollow || 0)} · ${pct(Number(s.nofollow || 0), total)}`} icon={AlertTriangle} tone="ember"
-          help="Links marked rel=nofollow — they pass less SEO value than dofollow links." />
+          sub={`${pct(Number(s.not_indexed || 0), total)} of total`}
+          help="Google does not show these pages — low SEO value until they get indexed. Click to filter to them."
+          onClick={() => { setFilters((f) => ({ ...f, index_status: "not_indexed" })); setDrillKey(null); }} />
+        <Metric label="Not qualified" value={Number(s.fail || 0)} icon={XCircle} tone="danger"
+          sub={`${pct(Number(s.fail || 0), total)} of total`}
+          help="Links with a serious problem (missing, dead page, blocked). These need action. Click to filter to them."
+          onClick={() => { setFilters((f) => ({ ...f, status: "FAIL" })); setDrillKey(null); }} />
+        <Metric label="Nofollow" value={Number(s.nofollow || 0)} icon={AlertTriangle} tone="ember"
+          sub={`${pct(Number(s.nofollow || 0), total)} of total`}
+          help="Links marked rel=nofollow — they pass less SEO value than dofollow links. Click to filter to them."
+          onClick={() => { setFilters((f) => ({ ...f, rel: "nofollow" })); setDrillKey(null); }} />
         <Metric label="Duplicates" value={Number(s.duplicates || 0)} icon={Filter} tone="plum"
-          help="Links that point at a page another record already uses — see the Duplicates desk for who/where." />
+          sub={`${pct(Number(s.duplicates || 0), total)} of total`}
+          help="Links that point at a page another record already uses. Click to filter to them."
+          onClick={() => { setFilters((f) => ({ ...f, duplicate_status: "duplicate" })); setDrillKey(null); }} />
       </div>
 
       {/* Group-by pivot */}
@@ -6980,82 +7045,88 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
                 const name = (g.label && String(g.label)) || String(g.key);
                 const active = drillKey === String(g.key);
                 return (
-                  <tr
-                    key={i}
-                    onClick={() => setDrillKey(active ? null : String(g.key))}
-                    className={clsx("cursor-pointer hover:bg-field/60", active && "bg-ocean/5")}
-                  >
-                    <Td>
-                      <span className="font-medium text-ocean hover:underline">{name || "—"}</span>
-                      <span className="mt-1.5 block h-1 max-w-[180px] overflow-hidden rounded-full bg-field">
-                        <span
-                          className="block h-full rounded-full bg-ocean/60"
-                          style={{ width: `${Math.round((t / maxGroup) * 100)}%` }}
-                        />
-                      </span>
-                    </Td>
-                    <Td>{t}</Td>
-                    <Td>{g.avg_score ?? "-"}</Td>
-                    <Td>
-                      <span className="text-ocean">{Number(g.pass || 0)}</span> /{" "}
-                      <span className="text-ember">{Number(g.warning || 0)}</span> /{" "}
-                      <span className="text-danger">{Number(g.fail || 0)}</span>
-                    </Td>
-                    <Td>{pct(Number(g.indexed || 0), t)}</Td>
-                    <Td>{pct(Number(g.nofollow || 0), t)}</Td>
-                    <Td>{Number(g.duplicates || 0)}</Td>
-                  </tr>
+                  <Fragment key={i}>
+                    <tr
+                      onClick={() => setDrillKey(active ? null : String(g.key))}
+                      className={clsx("cursor-pointer hover:bg-field/60", active && "bg-ocean/5")}
+                    >
+                      <Td>
+                        <span className="font-medium text-ocean hover:underline">
+                          {groupBy === "link_type" ? linkTypeLabel(name) || "—" : name || "—"}
+                        </span>
+                        <span className="mt-1.5 block h-1 max-w-[180px] overflow-hidden rounded-full bg-field">
+                          <span
+                            className="block h-full rounded-full bg-ocean/60"
+                            style={{ width: `${Math.round((t / maxGroup) * 100)}%` }}
+                          />
+                        </span>
+                      </Td>
+                      <Td>{t}</Td>
+                      <Td>{g.avg_score ?? "-"}</Td>
+                      <Td>
+                        <span className="text-ocean">{Number(g.pass || 0)}</span> /{" "}
+                        <span className="text-ember">{Number(g.warning || 0)}</span> /{" "}
+                        <span className="text-danger">{Number(g.fail || 0)}</span>
+                      </Td>
+                      <Td>{pct(Number(g.indexed || 0), t)}</Td>
+                      <Td>{pct(Number(g.nofollow || 0), t)}</Td>
+                      <Td>{Number(g.duplicates || 0)}</Td>
+                    </tr>
+                    {active ? (
+                      <tr>
+                        <td colSpan={7} className="bg-field/40 p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <h4 className="text-sm font-semibold text-ink">
+                              {groupBy === "user" ? `Links by “${name}”` : `Links in “${groupBy === "link_type" ? linkTypeLabel(name) : name}”`}
+                            </h4>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setDrillKey(null); }}
+                              className="text-xs font-medium text-ocean hover:underline"
+                            >
+                              Close
+                            </button>
+                          </div>
+                          {drill.isLoading ? (
+                            <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                          ) : !(drill.data?.records || []).length ? (
+                            <Empty label="No links in this group" />
+                          ) : (
+                            <div className="overflow-x-auto rounded-lg border border-line bg-panel">
+                              <table className="w-full text-left text-sm">
+                                <thead className="bg-field text-xs uppercase text-muted">
+                                  <tr><Th>Source page</Th><Th>Status</Th><Th>Score</Th><Th>Rel</Th></tr>
+                                </thead>
+                                <tbody className="divide-y divide-line">
+                                  {(drill.data?.records || []).map((r) => (
+                                    <tr key={String(r.id)} className="hover:bg-field/60">
+                                      <Td>
+                                        <a href={String(r.source_page_url)} target="_blank" rel="noreferrer"
+                                          className="break-all text-ocean hover:underline">
+                                          {String(r.source_page_url)}
+                                        </a>
+                                      </Td>
+                                      <Td><Status value={String(r.status)} /></Td>
+                                      <Td>{r.score ?? "-"}</Td>
+                                      <Td>{r.current_rel || "-"}</Td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
           {!q.isLoading && !(q.data?.groups || []).length ? <Empty label="No data for these filters" /> : null}
+          {q.isLoading ? (
+            <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+          ) : null}
         </div>
-        {drillKey !== null ? (
-          <div className="border-t border-line p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <h4 className="text-sm font-semibold text-ink">
-                Backlinks in “{
-                  (() => {
-                    const g = (q.data?.groups || []).find((x) => String(x.key) === drillKey);
-                    return (g && ((g.label && String(g.label)) || String(g.key))) || drillKey;
-                  })()
-                }”
-              </h4>
-              <button onClick={() => setDrillKey(null)} className="text-xs font-medium text-ocean hover:underline">
-                Close
-              </button>
-            </div>
-            {drill.isLoading ? (
-              <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
-            ) : !(drill.data?.records || []).length ? (
-              <Empty label="No backlinks in this group" />
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-field text-xs uppercase text-muted">
-                    <tr><Th>Source page</Th><Th>Status</Th><Th>Score</Th><Th>Rel</Th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-line">
-                    {(drill.data?.records || []).map((r) => (
-                      <tr key={String(r.id)} className="hover:bg-field/60">
-                        <Td>
-                          <a href={String(r.source_page_url)} target="_blank" rel="noreferrer"
-                            className="break-all text-ocean hover:underline">
-                            {String(r.source_page_url)}
-                          </a>
-                        </Td>
-                        <Td><Status value={String(r.status)} /></Td>
-                        <Td>{r.score ?? "-"}</Td>
-                        <Td>{r.current_rel || "-"}</Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -7080,20 +7151,85 @@ function IndexBadge({ value }: { value: string }) {
 }
 
 function Th({ children }: { children: React.ReactNode }) {
-  return <th className="px-4 py-3 font-semibold">{children}</th>;
+  return <th className="whitespace-nowrap px-3 py-2 font-semibold">{children}</th>;
+}
+
+// Clickable sortable column header — the one sorting affordance used everywhere.
+function SortTh({
+  label,
+  sortKey,
+  sort,
+  dir,
+  onSort,
+  help
+}: {
+  label: string;
+  sortKey: string;
+  sort: string;
+  dir: "asc" | "desc";
+  onSort: (key: string) => void;
+  help?: string;
+}) {
+  const active = sort === sortKey;
+  return (
+    <th className="whitespace-nowrap px-3 py-2 font-semibold">
+      <button
+        onClick={() => onSort(sortKey)}
+        title={help || `Sort by ${label} (click again to flip direction)`}
+        className={clsx(
+          "inline-flex items-center gap-1 uppercase transition hover:text-ink",
+          active ? "text-ocean" : ""
+        )}
+      >
+        {label}
+        <span className={clsx("text-[9px] leading-none", active ? "opacity-100" : "opacity-30")}>
+          {active ? (dir === "asc" ? "▲" : "▼") : "▲▼"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+// Client-side sort helper for tables whose full data is already loaded.
+function sortRows<T>(rows: T[], key: string, dir: "asc" | "desc", get: (row: T, key: string) => unknown): T[] {
+  const mul = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = get(a, key);
+    const bv = get(b, key);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; // nulls always last
+    if (bv == null) return -1;
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * mul;
+    return String(av).localeCompare(String(bv), undefined, { numeric: true }) * mul;
+  });
 }
 
 function Td({ children }: { children: React.ReactNode }) {
-  return <td className="px-4 py-3 align-top">{children}</td>;
+  return <td className="px-3 py-2 align-top">{children}</td>;
 }
 
 function Url({ value }: { value: string }) {
   return <div className="max-w-[330px] truncate font-medium text-ink" title={value}>{value}</div>;
 }
 
+// One-line date+time, e.g. "04 Jul, 10:32 PM" — never wraps.
 function formatDate(value: string | null) {
   if (!value) return "-";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  const text = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return text;
+}
+
+// Date only, e.g. "04 Jul 2026" — for link dates, joined dates, calendars.
+function formatDay(value: string | null) {
+  if (!value) return "-";
+  return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value));
+}
+
+// Sheet link types read like "Article Submission" — show the short human name
+// ("Article") everywhere while keeping the raw value for filters/API calls.
+function linkTypeLabel(name: string | null | undefined) {
+  if (!name) return "";
+  return name.replace(/\s*submissions?\s*$/i, "").trim() || name;
 }
 
 function compactNum(n: number) {
@@ -7447,10 +7583,10 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                     </span>
                   </Td>
                   <Td>
-                    <span className="text-muted">{formatDate(m.last_login_at)}</span>
+                    <span className="whitespace-nowrap text-muted">{formatDay(m.last_login_at)}</span>
                   </Td>
                   <Td>
-                    <span className="text-muted">{formatDate(m.member_since)}</span>
+                    <span className="whitespace-nowrap text-muted">{formatDay(m.member_since)}</span>
                   </Td>
                   <Td>
                     <div className="flex items-center justify-end gap-2">
