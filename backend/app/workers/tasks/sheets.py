@@ -2,8 +2,9 @@
 
 ``sync_main_sheet`` reads the global main sheet and fans out one
 ``sync_project_sheet`` per project — staggered so 1,000 sheets don't hit the
-Sheets API all at once. Each project sync stages rows through the import pipeline
-and enqueues crawls for the newly-added links.
+Sheets API all at once. Each project sync stages rows through the import
+pipeline; new links stay "QA pending" until someone starts a check (or
+``AUTO_QA_ON_IMPORT`` is enabled, which queues first crawls right away).
 """
 
 from __future__ import annotations
@@ -38,8 +39,9 @@ async def _sync_project_async(sheet_source_id: uuid.UUID) -> dict:
     async with session_scope() as s:
         result = await sheet_sync_service.sync_project(s, sheet_source_id)
 
+    # Manual-QA-by-default: only queue first crawls when explicitly configured.
     new_ids = [uuid.UUID(i) for i in result.get("new_ids", [])]
-    if new_ids:
+    if new_ids and settings.AUTO_QA_ON_IMPORT:
         from app.workers.dispatch import enqueue_backlinks
 
         enqueue_backlinks(new_ids)

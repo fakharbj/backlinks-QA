@@ -39,6 +39,8 @@ class ImportOut(ORMModel):
     imported_rows: int
     duplicate_rows: int
     error_rows: int
+    new_rows: int | None = None      # truly new links (NULL on pre-split imports)
+    updated_rows: int | None = None  # already existed, refreshed in place
     error: str | None
     created_at: datetime
 

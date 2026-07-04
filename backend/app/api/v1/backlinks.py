@@ -53,7 +53,12 @@ async def list_backlinks(
     duplicate_status: str | None = None,
     index_status: str | None = None,
     search: str | None = None,
-    sort: str = Query(default="score", pattern="^(score|last_checked_at|created_at)$"),
+    target: str | None = None,
+    sort: str = Query(
+        default="score",
+        pattern="^(score|last_checked_at|created_at|source_domain|link_type|http_status)$",
+    ),
+    direction: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = None,
     with_total: bool = False,
@@ -65,14 +70,20 @@ async def list_backlinks(
         campaign_id=campaign_id, tag=tag, source_domain=source_domain,
         assigned_user_id=assigned_user_id, assigned_user_label=assigned_user_label,
         link_type=link_type, duplicate_status=duplicate_status, index_status=index_status,
-        search=search,
+        search=search, target=target,
     )
     rows, next_cursor, has_more = await backlink_service.list_backlinks(
-        db, ctx, filters, sort=sort, limit=limit, cursor=cursor
+        db, ctx, filters, sort=sort, direction=direction, limit=limit, cursor=cursor
     )
     total = await backlink_service.count_backlinks(db, ctx, filters) if with_total else None
+    target_counts = await backlink_service.targets_per_source(db, rows)
+    items = []
+    for r in rows:
+        row = BacklinkRow.model_validate(r)
+        row.targets_on_source = target_counts.get(r.id, 1)
+        items.append(row)
     return KeysetPage[BacklinkRow](
-        items=[BacklinkRow.model_validate(r) for r in rows],
+        items=items,
         next_cursor=next_cursor,
         has_more=has_more,
         total=total,
@@ -229,7 +240,11 @@ async def recheck_bulk(
     # Register the run in the operations batch history (fail-open).
     from app.services import batch_service
 
-    label = f"Recheck {len(ids)} links"
+    label = f"QA check {len(ids)} links"
+    if payload.only_pending:
+        label = f"QA check {len(ids)} pending links"
+    elif payload.filters is not None:
+        label = f"QA check {len(ids)} filtered links"
     if payload.older_than_days:
         label += f" (older than {payload.older_than_days} days)"
     batch_id = await batch_service.start(

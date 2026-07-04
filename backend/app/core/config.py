@@ -237,6 +237,10 @@ class Settings(BaseSettings):
     # sheet "User" name that has no catalog mapping yet; admins hand out access
     # via Team → Reset password. Off → sheets never touch the user table.
     SHEETS_AUTO_CREATE_USERS: bool = True
+    # QA/stat checks are MANUAL by default: imports/syncs leave new links as
+    # "QA pending" until someone starts a check from the Backlinks list. Turning
+    # this on restores check-immediately-after-import (crawls + API credits).
+    AUTO_QA_ON_IMPORT: bool = False
 
     # ── Index checking (Google site: via the proxy) ──────────────────────────
     # Checks whether the EXACT source URL is indexed by Google (site:<url>). Routed

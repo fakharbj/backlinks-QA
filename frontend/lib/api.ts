@@ -341,8 +341,10 @@ export type BacklinkRow = {
   issue_count: number;
   top_issue_label: string | null;
   created_at?: string | null;
+  sheet_created_date?: string | null; // the sheet's own link-building date
   last_checked_at: string | null;
   next_check_at: string | null;
+  targets_on_source?: number | null; // distinct targets this source page links to
   assigned_user_id: string | null;
   assigned_user_label?: string | null;
   employee_code?: string | null;

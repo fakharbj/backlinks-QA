@@ -40,7 +40,7 @@ import {
   Users,
   XCircle
 } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Fragment, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
@@ -1280,9 +1280,14 @@ function Backlinks({
   const [domainF, setDomainF] = useState(() => fParam("source_domain"));
   const [issueLabel, setIssueLabel] = useState(() => fParam("issue_label"));
   const [sort, setSort] = useState("score");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState(() => fParam("search"));
   const [debouncedSearch, setDebouncedSearch] = useState(() => fParam("search"));
+  const [targetInput, setTargetInput] = useState(() => fParam("target"));
+  const [targetF, setTargetF] = useState(() => fParam("target"));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Row selection for scoped "check these exact links" actions.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     // Consume the f_* params so they don't stick around in the address bar.
@@ -1307,6 +1312,10 @@ function Backlinks({
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
     return () => clearTimeout(t);
   }, [search]);
+  useEffect(() => {
+    const t = setTimeout(() => setTargetF(targetInput.trim()), 350);
+    return () => clearTimeout(t);
+  }, [targetInput]);
 
   const linkTypes = useQuery({
     queryKey: ["link-types", token],
@@ -1355,8 +1364,10 @@ function Backlinks({
     setDomainF("");
     setIssueLabel("");
     setSearch("");
+    setTargetInput("");
+    setTargetF("");
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch]
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF]
     .filter(Boolean).length;
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
@@ -1370,6 +1381,7 @@ function Backlinks({
 
   // One-click QA presets — each toggles the underlying filter, so they compose.
   const chips: Array<[string, boolean, () => void]> = [
+    ["QA pending", toks(status).includes("PENDING"), () => toggleTok(status, setStatus, "PENDING")],
     ["Not qualified", toks(status).includes("FAIL"), () => toggleTok(status, setStatus, "FAIL")],
     ["Needs review", toks(status).includes("NEEDS_MANUAL_REVIEW"), () => toggleTok(status, setStatus, "NEEDS_MANUAL_REVIEW")],
     ["Link missing", issueLabel === "LINK_MISSING", () => setIssueLabel(issueLabel === "LINK_MISSING" ? "" : "LINK_MISSING")],
@@ -1390,39 +1402,115 @@ function Backlinks({
     if (domainF) params.set("source_domain", domainF);
     if (issueLabel) params.set("issue_label", issueLabel);
     if (debouncedSearch) params.set("search", debouncedSearch);
+    if (targetF) params.set("target", targetF);
     if (sort) params.set("sort", sort);
+    params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, sort]);
-  const backlinks = useQuery({
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, sort, sortDir]);
+  const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
-    queryFn: () => api<Page<BacklinkRow>>(`/backlinks?${query}`, { token })
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      api<Page<BacklinkRow>>(
+        `/backlinks?${query}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""}`,
+        { token }
+      ),
+    getNextPageParam: (last) => (last.has_more ? last.next_cursor : null)
   });
-  const [staleDays, setStaleDays] = useState("");
+  const rows = useMemo(
+    () => (backlinks.data?.pages || []).flatMap((p) => p.items),
+    [backlinks.data]
+  );
+  const totalCount = backlinks.data?.pages[0]?.total ?? 0;
+  // New filters/sort → old row selection no longer matches what's on screen.
+  useEffect(() => {
+    setPicked(new Set());
+  }, [query]);
+
+  const onSortCol = (key: string) => {
+    if (sort === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSort(key);
+      setSortDir(key === "source_domain" || key === "link_type" ? "asc" : "desc");
+    }
+  };
+
+  // The current grid filters, exactly as the recheck endpoint expects them —
+  // "check what I'm looking at" uses the same whitelist as the list itself.
+  const filterBody = () => ({
+    project_id: projectId || null,
+    status: status || null,
+    duplicate_status: dupFilter || null,
+    index_status: indexFilter || null,
+    rel: rel || null,
+    link_type: linkType || null,
+    assigned_user_label: userF || null,
+    source_domain: domainF || null,
+    issue_label: issueLabel || null,
+    search: debouncedSearch || null,
+    target: targetF || null
+  });
+
+  const [staleDays, setStaleDays] = useState("30");
   const recheck = useMutation({
-    mutationFn: () =>
+    mutationFn: (body: Record<string, unknown>) =>
       api<{ job_id: string; queued: number }>("/backlinks/recheck", {
         token,
         method: "POST",
-        body: JSON.stringify({
-          project_id: projectId || null,
-          priority: true,
-          older_than_days: staleDays ? Number(staleDays) : null
-        })
+        body: JSON.stringify(body)
       }),
     onSuccess: (data) => {
       onNotice(
         data.queued
-          ? `Recheck started — ${data.queued} link${data.queued === 1 ? "" : "s"} queued.`
-          : staleDays
-            ? `Nothing to recheck — everything was checked within ${staleDays} days.`
-            : "Nothing to recheck."
+          ? `QA check started — ${data.queued} link${data.queued === 1 ? "" : "s"} queued. Watch progress in Batches.`
+          : "Nothing to check in this scope — everything is already covered."
       );
+      setPicked(new Set());
       queryClient.invalidateQueries({ queryKey: ["backlinks"] });
       queryClient.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (err: Error) => onNotice(err.message)
   });
+  const checkPending = () => {
+    if (
+      window.confirm(
+        `Start QA checks for every "QA pending" link ${projectId ? "in this project" : "across ALL projects"}?\n\nOnly links that were never checked are queued — fresh data is not rechecked, but crawling uses server capacity.`
+      )
+    )
+      recheck.mutate({ project_id: projectId || null, only_pending: true, priority: true });
+  };
+  const checkFiltered = () => {
+    const scope = activeFilterCount
+      ? `the ${totalCount} link${totalCount === 1 ? "" : "s"} matching your current filters`
+      : null;
+    const ok = window.confirm(
+      scope
+        ? `Start QA checks for ${scope}?\n\nAlready-fresh domain metrics are reused from cache; page checks will crawl each link.`
+        : `No filter is applied. This may check ALL ${totalCount} links ${projectId ? "in this project" : "in the workspace"} and use many API credits. Continue?`
+    );
+    if (ok) recheck.mutate({ project_id: projectId || null, filters: filterBody(), priority: true });
+  };
+  const checkStale = () => {
+    if (
+      window.confirm(
+        `Recheck links whose last check is older than ${staleDays} days ${projectId ? "in this project" : "across ALL projects"}?\n\nRecently-checked links are skipped automatically.`
+      )
+    )
+      recheck.mutate({
+        project_id: projectId || null,
+        priority: true,
+        older_than_days: Number(staleDays)
+      });
+  };
+  const checkPicked = () => {
+    if (
+      window.confirm(
+        `Force recheck the ${picked.size} selected link${picked.size === 1 ? "" : "s"}?\n\nThis re-crawls them now even if they were checked recently.`
+      )
+    )
+      recheck.mutate({ backlink_ids: Array.from(picked), priority: true });
+  };
   const indexCheck = useMutation({
     mutationFn: () =>
       api<{ message: string }>("/index/check", {
@@ -1433,6 +1521,14 @@ function Backlinks({
     onSuccess: (r) => onNotice(r.message || "Index check started"),
     onError: (err: Error) => onNotice(err.message)
   });
+  const runIndexCheck = () => {
+    if (
+      window.confirm(
+        `Check Google index status for links ${projectId ? "in this project" : "across ALL projects"}?\n\nThis uses the SERP API (credits) — already-checked URLs are deduplicated.`
+      )
+    )
+      indexCheck.mutate();
+  };
 
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -1441,8 +1537,9 @@ function Backlinks({
           <div>
             <h2 className="text-base font-semibold text-ink">Backlinks</h2>
             <p className="text-sm text-muted">
-              {backlinks.data?.total ?? 0} records
+              {totalCount} records
               {activeFilterCount ? ` · ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""}` : ""}
+              {picked.size ? ` · ${picked.size} selected` : ""}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1455,11 +1552,11 @@ function Backlinks({
                   const page = await api<Page<BacklinkRow>>(`/backlinks?${p2.toString()}`, { token });
                   downloadCsv(
                     "backlinks.csv",
-                    ["Source URL", "Target URL", "Status", "Score", "Type", "User", "Index", "HTTP", "Rel", "Duplicate", "Added", "Checked"],
+                    ["Source URL", "Target URL", "Status", "Score", "Type", "User", "Index", "HTTP", "Rel", "Duplicate", "Link date", "Imported", "Checked"],
                     page.items.map((r) => [
                       r.source_page_url, r.target_url, r.override_status || r.status, r.score,
                       r.link_type, r.assigned_user_label, r.index_status, r.http_status,
-                      r.current_rel, r.duplicate_status, r.created_at, r.last_checked_at
+                      r.current_rel, r.duplicate_status, r.sheet_created_date || "", r.created_at, r.last_checked_at
                     ])
                   );
                   onNotice(`Exported ${page.items.length} links (current filters).`);
@@ -1469,31 +1566,59 @@ function Backlinks({
               }}
             />
             <button
-              onClick={() => indexCheck.mutate()}
+              onClick={runIndexCheck}
               className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
-              title="Check whether source pages are indexed by Google (via proxy)"
+              title="Check whether source pages are indexed by Google (asks before spending API credits)"
             >
               {indexCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
               Check index
             </button>
-            <select
-              value={staleDays}
-              onChange={(e) => setStaleDays(e.target.value)}
-              title="Only recheck links whose last check is older than this"
-              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
-            >
-              <option value="">Recheck: everything</option>
-              <option value="10">Older than 10 days</option>
-              <option value="20">Older than 20 days</option>
-              <option value="30">Older than 30 days</option>
-            </select>
+            {picked.size ? (
+              <button
+                onClick={checkPicked}
+                className="flex h-9 items-center gap-2 rounded-lg border border-ocean/40 bg-ocean/10 px-3 text-sm font-semibold text-ocean transition hover:bg-ocean/20"
+                title="Re-crawl exactly the rows you ticked, even if they were checked recently"
+              >
+                <Play className="h-4 w-4" />
+                Check selected ({picked.size})
+              </button>
+            ) : null}
             <button
-              onClick={() => recheck.mutate()}
+              onClick={checkPending}
               className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              title="Check only links that have never been QA-checked (new imports) — the safe everyday action"
             >
               {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Recheck
+              Check QA pending
             </button>
+            <button
+              onClick={checkFiltered}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+              title="Check exactly the links matching your current filters (asks first when no filter is set)"
+            >
+              <Filter className="h-4 w-4" />
+              Check filtered
+            </button>
+            <span className="flex items-center gap-1">
+              <select
+                value={staleDays}
+                onChange={(e) => setStaleDays(e.target.value)}
+                title="Only recheck links whose last check is older than this — fresh links are skipped"
+                className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+              >
+                <option value="10">Older than 10 days</option>
+                <option value="20">Older than 20 days</option>
+                <option value="30">Older than 30 days</option>
+              </select>
+              <button
+                onClick={checkStale}
+                className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+                title="Recheck old data only — anything checked recently is skipped"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Recheck stale
+              </button>
+            </span>
           </div>
         </div>
 
@@ -1527,6 +1652,13 @@ function Backlinks({
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search URL or anchor…"
             className="h-9 w-56 rounded-xl border border-line bg-panel shadow-card px-3 text-sm focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          />
+          <input
+            value={targetInput}
+            onChange={(e) => setTargetInput(e.target.value)}
+            placeholder="Target URL or page…"
+            title="Find backlinks by where they POINT — e.g. type /pricing to see every link to that page"
+            className="h-9 w-48 rounded-xl border border-line bg-panel shadow-card px-3 text-sm focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
           />
           <FilterMultiSelect
             label="Status"
@@ -1596,44 +1728,63 @@ function Backlinks({
             selected={toks(domainF)}
             onChange={(v) => setDomainF(v.join(","))}
           />
-          <select
-            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm"
-            value={sort}
-            onChange={(event) => setSort(event.target.value)}
-          >
-            <option value="score">Sort: worst score first</option>
-            <option value="last_checked_at">Sort: recently checked</option>
-            <option value="created_at">Sort: newest</option>
-          </select>
         </div>
       </div>
-      <div className="overflow-x-auto scrollbar-thin">
-        <table className="min-w-[1560px] w-full border-collapse text-left text-sm">
-          <thead className="bg-field text-xs uppercase text-muted">
+      <div className="max-h-[70vh] overflow-auto scrollbar-thin">
+        <table className="min-w-[1600px] w-full border-collapse text-left text-sm">
+          <thead className="sticky top-0 z-10 bg-field text-xs uppercase text-muted">
             <tr>
+              <Th>
+                <input
+                  type="checkbox"
+                  aria-label="Select all loaded rows"
+                  checked={rows.length > 0 && picked.size === rows.length}
+                  onChange={(e) =>
+                    setPicked(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())
+                  }
+                />
+              </Th>
               <Th>Status</Th>
-              <Th>Score</Th>
-              <Th>Source</Th>
+              <SortTh label="Score" sortKey="score" sort={sort} dir={sortDir} onSort={onSortCol} />
+              <SortTh label="Source" sortKey="source_domain" sort={sort} dir={sortDir} onSort={onSortCol}
+                help="Sort by source domain A→Z" />
               <Th>Target</Th>
-              <Th>Type</Th>
+              <SortTh label="Type" sortKey="link_type" sort={sort} dir={sortDir} onSort={onSortCol} />
               <Th>User</Th>
               {!projectId ? <Th>Project</Th> : null}
               <Th>Index</Th>
-              <Th>HTTP</Th>
+              <SortTh label="HTTP" sortKey="http_status" sort={sort} dir={sortDir} onSort={onSortCol} />
               <Th>Rel</Th>
               <Th>Rank / Visits</Th>
               <Th>Issue</Th>
-              <Th>Added</Th>
-              <Th>Checked</Th>
+              <SortTh label="Link date" sortKey="created_at" sort={sort} dir={sortDir} onSort={onSortCol}
+                help="The sheet's own link-building date when available (hover shows when it was imported). Sorted by import date." />
+              <SortTh label="Checked" sortKey="last_checked_at" sort={sort} dir={sortDir} onSort={onSortCol} />
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {(backlinks.data?.items || []).map((row) => (
+            {rows.map((row) => (
               <tr
                 key={row.id}
                 onClick={() => setSelectedId(row.id)}
-                className="cursor-pointer hover:bg-field/70"
+                className={clsx("cursor-pointer hover:bg-field/70", picked.has(row.id) && "bg-ocean/5")}
               >
+                <Td>
+                  <input
+                    type="checkbox"
+                    aria-label="Select row"
+                    checked={picked.has(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                      setPicked((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(row.id);
+                        else next.delete(row.id);
+                        return next;
+                      });
+                    }}
+                  />
+                </Td>
                 <Td><Status value={row.override_status || row.status} reason={row.top_issue_label} /></Td>
                 <Td>
                   <span onClick={(e) => e.stopPropagation()}>
@@ -1651,7 +1802,21 @@ function Backlinks({
                     </span>
                   ) : null}
                 </Td>
-                <Td><Url value={row.target_url} /></Td>
+                <Td>
+                  <Url value={row.target_url} />
+                  {(row.targets_on_source ?? 1) > 1 ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSearch(row.source_page_url);
+                      }}
+                      className="mt-0.5 inline-block rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum hover:bg-plum/20"
+                      title={`This source page links to ${row.targets_on_source} different targets — click to see all of them`}
+                    >
+                      {row.targets_on_source} targets
+                    </button>
+                  ) : null}
+                </Td>
                 <Td><span className="whitespace-nowrap text-xs" title={row.link_type || undefined}>{linkTypeLabel(row.link_type) || "—"}</span></Td>
                 <Td><span className="whitespace-nowrap text-xs font-medium text-ink">{row.assigned_user_label || "—"}</span></Td>
                 {!projectId ? (
@@ -1666,14 +1831,35 @@ function Backlinks({
                 <Td>{row.current_rel ?? "-"}</Td>
                 <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
                 <Td><IssueWord label={row.top_issue_label} count={row.issue_count} /></Td>
-                <Td><span className="whitespace-nowrap text-xs text-muted">{formatDate(row.created_at ?? null)}</span></Td>
+                <Td>
+                  <span
+                    className="whitespace-nowrap text-xs text-muted"
+                    title={`Imported ${formatDate(row.created_at ?? null)}${row.sheet_created_date ? " · Link date from the sheet" : " · No sheet date — showing import date"}`}
+                  >
+                    {formatDay(row.sheet_created_date ?? row.created_at ?? null)}
+                  </span>
+                </Td>
                 <Td><span className="whitespace-nowrap">{formatDate(row.last_checked_at)}</span></Td>
               </tr>
             ))}
           </tbody>
         </table>
-        {!backlinks.isLoading && !backlinks.data?.items.length ? <Empty label="No backlinks yet" /> : null}
+        {!backlinks.isLoading && !rows.length ? <Empty label="No backlinks match these filters" /> : null}
+        {backlinks.isLoading ? (
+          <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+        ) : null}
       </div>
+      {backlinks.hasNextPage ? (
+        <div className="border-t border-line p-2 text-center">
+          <button
+            onClick={() => backlinks.fetchNextPage()}
+            disabled={backlinks.isFetchingNextPage}
+            className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
+          >
+            {backlinks.isFetchingNextPage ? "Loading…" : `Load more (${rows.length} of ${totalCount})`}
+          </button>
+        </div>
+      ) : null}
       {selectedId ? (
         <BacklinkDetailDrawer
           token={token}

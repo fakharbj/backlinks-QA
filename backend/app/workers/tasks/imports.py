@@ -66,10 +66,16 @@ async def _process_async(import_id: uuid.UUID, parse_from_storage: bool) -> dict
     async with session_scope() as s:
         new_ids = await import_service.process(s, import_id)
 
-    # 3) Close the batch from the import's own counters.
+    # 3) Close the batch from the import's own counters (honest new-vs-existing).
     async with session_scope() as s:
         imp = await s.get(Import, import_id)
         if imp is not None:
+            new_n = imp.new_rows if imp.new_rows is not None else len(new_ids)
+            updated_n = (
+                imp.updated_rows
+                if imp.updated_rows is not None
+                else max(0, imp.imported_rows - new_n)
+            )
             await batch_service.update(
                 batch_id,
                 totals={
@@ -77,6 +83,13 @@ async def _process_async(import_id: uuid.UUID, parse_from_storage: bool) -> dict
                     "ok": imp.imported_rows, "failed": imp.error_rows,
                     "skipped": imp.duplicate_rows,
                 },
+                counters_inc={"new_links": new_n, "already_there": updated_n},
+            )
+            await batch_service.add_log(
+                batch_id,
+                f"Import finished: {new_n} NEW link{'s' if new_n != 1 else ''} added, "
+                f"{updated_n} already there (refreshed), {imp.error_rows} failed.",
+                data={"import_id": str(imp.id), "new_links": new_n},
             )
             if imp.error_rows:
                 await batch_service.add_log(
@@ -84,12 +97,20 @@ async def _process_async(import_id: uuid.UUID, parse_from_storage: bool) -> dict
                     f"{imp.error_rows} row(s) could not be imported — open the error report for details.",
                     level="warn",
                 )
+            qa_note = (
+                "Links queued for their first QA check."
+                if settings.AUTO_QA_ON_IMPORT
+                else "New links are QA pending — start a check from the Backlinks list when ready."
+            )
+            if new_n:
+                await batch_service.add_log(batch_id, qa_note)
             await batch_service.finish(
                 batch_id, error=imp.error if imp.status is ImportStatus.FAILED else None
             )
 
-    # 4) Queue the freshly-imported links for their first crawl.
-    if new_ids:
+    # 4) Queue the freshly-imported links for their first crawl — only when the
+    # workspace explicitly wants automatic QA (manual-by-default per the owners).
+    if new_ids and settings.AUTO_QA_ON_IMPORT:
         from app.workers.dispatch import enqueue_backlinks
 
         enqueue_backlinks(new_ids, priority=False)

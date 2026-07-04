@@ -62,8 +62,14 @@ class BacklinkRow(ORMModel):
     issue_count: int
     top_issue_label: str | None
     created_at: datetime | None = None
+    # The sheet's own "created/entry date" column — the real link-building date.
+    # ``created_at`` is only when the row reached OUR database (import time).
+    sheet_created_date: date | None = None
     last_checked_at: datetime | None
     next_check_at: datetime | None
+    # How many different target URLs this same source page links to (within the
+    # project) — lets the grid show "2 targets" instead of looking like a dup.
+    targets_on_source: int | None = None
     assigned_user_id: uuid.UUID | None
     assigned_user_label: str | None = None
     employee_code: str | None = None
@@ -163,6 +169,9 @@ class BacklinkFilters(BaseModel):
     duplicate_status: str | None = None  # "duplicate" (any) | a specific status
     index_status: str | None = None      # indexed | not_indexed | uncertain | unchecked
     search: str | None = None
+    # Target-based lookup: matches the target URL or expected target (substring),
+    # so "find every backlink pointing at /pricing" works.
+    target: str | None = None
 
 
 class AssignmentEventOut(BaseModel):
@@ -179,10 +188,16 @@ class RecheckRequest(BaseModel):
     campaign_id: uuid.UUID | None = None
     only_failed: bool = False
     only_warnings: bool = False
+    # Only links never QA-checked yet (status PENDING / no check date) — the
+    # safe default action after an import or sync.
+    only_pending: bool = False
     priority: bool = False
     # Freshness-based recheck: only links last checked more than N days ago
     # (or never checked). None/0 = no freshness constraint (force everything).
     older_than_days: int | None = Field(default=None, ge=1, le=365)
+    # Scoped recheck: apply the SAME whitelisted grid filters the list uses, so
+    # "check exactly what I'm looking at" is one call — no id round-trips.
+    filters: BacklinkFilters | None = None
 
 
 class RecheckResponse(BaseModel):
@@ -190,4 +205,6 @@ class RecheckResponse(BaseModel):
     queued: int
 
 
-SortField = Literal["score", "last_checked_at", "created_at"]
+SortField = Literal[
+    "score", "last_checked_at", "created_at", "source_domain", "link_type", "http_status"
+]

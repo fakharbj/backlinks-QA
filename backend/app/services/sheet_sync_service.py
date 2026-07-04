@@ -526,6 +526,12 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         f"{max(0, total_imported - len(all_new))} already existed (refreshed), "
         f"{total_failed} failed.",
     )
+    if all_new and not settings.AUTO_QA_ON_IMPORT:
+        await batch_service.add_log(
+            batch_id,
+            "New links are QA pending — start a check from the Backlinks list when ready "
+            "(checks never start on their own).",
+        )
     await batch_service.update(batch_id, meta={"current_step": "Finished"})
     await batch_service.finish(batch_id)
 
@@ -533,6 +539,9 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         "tabs": len(enabled),
         "rows": total_rows,
         "new": len(all_new),
+        # Consumed by the worker ONLY when AUTO_QA_ON_IMPORT is on — the default
+        # is manual QA, so new links wait as "QA pending".
+        "new_ids": [str(i) for i in all_new],
         "batch_id": str(batch_id) if batch_id else None,
     }
 

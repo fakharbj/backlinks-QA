@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.deps import AuthContext
 from app.crawler.normalize import normalize_url
 from app.models.backlink import BacklinkRecord
@@ -143,6 +144,19 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
         imp.processed_rows = processed
         if processed % commit_every == 0:
             await db.commit()
+            # Live progress for the Batches desk while a big file is importing
+            # (fail-open; sheet sync has its own per-tab progress).
+            if imp.batch_id is not None:
+                from app.services import batch_service
+
+                await batch_service.update(
+                    imp.batch_id,
+                    totals={
+                        "total": imp.total_rows, "done": processed,
+                        "ok": imp.imported_rows, "failed": imp.error_rows,
+                    },
+                    meta={"current_step": f"Importing rows ({processed}/{imp.total_rows})"},
+                )
 
     # Recompute duplicate status for every identity this import touched.
     await duplicate_service.recompute(db, dirty_identities)
@@ -178,7 +192,7 @@ async def _process_row(
     target = f"https://{project_domain}/" if project_domain else (data.get("target_url") or "").strip()
     if not source:
         row.status = ImportRowStatus.ERROR
-        row.error = "Missing source URL"
+        row.error = "Skipped row: source URL/domain is missing"
         imp.error_rows += 1
         return None
     if not target:
@@ -231,8 +245,40 @@ async def _process_row(
                 )
             )
         ).scalar_one_or_none()
+    elif not from_sheet:
+        # File/paste imports upsert by the link itself: the same (source, target)
+        # in the same project refreshes the existing record instead of inserting
+        # a duplicate copy (owners' re-import bug).
+        existing = (
+            await db.execute(
+                select(BacklinkRecord)
+                .where(
+                    BacklinkRecord.workspace_id == imp.workspace_id,
+                    BacklinkRecord.project_id == imp.project_id,
+                    BacklinkRecord.source_url_normalized == src.normalized,
+                    BacklinkRecord.target_url_normalized == tgt.normalized,
+                )
+                .order_by(BacklinkRecord.created_at.asc())
+                .limit(1)
+            )
+        ).scalars().first()
 
     if existing is not None:
+        # Sheet row drift: rows shifted in the sheet mean this position now holds
+        # a DIFFERENT link. Repoint the record at the new URL and reset its QA —
+        # the old verdict described the old page.
+        if existing.source_url_normalized != src.normalized:
+            existing.source_page_url = source
+            existing.source_url_normalized = src.normalized
+            existing.source_domain = src.registrable_domain
+            existing.target_url = target
+            existing.target_url_normalized = tgt.normalized
+            existing.target_domain = tgt.registrable_domain
+            existing.status = OverallStatus.PENDING
+            existing.score = None
+            existing.next_check_at = (
+                datetime.now(timezone.utc) if settings.AUTO_QA_ON_IMPORT else None
+            )
         old_label = existing.assigned_user_label
         _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id)
         existing.canonical_url_id = canonical_id
@@ -256,6 +302,7 @@ async def _process_row(
         row.status = ImportRowStatus.IMPORTED
         row.backlink_id = existing.id
         imp.imported_rows += 1
+        imp.updated_rows = (imp.updated_rows or 0) + 1
         return None
 
     backlink = BacklinkRecord(
@@ -270,7 +317,10 @@ async def _process_row(
         target_domain=tgt.registrable_domain,
         canonical_url_id=canonical_id,
         status=OverallStatus.PENDING,
-        next_check_at=datetime.now(timezone.utc),
+        # QA/stat checks are MANUAL by default: new links wait as "QA pending"
+        # until someone starts a check (AUTO_QA_ON_IMPORT turns the old
+        # check-immediately behavior back on).
+        next_check_at=(datetime.now(timezone.utc) if settings.AUTO_QA_ON_IMPORT else None),
     )
     _apply_input_fields(backlink, data, imp, row, user_map, vendor_id, campaign_id)
     backlink.link_type_id = await link_type_service.resolve_or_create(
@@ -286,6 +336,7 @@ async def _process_row(
     row.status = ImportRowStatus.IMPORTED
     row.backlink_id = backlink.id
     imp.imported_rows += 1
+    imp.new_rows = (imp.new_rows or 0) + 1
     return backlink.id
 
 

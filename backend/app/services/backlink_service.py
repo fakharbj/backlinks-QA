@@ -130,6 +130,14 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
                 BacklinkRecord.current_anchor_text.ilike(like),
             )
         )
+    if f.target:
+        tlike = f"%{f.target.strip()}%"
+        stmt = stmt.where(
+            or_(
+                BacklinkRecord.target_url.ilike(tlike),
+                BacklinkRecord.expected_target_url.ilike(tlike),
+            )
+        )
     if f.issue_label:
         stmt = stmt.where(
             exists().where(
@@ -192,13 +200,37 @@ def _sort_column(sort: str):
         return func.coalesce(BacklinkRecord.last_checked_at, _EPOCH)
     if sort == "created_at":
         return BacklinkRecord.created_at
+    if sort == "source_domain":
+        return func.coalesce(BacklinkRecord.source_domain, "")
+    if sort == "link_type":
+        return func.coalesce(BacklinkRecord.link_type, "")
+    if sort == "http_status":
+        return func.coalesce(BacklinkRecord.http_status, -1)
     return func.coalesce(BacklinkRecord.score, -1)  # default: score
 
 
 def _parse_cursor_value(sort: str, raw: str):
     if sort in ("last_checked_at", "created_at"):
         return datetime.fromisoformat(raw)
+    if sort in ("source_domain", "link_type"):
+        return raw
     return int(raw)
+
+
+def _cursor_sort_value(sort: str, last: BacklinkRecord) -> object:
+    if sort == "score":
+        return last.score if last.score is not None else -1
+    if sort == "last_checked_at":
+        return (last.last_checked_at or _EPOCH).isoformat()
+    if sort == "created_at":
+        return last.created_at.isoformat()
+    if sort == "source_domain":
+        return last.source_domain or ""
+    if sort == "link_type":
+        return last.link_type or ""
+    if sort == "http_status":
+        return last.http_status if last.http_status is not None else -1
+    return last.created_at.isoformat()
 
 
 async def list_backlinks(
@@ -207,23 +239,31 @@ async def list_backlinks(
     filters: BacklinkFilters,
     *,
     sort: str = "score",
+    direction: str = "desc",
     limit: int = 50,
     cursor: str | None = None,
 ) -> tuple[list[BacklinkRecord], str | None, bool]:
     limit = max(1, min(limit, 200))
     sort_col = _sort_column(sort)
+    asc = direction == "asc"
 
     stmt = _apply_filters(_scope(select(BacklinkRecord), ctx), filters)
 
     if cursor:
         raw_value, last_id = decode_cursor(cursor)
         value = _parse_cursor_value(sort, raw_value)
-        # Descending keyset: (sort, id) strictly less than the cursor tuple.
-        stmt = stmt.where(
-            or_(sort_col < value, and_(sort_col == value, BacklinkRecord.id < last_id))
-        )
+        # Keyset: (sort, id) strictly beyond the cursor tuple in scan direction.
+        if asc:
+            stmt = stmt.where(
+                or_(sort_col > value, and_(sort_col == value, BacklinkRecord.id > last_id))
+            )
+        else:
+            stmt = stmt.where(
+                or_(sort_col < value, and_(sort_col == value, BacklinkRecord.id < last_id))
+            )
 
-    stmt = stmt.order_by(sort_col.desc(), BacklinkRecord.id.desc()).limit(limit + 1)
+    order = (sort_col.asc(), BacklinkRecord.id.asc()) if asc else (sort_col.desc(), BacklinkRecord.id.desc())
+    stmt = stmt.order_by(*order).limit(limit + 1)
     rows = list((await db.execute(stmt)).scalars().all())
 
     has_more = len(rows) > limit
@@ -231,14 +271,36 @@ async def list_backlinks(
     next_cursor = None
     if has_more and rows:
         last = rows[-1]
-        if sort == "score":
-            sort_value: object = last.score if last.score is not None else -1
-        elif sort == "last_checked_at":
-            sort_value = (last.last_checked_at or _EPOCH).isoformat()
-        else:
-            sort_value = last.created_at.isoformat()
-        next_cursor = encode_cursor(sort_value, last.id)
+        next_cursor = encode_cursor(_cursor_sort_value(sort, last), last.id)
     return rows, next_cursor, has_more
+
+
+async def targets_per_source(
+    db: AsyncSession, rows: list[BacklinkRecord]
+) -> dict[uuid.UUID, int]:
+    """For the rows on screen: how many DIFFERENT target URLs the same source
+    page links to within its project (bounded — one grouped query per page)."""
+    if not rows:
+        return {}
+    pairs = {(r.project_id, r.source_url_normalized) for r in rows}
+    conds = [
+        and_(
+            BacklinkRecord.project_id == pid,
+            BacklinkRecord.source_url_normalized == norm,
+        )
+        for pid, norm in pairs
+    ]
+    result = await db.execute(
+        select(
+            BacklinkRecord.project_id,
+            BacklinkRecord.source_url_normalized,
+            func.count(func.distinct(BacklinkRecord.target_url_normalized)),
+        )
+        .where(or_(*conds))
+        .group_by(BacklinkRecord.project_id, BacklinkRecord.source_url_normalized)
+    )
+    counts = {(pid, norm): int(n) for pid, norm, n in result.all()}
+    return {r.id: counts.get((r.project_id, r.source_url_normalized), 1) for r in rows}
 
 
 async def count_backlinks(db: AsyncSession, ctx: AuthContext, filters: BacklinkFilters) -> int:

@@ -33,6 +33,12 @@ async def select_recheck_ids(
     db: AsyncSession, ctx: AuthContext, req: RecheckRequest, *, limit: int = 100_000
 ) -> list[uuid.UUID]:
     stmt = _scope(select(BacklinkRecord.id), ctx)
+    if req.filters is not None:
+        # "Check exactly what I'm filtering" — reuse the grid's whitelisted
+        # filter builder so scoped checks match what the user sees, 1:1.
+        from app.services.backlink_service import _apply_filters
+
+        stmt = _apply_filters(stmt, req.filters)
     if req.backlink_ids:
         stmt = stmt.where(BacklinkRecord.id.in_(req.backlink_ids))
     if req.project_id:
@@ -46,6 +52,14 @@ async def select_recheck_ids(
         stmt = stmt.where(effective == OverallStatus.FAIL)
     if req.only_warnings:
         stmt = stmt.where(effective == OverallStatus.WARNING)
+    if req.only_pending:
+        # Never QA-checked: fresh imports waiting for their first check.
+        stmt = stmt.where(
+            or_(
+                BacklinkRecord.status == OverallStatus.PENDING,
+                BacklinkRecord.last_checked_at.is_(None),
+            )
+        )
     if req.older_than_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=req.older_than_days)
         stmt = stmt.where(
