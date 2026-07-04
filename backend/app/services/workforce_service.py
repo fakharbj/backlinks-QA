@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,27 +164,50 @@ def _expected(hours: float, types: list[str], user_label: str, g: dict, o: dict)
 
 
 # ── Assignments ──────────────────────────────────────────────────────────────
+# A normal working day; assignments beyond this trigger an over-allocation
+# warning (never a hard block — owners decide).
+WORKDAY_HOURS = 8.0
+
+_PRIORITIES = ("high", "medium", "low")
+
+
 async def upsert_assignment(
     db: AsyncSession, ctx: AuthContext, *, project_id: uuid.UUID, user_label: str,
     day: date, hours: float, link_type_names: list[str],
     expected_links: int | None = None, note: str | None = None,
-) -> TaskAssignment:
+    priority: str | None = None,
+) -> tuple[TaskAssignment, list[str]]:
+    """Create/update one plan row. Snapshots WHICH rate produced the target
+    (manual | override | global) and returns plain-English warnings (leave,
+    non-working day, over-allocation) the UI surfaces as toasts."""
     ctx.assert_project(project_id)
     if hours < 0 or hours > 24:
         raise ValidationAppError("Hours must be between 0 and 24.")
     label = user_label.strip()[:200]
     if not label:
         raise ValidationAppError("User is required.")
+    if priority and priority not in _PRIORITIES:
+        raise ValidationAppError("Priority must be high, medium or low.")
     types = [t.strip()[:80] for t in link_type_names if t.strip()][:12]
+
+    g, o = await _lph_map(db, ctx.workspace_id)
     if expected_links is None:
-        g, o = await _lph_map(db, ctx.workspace_id)
         expected_links = _expected(hours, types, label, g, o)
+        used_override = any((label, t.lower()) in o for t in types)
+        rate_source = "override" if used_override else "global"
+    else:
+        rate_source = "manual"
+    lph_used = round(expected_links / hours, 1) if hours > 0 else None
+
     stmt = (
         pg_insert(TaskAssignment)
         .values(
             workspace_id=ctx.workspace_id, project_id=project_id, user_label=label,
             day=day, hours=hours, link_type_names=types,
-            expected_links=max(0, int(expected_links)), note=(note or "")[:300] or None,
+            expected_links=max(0, int(expected_links)),
+            rate_source=rate_source, lph_used=lph_used,
+            priority=priority or None,
+            note=(note or "")[:300] or None,
             created_by=ctx.user.id,
         )
         .on_conflict_do_update(
@@ -192,6 +215,8 @@ async def upsert_assignment(
             set_={
                 "hours": hours, "link_type_names": types,
                 "expected_links": max(0, int(expected_links)),
+                "rate_source": rate_source, "lph_used": lph_used,
+                "priority": priority or None,
                 "note": (note or "")[:300] or None, "created_by": ctx.user.id,
             },
         )
@@ -199,7 +224,51 @@ async def upsert_assignment(
     )
     row_id = (await db.execute(stmt)).scalar_one()
     await db.flush()
-    return await db.get(TaskAssignment, row_id)
+    row = await db.get(TaskAssignment, row_id)
+
+    # Smart warnings — informational, never blocking.
+    warnings: list[str] = []
+    override = (
+        await db.execute(
+            select(WorkingDay.is_working).where(
+                WorkingDay.workspace_id == ctx.workspace_id, WorkingDay.day == day
+            )
+        )
+    ).scalar_one_or_none()
+    working = override if override is not None else _default_working(day)
+    if not working:
+        warnings.append(
+            f"{day.isoformat()} is a non-working day — this plan won't count against "
+            f"{label} unless the calendar changes."
+        )
+    on_leave = (
+        await db.execute(
+            select(LeaveRequest.id).where(
+                LeaveRequest.workspace_id == ctx.workspace_id,
+                LeaveRequest.user_label == label,
+                LeaveRequest.status == "approved",
+                LeaveRequest.start_date <= day,
+                LeaveRequest.end_date >= day,
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if on_leave is not None:
+        warnings.append(f"{label} has APPROVED LEAVE on {day.isoformat()} — the plan is excused.")
+    total_hours = (
+        await db.execute(
+            select(func.coalesce(func.sum(TaskAssignment.hours), 0)).where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.user_label == label,
+                TaskAssignment.day == day,
+            )
+        )
+    ).scalar_one()
+    if float(total_hours) > WORKDAY_HOURS:
+        warnings.append(
+            f"{label} now has {float(total_hours):g}h assigned on {day.isoformat()} "
+            f"(more than a {WORKDAY_HOURS:g}h workday) — check the plan."
+        )
+    return row, warnings
 
 
 async def delete_assignment(db: AsyncSession, ctx: AuthContext, assignment_id: uuid.UUID) -> None:
@@ -308,10 +377,42 @@ async def day_report(
                     None if not excused
                     else ("On approved leave" if on_leave(a.user_label, a.day) else "Non-working day")
                 ),
+                "priority": a.priority,
+                "rate_source": a.rate_source,
+                "lph_used": float(a.lph_used) if a.lph_used is not None else None,
                 "note": a.note,
             }
         )
     return out
+
+
+async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
+    """Every person the caller may plan for: the employee catalog labels plus
+    anyone already appearing in assignments — TeamLead scoping applied."""
+    from app.models.employee import UserEmployeeMapping
+
+    labels = set(
+        (
+            await db.execute(
+                select(UserEmployeeMapping.sheet_user_label).where(
+                    UserEmployeeMapping.workspace_id == ctx.workspace_id
+                )
+            )
+        ).scalars().all()
+    )
+    labels |= set(
+        (
+            await db.execute(
+                select(TaskAssignment.user_label)
+                .where(TaskAssignment.workspace_id == ctx.workspace_id)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    scope = await visible_labels(db, ctx)
+    if scope is not None:
+        labels &= scope
+    return sorted(labels, key=str.lower)
 
 
 # ── Working days ─────────────────────────────────────────────────────────────

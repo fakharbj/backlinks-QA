@@ -69,6 +69,11 @@ class TaskAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     hours: Mapped[float] = mapped_column(Numeric(4, 1), nullable=False, default=0)
     link_type_names: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     expected_links: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Snapshot of HOW the target was produced (0026) — history stays explainable
+    # even after rates change: global | override (user's personal rate) | manual.
+    rate_source: Mapped[str | None] = mapped_column(String(16))
+    lph_used: Mapped[float | None] = mapped_column(Numeric(6, 1))
+    priority: Mapped[str | None] = mapped_column(String(10))  # high | medium | low
     note: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 

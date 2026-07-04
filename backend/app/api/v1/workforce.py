@@ -69,6 +69,7 @@ class AssignmentUpsert(BaseModel):
     hours: float = Field(ge=0, le=24)
     link_type_names: list[str] = Field(default_factory=list)
     expected_links: int | None = None  # blank → computed from productivity
+    priority: str | None = None        # high | medium | low
     note: str | None = None
 
 
@@ -77,10 +78,11 @@ async def upsert_assignment(
     payload: AssignmentUpsert, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
 ) -> dict:
-    row = await workforce_service.upsert_assignment(
+    row, warnings = await workforce_service.upsert_assignment(
         db, ctx, project_id=payload.project_id, user_label=payload.user_label,
         day=payload.day, hours=payload.hours, link_type_names=payload.link_type_names,
         expected_links=payload.expected_links, note=payload.note,
+        priority=payload.priority,
     )
     await audit_service.record(
         db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
@@ -88,7 +90,19 @@ async def upsert_assignment(
         summary=f"Assigned {payload.user_label} · {payload.day} · {payload.hours}h",
     )
     await db.commit()
-    return {"id": str(row.id), "expected_links": row.expected_links}
+    return {
+        "id": str(row.id),
+        "expected_links": row.expected_links,
+        "rate_source": row.rate_source,
+        "lph_used": float(row.lph_used) if row.lph_used is not None else None,
+        "warnings": warnings,
+    }
+
+
+@router.get("/labels")
+async def known_labels(ctx: AuthCtx, db: ReadSession) -> list[str]:
+    """Everyone the caller can plan for (employee catalog + past assignments)."""
+    return await workforce_service.known_labels(db, ctx)
 
 
 @router.delete("/assignments/{assignment_id}", response_model=Message)

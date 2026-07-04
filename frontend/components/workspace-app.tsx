@@ -2276,26 +2276,86 @@ function TasksDesk({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const weekAgoIso = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  // Local-safe date helpers (no UTC off-by-one).
+  const fmtIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const mondayOf = (d: Date) => {
+    const x = new Date(d);
+    x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+    return x;
+  };
+  const todayIso = fmtIso(new Date());
+  const weekAgoIso = fmtIso(new Date(Date.now() - 6 * 86400000));
   const [from, setFrom] = useState(weekAgoIso);
   const [to, setTo] = useState(todayIso);
+  const [view, setView] = useState<"planner" | "project" | "list">("planner");
+  // The planner works week-by-week (day-wise, like the old Google Sheet).
+  const [weekStart, setWeekStart] = useState(() => fmtIso(mondayOf(new Date())));
+  const weekDays = useMemo(() => {
+    const base = new Date(`${weekStart}T00:00:00`);
+    return [...Array(7)].map((_, i) => {
+      const d = new Date(base);
+      d.setDate(d.getDate() + i);
+      return fmtIso(d);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekStart]);
+  const shiftWeek = (delta: number) => {
+    const d = new Date(`${weekStart}T00:00:00`);
+    d.setDate(d.getDate() + delta * 7);
+    setWeekStart(fmtIso(d));
+  };
+  const rangeFrom = view === "list" ? from : weekDays[0];
+  const rangeTo = view === "list" ? to : weekDays[6];
 
   type DayRow = {
     id: string; day: string; project_id: string; user_label: string; hours: number;
     link_type_names: string[]; expected_links: number; actual_links: number;
-    completion_pct: number | null; excused: boolean; excuse_reason: string | null; note: string | null;
+    completion_pct: number | null; excused: boolean; excuse_reason: string | null;
+    priority: string | null; rate_source: string | null; lph_used: number | null;
+    note: string | null;
   };
   const report = useQuery({
-    queryKey: ["day-report", token, from, to, projectId],
+    queryKey: ["day-report", token, rangeFrom, rangeTo, projectId],
     enabled: Boolean(token),
     queryFn: () =>
       api<DayRow[]>(
-        `/workforce/day-report?date_from=${from}&date_to=${to}${projectId ? `&project_id=${projectId}` : ""}`,
+        `/workforce/day-report?date_from=${rangeFrom}&date_to=${rangeTo}${projectId ? `&project_id=${projectId}` : ""}`,
         { token }
       )
   });
-  const [view, setView] = useState<"list" | "grid">("list");
+  // Everyone plannable (employee catalog + past assignments), TeamLead-scoped.
+  const knownLabels = useQuery({
+    queryKey: ["workforce-labels", token],
+    enabled: Boolean(token),
+    queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+  // Working-day shading for the planner week (may span two months).
+  const wm1 = { y: Number(weekDays[0].slice(0, 4)), m: Number(weekDays[0].slice(5, 7)) };
+  const wm2 = { y: Number(weekDays[6].slice(0, 4)), m: Number(weekDays[6].slice(5, 7)) };
+  const weekCal1 = useQuery({
+    queryKey: ["work-calendar", token, wm1.y, wm1.m],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<Array<{ day: string; is_working: boolean; is_override: boolean }>>(
+        `/workforce/calendar?year=${wm1.y}&month=${wm1.m}`,
+        { token }
+      )
+  });
+  const weekCal2 = useQuery({
+    queryKey: ["work-calendar", token, wm2.y, wm2.m],
+    enabled: Boolean(token) && (wm1.m !== wm2.m || wm1.y !== wm2.y),
+    queryFn: () =>
+      api<Array<{ day: string; is_working: boolean; is_override: boolean }>>(
+        `/workforce/calendar?year=${wm2.y}&month=${wm2.m}`,
+        { token }
+      )
+  });
+  const workingMap = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const d of [...(weekCal1.data || []), ...(weekCal2.data || [])]) m.set(d.day, d.is_working);
+    return m;
+  }, [weekCal1.data, weekCal2.data]);
   const productivity = useQuery({
     queryKey: ["productivity", token],
     enabled: Boolean(token),
@@ -2329,29 +2389,67 @@ function TasksDesk({
   });
 
   // ── Add-assignment form ──────────────────────────────────────────────
+  const formRef = useRef<HTMLElement | null>(null);
   const [fDay, setFDay] = useState(todayIso);
   const [fUser, setFUser] = useState("");
   const [fProject, setFProject] = useState(projectId || "");
   const [fHours, setFHours] = useState("4");
   const [fTypes, setFTypes] = useState("");
+  const [fPriority, setFPriority] = useState("medium");
+  const [fNote, setFNote] = useState("");
+  const [fTarget, setFTarget] = useState(""); // manual target override (optional)
   const linkTypes = useQuery({
     queryKey: ["link-types", token],
     enabled: Boolean(token),
     queryFn: () => api<LinkType[]>("/link-types", { token })
   });
+  // Planner cells prefill the form ("+ Add" or clicking a chip to edit).
+  const prefillForm = (p: { user?: string; day?: string; row?: DayRow }) => {
+    if (p.row) {
+      setFDay(p.row.day);
+      setFUser(p.row.user_label);
+      setFProject(p.row.project_id);
+      setFHours(String(p.row.hours));
+      setFTypes(p.row.link_type_names.join(","));
+      setFPriority(p.row.priority || "medium");
+      setFNote(p.row.note || "");
+      setFTarget(p.row.rate_source === "manual" ? String(p.row.expected_links) : "");
+    } else {
+      if (p.user) setFUser(p.user);
+      if (p.day) setFDay(p.day);
+    }
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const rateWording = (src: string | null, lph: number | null) => {
+    if (src === "manual") return "manual target set by hand";
+    if (src === "override") return `${lph ?? "?"} links/hr — this person's own rate`;
+    if (src === "global") return `${lph ?? "?"} links/hr — global rate`;
+    return "";
+  };
   const addAssignment = useMutation({
     mutationFn: () =>
-      api<{ id: string; expected_links: number }>("/workforce/assignments", {
-        token,
-        method: "POST",
-        body: JSON.stringify({
-          project_id: fProject || projectId, user_label: fUser.trim(), day: fDay,
-          hours: Number(fHours) || 0,
-          link_type_names: fTypes ? fTypes.split(",") : []
-        })
-      }),
+      api<{ id: string; expected_links: number; rate_source: string | null; lph_used: number | null; warnings: string[] }>(
+        "/workforce/assignments",
+        {
+          token,
+          method: "POST",
+          body: JSON.stringify({
+            project_id: fProject || projectId, user_label: fUser.trim(), day: fDay,
+            hours: Number(fHours) || 0,
+            link_type_names: fTypes ? fTypes.split(",") : [],
+            priority: fPriority || null,
+            note: fNote.trim() || null,
+            expected_links: fTarget.trim() ? Number(fTarget) : null
+          })
+        }
+      ),
     onSuccess: (r) => {
-      onNotice(`Assigned — ${r.expected_links} links expected for that day.`);
+      onNotice(
+        `Assigned — target ${r.expected_links} links (${rateWording(r.rate_source, r.lph_used)}).`
+      );
+      (r.warnings || []).forEach((w) => onNotice(`⚠ ${w}`));
+      setFNote("");
+      setFTarget("");
       queryClient.invalidateQueries({ queryKey: ["day-report"] });
     },
     onError: (e: Error) => onNotice(e.message)
@@ -2438,11 +2536,22 @@ function TasksDesk({
       </div>
 
       {/* Assign */}
-      <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+      <section ref={formRef} className="rounded-xl border border-line bg-panel p-4 shadow-card">
         <SectionTitle title="Assign work" flush />
         <div className="flex flex-wrap items-end gap-2 pt-3">
           <input type="date" value={fDay} onChange={(e) => setFDay(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
-          <input value={fUser} onChange={(e) => setFUser(e.target.value)} placeholder="User (sheet name)…" className="h-9 w-40 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input
+            value={fUser}
+            onChange={(e) => setFUser(e.target.value)}
+            placeholder="User (sheet name)…"
+            list="ls-known-labels"
+            className="h-9 w-40 rounded-lg border border-line bg-panel px-2 text-sm"
+          />
+          <datalist id="ls-known-labels">
+            {(knownLabels.data || []).map((l) => (
+              <option key={l} value={l} />
+            ))}
+          </datalist>
           <select value={fProject} onChange={(e) => setFProject(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
             <option value="">Project…</option>
             {projects.map((p) => (
@@ -2452,9 +2561,34 @@ function TasksDesk({
           <input type="number" min={0} max={24} step={0.5} value={fHours} onChange={(e) => setFHours(e.target.value)} className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-sm" title="Hours" />
           <FilterMultiSelect
             label="Link types"
-            options={(linkTypes.data || []).map((lt) => ({ value: lt.name }))}
+            options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
             selected={fTypes ? fTypes.split(",") : []}
             onChange={(v) => setFTypes(v.join(","))}
+          />
+          <select
+            value={fPriority}
+            onChange={(e) => setFPriority(e.target.value)}
+            title="Priority for this assignment"
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+          >
+            <option value="high">High priority</option>
+            <option value="medium">Medium priority</option>
+            <option value="low">Low priority</option>
+          </select>
+          <input
+            type="number"
+            min={0}
+            value={fTarget}
+            onChange={(e) => setFTarget(e.target.value)}
+            placeholder="Target (auto)"
+            title="Leave blank to calculate the target from productivity rates (personal rate beats global). Type a number to set it by hand — highest priority."
+            className="h-9 w-28 rounded-lg border border-line bg-panel px-2 text-sm"
+          />
+          <input
+            value={fNote}
+            onChange={(e) => setFNote(e.target.value)}
+            placeholder="Note (e.g. Only niche relevant)…"
+            className="h-9 w-56 rounded-lg border border-line bg-panel px-2 text-sm"
           />
           <button
             onClick={() => addAssignment.mutate()}
@@ -2464,95 +2598,220 @@ function TasksDesk({
             {addAssignment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Assign
           </button>
-          <span className="text-xs text-muted">Expected links are calculated from the productivity settings below.</span>
+          <span className="text-xs text-muted">
+            Target priority: manual number → person&apos;s own rate → global rate. Assigning the same person+project+day again updates that plan.
+          </span>
         </div>
       </section>
 
-      {/* Day report */}
+      {/* Plan vs done — weekly planner (day-wise, like the old sheet), project view, list */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
             Plan vs done
             <span className="flex overflow-hidden rounded-lg border border-line text-xs font-medium">
               <button
+                onClick={() => setView("planner")}
+                title="Weekly planner — people down the side, weekdays across the top; click any cell to plan"
+                className={clsx("px-2.5 py-1 transition", view === "planner" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+              >
+                Week planner
+              </button>
+              <button
+                onClick={() => setView("project")}
+                title="By project — who works on each project, day by day"
+                className={clsx("px-2.5 py-1 transition", view === "project" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+              >
+                By project
+              </button>
+              <button
                 onClick={() => setView("list")}
                 className={clsx("px-2.5 py-1 transition", view === "list" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
               >
                 List
               </button>
-              <button
-                onClick={() => setView("grid")}
-                title="Schedule grid — people down the side, days across the top (like the Google Sheet)"
-                className={clsx("px-2.5 py-1 transition", view === "grid" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
-              >
-                Schedule grid
-              </button>
             </span>
           </h3>
-          <div className="flex items-center gap-2 text-xs text-muted">
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
-            –
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
-          </div>
+          {view === "list" ? (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+              –
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-sm">
+              <button onClick={() => shiftWeek(-1)} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">← Prev week</button>
+              <span className="font-medium text-ink">
+                {formatDay(weekDays[0])} – {formatDay(weekDays[6])}
+              </span>
+              <button onClick={() => shiftWeek(1)} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">Next week →</button>
+              <button onClick={() => setWeekStart(fmtIso(mondayOf(new Date())))} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">Today</button>
+            </div>
+          )}
         </div>
-        {view === "grid" ? (
+        {view !== "list" ? (
           <div className="overflow-x-auto">
             {(() => {
               const rows = report.data || [];
-              const gridDays = Array.from(new Set(rows.map((r) => r.day))).sort();
-              const gridUsers = Array.from(new Set(rows.map((r) => r.user_label))).sort();
-              if (!rows.length)
-                return report.isLoading ? (
-                  <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
-                ) : (
-                  <Empty label="No assignments in this period — add one above." />
+              const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+              const approvedLeaves = (leaves.data || []).filter((l) => l.status === "approved");
+              const onLeave = (label: string, d: string) =>
+                approvedLeaves.some((l) => l.user_label === label && l.start_date <= d && l.end_date >= d);
+              const isWorking = (d: string) => {
+                const w = workingMap.get(d);
+                if (w !== undefined) return w;
+                return new Date(`${d}T00:00:00`).getDay() !== 0; // default: Sunday off
+              };
+              const chip = (r: DayRow) => (
+                <span
+                  key={r.id}
+                  onClick={() => prefillForm({ row: r })}
+                  title={
+                    `${projectName(r.project_id)} — ${r.hours}h · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"}\n` +
+                    `Target ${r.expected_links} (${rateWording(r.rate_source, r.lph_used) || "rate unknown"}) · done ${r.actual_links}` +
+                    `${r.priority ? ` · ${r.priority} priority` : ""}${r.note ? `\nNote: ${r.note}` : ""}` +
+                    `${r.excused ? `\n${r.excuse_reason}` : ""}\nClick to edit this plan.`
+                  }
+                  className={clsx(
+                    "block cursor-pointer rounded-md px-1.5 py-1 text-[11px] leading-tight transition hover:ring-1 hover:ring-ocean/40",
+                    r.excused
+                      ? "bg-field text-muted"
+                      : (r.completion_pct ?? 0) >= 100
+                        ? "bg-ocean/10 text-ocean"
+                        : (r.completion_pct ?? 0) >= 60
+                          ? "bg-ember/10 text-ember"
+                          : "bg-danger/10 text-danger"
+                  )}
+                >
+                  <span className="flex items-center gap-1">
+                    <span
+                      className={clsx(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        r.priority === "high" ? "bg-danger" : r.priority === "low" ? "bg-line" : "bg-ember"
+                      )}
+                      title={`${r.priority || "medium"} priority`}
+                    />
+                    <span className="truncate font-semibold">{projectName(r.project_id)}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm(`Remove ${r.user_label}'s ${projectName(r.project_id)} plan on ${r.day}?`))
+                          removeAssignment.mutate(r.id);
+                      }}
+                      className="ml-auto shrink-0 text-muted hover:text-danger"
+                      aria-label="Remove assignment"
+                    >
+                      ×
+                    </button>
+                  </span>
+                  <span className="block">
+                    {r.hours}h · {r.actual_links}/{r.expected_links}
+                    {r.excused ? " · excused" : ""}
+                  </span>
+                </span>
+              );
+              const dayHeader = (d: string, i: number) => (
+                <Th key={d}>
+                  <span className={clsx(!isWorking(d) && "opacity-50")} title={isWorking(d) ? d : `${d} — non-working day`}>
+                    {dayNames[i]} {d.slice(8)}/{d.slice(5, 7)}
+                    {!isWorking(d) ? " · off" : ""}
+                  </span>
+                </Th>
+              );
+              if (view === "project") {
+                const gridProjects = Array.from(new Set(rows.map((r) => r.project_id)));
+                if (!gridProjects.length)
+                  return report.isLoading ? (
+                    <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                  ) : (
+                    <Empty label="No plans this week — use the Week planner or the form above." />
+                  );
+                return (
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-field text-xs uppercase text-muted">
+                      <tr>
+                        <Th>Project</Th>
+                        {weekDays.map(dayHeader)}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-line">
+                      {gridProjects.map((pid) => (
+                        <tr key={pid} className="align-top">
+                          <Td><span className="font-medium text-ink">{projectName(pid)}</span></Td>
+                          {weekDays.map((d) => {
+                            const cell = rows.filter((r) => r.project_id === pid && r.day === d);
+                            const hours = cell.reduce((a, r) => a + r.hours, 0);
+                            const target = cell.reduce((a, r) => a + r.expected_links, 0);
+                            const done = cell.reduce((a, r) => a + r.actual_links, 0);
+                            return (
+                              <Td key={d}>
+                                {cell.length ? (
+                                  <span className={clsx("block min-w-[110px] space-y-1", !isWorking(d) && "opacity-60")}>
+                                    {cell.map((r) => (
+                                      <span
+                                        key={r.id}
+                                        onClick={() => prefillForm({ row: r })}
+                                        title={`${r.user_label} — ${r.hours}h · target ${r.expected_links}, done ${r.actual_links}. Click to edit.`}
+                                        className="block cursor-pointer rounded-md bg-field px-1.5 py-1 text-[11px] leading-tight text-ink hover:ring-1 hover:ring-ocean/40"
+                                      >
+                                        {r.user_label} · {r.hours}h · {r.actual_links}/{r.expected_links}
+                                      </span>
+                                    ))}
+                                    <span className="block text-[10px] font-semibold text-muted">
+                                      Σ {hours}h · {done}/{target}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-muted">—</span>
+                                )}
+                              </Td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              }
+              const gridUsers = Array.from(
+                new Set([...(knownLabels.data || []), ...rows.map((r) => r.user_label)])
+              ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+              if (!gridUsers.length)
+                return (
+                  <Empty label="No people yet — sync a sheet (users are created automatically) or type a name in the form above." />
                 );
               return (
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
                     <tr>
-                      <Th>User</Th>
-                      {gridDays.map((d) => (
-                        <Th key={d}><span title={d}>{d.slice(5)}</span></Th>
-                      ))}
+                      <Th>Person</Th>
+                      {weekDays.map(dayHeader)}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
                     {gridUsers.map((u) => (
                       <tr key={u} className="align-top">
-                        <Td><span className="font-medium text-ink">{u}</span></Td>
-                        {gridDays.map((d) => {
+                        <Td><span className="whitespace-nowrap font-medium text-ink">{u}</span></Td>
+                        {weekDays.map((d) => {
                           const cell = rows.filter((r) => r.user_label === u && r.day === d);
+                          const leave = onLeave(u, d);
                           return (
                             <Td key={d}>
-                              {cell.length ? (
-                                <span className="block min-w-[110px] space-y-1">
-                                  {cell.map((r) => (
-                                    <span
-                                      key={r.id}
-                                      title={`${projectName(r.project_id)} — ${r.hours}h · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"} · ${r.actual_links}/${r.expected_links} done${r.excused ? ` · ${r.excuse_reason}` : ""}`}
-                                      className={clsx(
-                                        "block rounded-md px-1.5 py-1 text-[11px] leading-tight",
-                                        r.excused
-                                          ? "bg-field text-muted"
-                                          : (r.completion_pct ?? 0) >= 100
-                                            ? "bg-ocean/10 text-ocean"
-                                            : (r.completion_pct ?? 0) >= 60
-                                              ? "bg-ember/10 text-ember"
-                                              : "bg-danger/10 text-danger"
-                                      )}
-                                    >
-                                      <span className="block truncate font-semibold">{projectName(r.project_id)}</span>
-                                      <span className="block">
-                                        {r.hours}h · {r.actual_links}/{r.expected_links}
-                                        {r.excused ? " · excused" : ""}
-                                      </span>
-                                    </span>
-                                  ))}
-                                </span>
-                              ) : (
-                                <span className="text-xs text-muted">—</span>
-                              )}
+                              <span className={clsx("block min-w-[116px] space-y-1", !isWorking(d) && "opacity-60")}>
+                                {leave ? (
+                                  <span className="block rounded-md bg-plum/10 px-1.5 py-1 text-[11px] font-medium text-plum" title="Approved leave — plans on this day are excused">
+                                    On leave
+                                  </span>
+                                ) : null}
+                                {cell.map(chip)}
+                                <button
+                                  onClick={() => prefillForm({ user: u, day: d })}
+                                  title={`Plan work for ${u} on ${d}`}
+                                  className="block w-full rounded-md border border-dashed border-line px-1.5 py-0.5 text-center text-[11px] text-muted transition hover:border-ocean/50 hover:text-ocean"
+                                >
+                                  + Add
+                                </button>
+                              </span>
                             </Td>
                           );
                         })}
@@ -2569,18 +2828,38 @@ function TasksDesk({
             <thead className="bg-field text-xs uppercase text-muted">
               <tr>
                 <Th>Date</Th><Th>User</Th><Th>Project</Th><Th>Hours</Th><Th>Link types</Th>
-                <Th>Expected</Th><Th>Done</Th><Th>Completion</Th><Th>{" "}</Th>
+                <Th>Priority</Th><Th>Target</Th><Th>Done</Th><Th>Completion</Th><Th>Note</Th><Th>{" "}</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {(report.data || []).map((r) => (
-                <tr key={r.id} className="hover:bg-field/60">
-                  <Td>{r.day}</Td>
+                <tr key={r.id} className="cursor-pointer hover:bg-field/60" onClick={() => prefillForm({ row: r })}>
+                  <Td><span className="whitespace-nowrap">{r.day}</span></Td>
                   <Td><span className="font-medium text-ink">{r.user_label}</span></Td>
                   <Td>{projectName(r.project_id)}</Td>
                   <Td>{r.hours}h</Td>
                   <Td><span className="text-xs text-muted">{r.link_type_names.map(linkTypeLabel).join(", ") || "—"}</span></Td>
-                  <Td>{r.expected_links}</Td>
+                  <Td>
+                    <span
+                      className={clsx(
+                        "rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase",
+                        r.priority === "high"
+                          ? "bg-danger/10 text-danger"
+                          : r.priority === "low"
+                            ? "bg-field text-muted"
+                            : "bg-ember/10 text-ember"
+                      )}
+                    >
+                      {r.priority || "medium"}
+                    </span>
+                  </Td>
+                  <Td>
+                    <span title={rateWording(r.rate_source, r.lph_used) || undefined}>
+                      {r.expected_links}
+                      {r.rate_source === "manual" ? <span className="ml-0.5 text-[10px] text-muted">(manual)</span> : null}
+                      {r.rate_source === "override" ? <span className="ml-0.5 text-[10px] text-plum">(own rate)</span> : null}
+                    </span>
+                  </Td>
                   <Td>{r.actual_links}</Td>
                   <Td>
                     {r.excused ? (
@@ -2603,8 +2882,16 @@ function TasksDesk({
                     )}
                   </Td>
                   <Td>
+                    <span className="block max-w-[180px] truncate text-xs text-muted" title={r.note || undefined}>
+                      {r.note || "—"}
+                    </span>
+                  </Td>
+                  <Td>
                     <button
-                      onClick={() => removeAssignment.mutate(r.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeAssignment.mutate(r.id);
+                      }}
                       className="text-xs text-muted hover:text-danger hover:underline"
                     >
                       Remove
