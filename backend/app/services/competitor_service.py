@@ -423,6 +423,34 @@ async def list_domains(
     return [dict(r) for r in rows]
 
 
+async def sheet_backlinks(
+    db: AsyncSession, ctx: AuthContext, sheet_id: uuid.UUID, *, limit: int = 1000
+) -> list[dict]:
+    """All links inside ONE competitor upload (parent = the competitor URL)."""
+    sheet = await db.get(CompetitorSheet, sheet_id)
+    if sheet is None or sheet.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Competitor upload not found")
+    await _ensure_project(db, ctx, sheet.project_id)
+    rows = (
+        await db.execute(
+            select(
+                CompetitorBacklink.raw_url,
+                CompetitorBacklink.source_domain,
+                CompetitorBacklink.anchor,
+                CompetitorBacklink.rel,
+                CompetitorBacklink.link_type_label,
+            )
+            .where(CompetitorBacklink.competitor_sheet_id == sheet_id)
+            .order_by(CompetitorBacklink.source_domain.asc(), CompetitorBacklink.raw_url.asc())
+            .limit(max(1, min(limit, 5000)))
+        )
+    ).all()
+    return [
+        {"url": u, "source_domain": d, "anchor": a, "rel": r, "link_type": lt}
+        for u, d, a, r, lt in rows
+    ]
+
+
 async def domain_backlinks(
     db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, domain: str, *, limit: int = 300
 ) -> list[dict]:

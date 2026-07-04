@@ -265,6 +265,24 @@ export function WorkspaceApp() {
     return <AuthPanel onToken={saveTokens} />;
   }
 
+  // SECURITY: never flash the full admin UI while the role is still loading —
+  // a standard user must only ever see their own surface.
+  if (!role) {
+    return (
+      <main className="grid min-h-screen place-items-center">
+        <div className="flex flex-col items-center gap-3 text-muted">
+          <Loader2 className="h-6 w-6 animate-spin" />
+          <span className="text-sm">Loading your workspace…</span>
+          {me.isError ? (
+            <button onClick={logout} className="text-xs font-medium text-ocean hover:underline">
+              Sign in again
+            </button>
+          ) : null}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen">
       <TopBar
@@ -1131,7 +1149,7 @@ function Overview({
               onClick={() => onOpenBacklinks({ issue_label: "LINK_MISSING" })} />
           </div>
         </section>
-        <section className="rounded-xl border border-line bg-panel shadow-card">
+        <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Recent Changes" />
           <div className="divide-y divide-line">
             {(stats?.recent_changes || []).slice(0, 8).map((item) => (
@@ -1280,7 +1298,7 @@ function Overview({
             </section>
           </div>
 
-          <section className="rounded-xl border border-line bg-panel shadow-card">
+          <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
             <SectionTitle title="Recent regressions (high severity)" />
             <div className="divide-y divide-line">
               {(stats.recent_regressions || []).map((r) => (
@@ -1804,7 +1822,8 @@ function Backlinks({
                 />
               </Th>
               <Th>Status</Th>
-              <SortTh label="Score" sortKey="score" sort={sort} dir={sortDir} onSort={onSortCol} />
+              <SortTh label="Score" sortKey="score" sort={sort} dir={sortDir} onSort={onSortCol}
+                help="How scoring works: every link starts at 100 and each problem subtracts points by how serious it is (link missing/dead page cost the most; nofollow, weak pages cost less). Below the warn line = Needs improvement; below the fail line = Not qualified. Hover any score to see its exact breakdown. Thresholds are set per link type/project in Scoring." />
               <SortTh label="Source" sortKey="source_domain" sort={sort} dir={sortDir} onSort={onSortCol}
                 help="Sort by source domain A→Z" />
               <Th>Target</Th>
@@ -2342,6 +2361,52 @@ function ImportDesk({
   );
 }
 
+// Plain-words color guide for the planner (completion, excusals, priority).
+function ColorLegend() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+  const Row = ({ swatch, label }: { swatch: string; label: string }) => (
+    <span className="flex items-center gap-2">
+      <span className={clsx("h-3.5 w-6 shrink-0 rounded", swatch)} />
+      <span className="text-ink">{label}</span>
+    </span>
+  );
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="h-8 rounded-full border border-line px-3 text-xs font-medium text-muted transition hover:bg-field hover:text-ink"
+      >
+        🎨 What do the colors mean?
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full z-30 mt-1 w-72 space-y-1.5 rounded-lg border border-line bg-panel p-3 text-xs shadow-pop">
+          <p className="font-semibold uppercase tracking-wide text-muted">Completion</p>
+          <Row swatch="border border-ocean/50 bg-ocean/20" label="Green — target reached (100%+)" />
+          <Row swatch="border border-ember/50 bg-ember/20" label="Amber — getting there (60–99%)" />
+          <Row swatch="border border-danger/50 bg-danger/20" label="Red — behind (below 60%)" />
+          <Row swatch="border border-line bg-field" label="Gray — excused (day off / leave), doesn't count" />
+          <Row swatch="border border-plum/50 bg-plum/20" label="Purple — on approved leave" />
+          <p className="pt-1 font-semibold uppercase tracking-wide text-muted">Priority dot</p>
+          <span className="flex items-center gap-3">
+            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-danger" /> High</span>
+            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-ember" /> Medium</span>
+            <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-line" /> Low</span>
+          </span>
+          <p className="pt-1 text-muted">The thin bar inside each plan shows progress toward its target.</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // The standard-user home: their OWN tasks, targets, completion and leave —
 // nothing team-wide, nothing admin.
 function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
@@ -2504,6 +2569,18 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
         </div>
       </section>
 
+      {/* Week at a glance + the company working-days calendar */}
+      <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+        <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
+          {me.data?.labels.length ? (
+            <UserWeekStrip token={token} userLabel={me.data.labels[0]} />
+          ) : (
+            <div />
+          )}
+          <MiniWorkCalendar token={token} />
+        </div>
+      </section>
+
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="My leave" />
         <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
@@ -2579,6 +2656,9 @@ function TasksDesk({
   };
   const rangeFrom = view === "list" ? from : weekDays[0];
   const rangeTo = view === "list" ? to : weekDays[6];
+  // Week-view filters: narrow every view to one person and/or one project.
+  const [filterUser, setFilterUser] = useState("");
+  const [filterProject, setFilterProject] = useState("");
 
   type DayRow = {
     id: string; day: string; project_id: string; user_label: string; hours: number;
@@ -2596,11 +2676,57 @@ function TasksDesk({
         { token }
       )
   });
+  const visibleRows = useMemo(
+    () =>
+      (report.data || []).filter(
+        (r) =>
+          (!filterUser || r.user_label === filterUser) &&
+          (!filterProject || r.project_id === filterProject)
+      ),
+    [report.data, filterUser, filterProject]
+  );
   // Everyone plannable (employee catalog + past assignments), TeamLead-scoped.
   const knownLabels = useQuery({
     queryKey: ["workforce-labels", token],
     enabled: Boolean(token),
     queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+  // Weekly template: set the week up ONCE — next weeks fill automatically
+  // (a daily job materializes the coming week without overwriting manual edits).
+  const templates = useQuery({
+    queryKey: ["task-templates", token],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ users: Array<{ user_label: string; entries: number; week_hours: number }>; total_entries: number }>(
+        "/workforce/templates",
+        { token }
+      )
+  });
+  const saveTemplateMut = useMutation({
+    mutationFn: () =>
+      api<{ saved: number; message: string }>("/workforce/templates/save-week", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ week_start: weekDays[0] })
+      }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["task-templates"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const applyTemplateMut = useMutation({
+    mutationFn: () =>
+      api<{ applied: number; skipped_inactive: number; warnings: string[] }>(
+        "/workforce/templates/apply",
+        { token, method: "POST", body: JSON.stringify({ week_start: weekDays[0] }) }
+      ),
+    onSuccess: (r) => {
+      onNotice(`Template applied — ${r.applied} plan${r.applied === 1 ? "" : "s"} set for this week.`);
+      (r.warnings || []).forEach((w) => onNotice(`⚠ ${w}`));
+      queryClient.invalidateQueries({ queryKey: ["day-report"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
   });
   // Working-day shading for the planner week (may span two months).
   const wm1 = { y: Number(weekDays[0].slice(0, 4)), m: Number(weekDays[0].slice(5, 7)) };
@@ -2665,6 +2791,10 @@ function TasksDesk({
   const [fDay, setFDay] = useState(todayIso);
   const [fUser, setFUser] = useState("");
   const [fProject, setFProject] = useState(projectId || "");
+  // Project context is a hard scope: entering a project locks planning to it.
+  useEffect(() => {
+    if (projectId) setFProject(projectId);
+  }, [projectId]);
   const [fHours, setFHours] = useState("4");
   const [fTypes, setFTypes] = useState("");
   const [fPriority, setFPriority] = useState("medium");
@@ -2797,6 +2927,14 @@ function TasksDesk({
 
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name || "—";
 
+  // "Where the time goes" aggregation (hours / target / done by person & project).
+  const statGroups: Array<[string, (r: DayRow) => string, (k: string) => string]> = [
+    ["By person", (r) => r.user_label, (k) => k],
+    ["By project", (r) => r.project_id, (k) => projectName(k)]
+  ];
+  const statRangeLabel =
+    rangeFrom === rangeTo ? formatDay(rangeFrom) : `${formatDay(rangeFrom)} – ${formatDay(rangeTo)}`;
+
   return (
     <section className="space-y-5">
       <div>
@@ -2812,24 +2950,30 @@ function TasksDesk({
         <SectionTitle title="Assign work" flush />
         <div className="flex flex-wrap items-end gap-2 pt-3">
           <input type="date" value={fDay} onChange={(e) => setFDay(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
-          <input
+          <SearchSelect
             value={fUser}
-            onChange={(e) => setFUser(e.target.value)}
-            placeholder="User (sheet name)…"
-            list="ls-known-labels"
-            className="h-9 w-40 rounded-lg border border-line bg-panel px-2 text-sm"
+            onChange={setFUser}
+            options={(knownLabels.data || []).map((l) => ({ value: l }))}
+            placeholder="Person…"
+            allowCustom
+            width="w-44"
           />
-          <datalist id="ls-known-labels">
-            {(knownLabels.data || []).map((l) => (
-              <option key={l} value={l} />
-            ))}
-          </datalist>
-          <select value={fProject} onChange={(e) => setFProject(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
-            <option value="">Project…</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
+          {projectId ? (
+            <span
+              className="flex h-9 items-center rounded-lg border border-ocean/40 bg-ocean/10 px-2.5 text-sm font-medium text-ocean"
+              title="You're inside this project — plans here always belong to it"
+            >
+              {projects.find((p) => p.id === projectId)?.name || "This project"}
+            </span>
+          ) : (
+            <SearchSelect
+              value={fProject}
+              onChange={setFProject}
+              options={projects.map((p) => ({ value: p.id, label: p.name }))}
+              placeholder="Project…"
+              width="w-48"
+            />
+          )}
           <input type="number" min={0} max={24} step={0.5} value={fHours} onChange={(e) => setFHours(e.target.value)} className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-sm" title="Hours" />
           <FilterMultiSelect
             label="Link types"
@@ -2876,6 +3020,53 @@ function TasksDesk({
         </div>
       </section>
 
+      {/* Where the time goes — hours & completion by person and by project */}
+      {visibleRows.length ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {statGroups.map(([title, keyOf, labelOf]) => {
+            const agg = new Map<string, { hours: number; target: number; done: number }>();
+            for (const r of visibleRows) {
+              const k = keyOf(r);
+              const a = agg.get(k) || { hours: 0, target: 0, done: 0 };
+              a.hours += r.hours;
+              if (!r.excused) {
+                a.target += r.expected_links;
+                a.done += r.actual_links;
+              }
+              agg.set(k, a);
+            }
+            const entries = [...agg.entries()].sort((x, y) => y[1].hours - x[1].hours);
+            return (
+              <section key={title} className="rounded-xl border border-line bg-panel shadow-card">
+                <SectionTitle title={`${title} — ${statRangeLabel}`} />
+                <div className="divide-y divide-line">
+                  {entries.map(([k, a]) => {
+                    const pctDone = a.target > 0 ? Math.round((100 * a.done) / a.target) : null;
+                    return (
+                      <div key={k} className="flex items-center gap-3 px-3 py-2 text-sm">
+                        <span className="w-40 truncate font-medium text-ink" title={labelOf(k)}>{labelOf(k)}</span>
+                        <span className="w-14 whitespace-nowrap text-xs text-muted">{Math.round(a.hours * 10) / 10}h</span>
+                        <span className="w-20 whitespace-nowrap text-xs text-muted">{a.done}/{a.target}</span>
+                        <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-field">
+                          <span
+                            className={clsx(
+                              "block h-full rounded-full",
+                              pctDone == null ? "bg-line" : pctDone >= 100 ? "bg-ocean" : pctDone >= 60 ? "bg-ember" : "bg-danger"
+                            )}
+                            style={{ width: `${Math.min(100, pctDone ?? 0)}%` }}
+                          />
+                        </span>
+                        <span className="w-12 text-right text-xs font-semibold text-ink">{pctDone == null ? "—" : `${pctDone}%`}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : null}
+
       {/* Plan vs done — weekly planner (day-wise, like the old sheet), project view, list */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
@@ -2921,10 +3112,58 @@ function TasksDesk({
             </div>
           )}
         </div>
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
+          <SearchSelect
+            value={filterUser}
+            onChange={setFilterUser}
+            options={(knownLabels.data || []).map((l) => ({ value: l }))}
+            placeholder="Filter: everyone"
+            width="w-44"
+          />
+          {!projectId ? (
+            <SearchSelect
+              value={filterProject}
+              onChange={setFilterProject}
+              options={projects.map((pr) => ({ value: pr.id, label: pr.name }))}
+              placeholder="Filter: all projects"
+              width="w-48"
+            />
+          ) : null}
+          <span className="mx-1 h-5 w-px bg-line" />
+          <button
+            onClick={() => {
+              if (window.confirm(`Apply the weekly template to the week of ${formatDay(weekDays[0])}?\n\nExisting plans for the same person+project+day are updated; targets recalculate from current rates.`))
+                applyTemplateMut.mutate();
+            }}
+            disabled={applyTemplateMut.isPending || !(templates.data?.total_entries || 0)}
+            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Copy the standing weekly plan into this week"}
+            className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+          >
+            {applyTemplateMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            Apply template to this week
+          </button>
+          <button
+            onClick={() => {
+              if (window.confirm("Save THIS week's plans as the standing weekly template?\n\nThis replaces the previous template. Coming weeks are filled from it automatically (manual changes are never overwritten)."))
+                saveTemplateMut.mutate();
+            }}
+            disabled={saveTemplateMut.isPending}
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+          >
+            Save week as template
+          </button>
+          <span className="text-xs text-muted" title="The standing weekly plan — applied to coming weeks automatically every evening">
+            {(templates.data?.total_entries || 0)
+              ? `Template: ${templates.data?.total_entries} entr${(templates.data?.total_entries || 0) === 1 ? "y" : "ies"} · ${templates.data?.users.length} people · auto-fills next weeks`
+              : "No weekly template yet"}
+          </span>
+          <span className="ml-auto" />
+          <ColorLegend />
+        </div>
         {view !== "list" ? (
           <div className="overflow-x-auto">
             {(() => {
-              const rows = report.data || [];
+              const rows = visibleRows;
               const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
               const approvedLeaves = (leaves.data || []).filter((l) => l.status === "approved");
               const onLeave = (label: string, d: string) =>
@@ -2945,14 +3184,14 @@ function TasksDesk({
                     `${r.excused ? `\n${r.excuse_reason}` : ""}\nClick to edit this plan.`
                   }
                   className={clsx(
-                    "block cursor-pointer rounded-md px-1.5 py-1 text-[11px] leading-tight transition hover:ring-1 hover:ring-ocean/40",
+                    "block cursor-pointer rounded-md border px-1.5 py-1 text-[11px] leading-tight transition hover:ring-1 hover:ring-ocean/40",
                     r.excused
-                      ? "bg-field text-muted"
+                      ? "border-line bg-field text-muted"
                       : (r.completion_pct ?? 0) >= 100
-                        ? "bg-ocean/10 text-ocean"
+                        ? "border-ocean/40 bg-ocean/15 text-ocean"
                         : (r.completion_pct ?? 0) >= 60
-                          ? "bg-ember/10 text-ember"
-                          : "bg-danger/10 text-danger"
+                          ? "border-ember/40 bg-ember/15 text-ember"
+                          : "border-danger/40 bg-danger/15 text-danger"
                   )}
                 >
                   <span className="flex items-center gap-1">
@@ -2980,6 +3219,14 @@ function TasksDesk({
                     {r.hours}h · {r.actual_links}/{r.expected_links}
                     {r.excused ? " · excused" : ""}
                   </span>
+                  {!r.excused && r.expected_links > 0 ? (
+                    <span className="mt-1 block h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                      <span
+                        className="block h-full rounded-full bg-current"
+                        style={{ width: `${Math.min(100, r.completion_pct ?? 0)}%` }}
+                      />
+                    </span>
+                  ) : null}
                 </span>
               );
               const dayHeader = (d: string, i: number) => (
@@ -3023,10 +3270,27 @@ function TasksDesk({
                                       <span
                                         key={r.id}
                                         onClick={() => prefillForm({ row: r })}
-                                        title={`${r.user_label} — ${r.hours}h · target ${r.expected_links}, done ${r.actual_links}. Click to edit.`}
-                                        className="block cursor-pointer rounded-md bg-field px-1.5 py-1 text-[11px] leading-tight text-ink hover:ring-1 hover:ring-ocean/40"
+                                        title={`${r.user_label} — ${r.hours}h · target ${r.expected_links}, done ${r.actual_links}${r.excused ? ` · ${r.excuse_reason}` : `${r.completion_pct != null ? ` · ${r.completion_pct}% done` : ""}`}. Click to edit.`}
+                                        className={clsx(
+                                          "block cursor-pointer rounded-md border px-1.5 py-1 text-[11px] leading-tight transition hover:ring-1 hover:ring-ocean/40",
+                                          r.excused
+                                            ? "border-line bg-field text-muted"
+                                            : (r.completion_pct ?? 0) >= 100
+                                              ? "border-ocean/40 bg-ocean/15 text-ocean"
+                                              : (r.completion_pct ?? 0) >= 60
+                                                ? "border-ember/40 bg-ember/15 text-ember"
+                                                : "border-danger/40 bg-danger/15 text-danger"
+                                        )}
                                       >
                                         {r.user_label} · {r.hours}h · {r.actual_links}/{r.expected_links}
+                                        {!r.excused && r.expected_links > 0 ? (
+                                          <span className="mt-1 block h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                                            <span
+                                              className="block h-full rounded-full bg-current"
+                                              style={{ width: `${Math.min(100, r.completion_pct ?? 0)}%` }}
+                                            />
+                                          </span>
+                                        ) : null}
                                       </span>
                                     ))}
                                     <span className="block text-[10px] font-semibold text-muted">
@@ -3104,7 +3368,7 @@ function TasksDesk({
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {(report.data || []).map((r) => (
+              {visibleRows.map((r) => (
                 <tr key={r.id} className="cursor-pointer hover:bg-field/60" onClick={() => prefillForm({ row: r })}>
                   <Td><span className="whitespace-nowrap">{r.day}</span></Td>
                   <Td><span className="font-medium text-ink">{r.user_label}</span></Td>
@@ -3176,8 +3440,8 @@ function TasksDesk({
           {report.isLoading ? (
             <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
           ) : null}
-          {!report.isLoading && !(report.data || []).length ? (
-            <Empty label="No assignments in this period — add one above." />
+          {!report.isLoading && !visibleRows.length ? (
+            <Empty label="No assignments match this period/filters — add one above." />
           ) : null}
         </div>
         )}
@@ -3186,30 +3450,10 @@ function TasksDesk({
       <div className="grid gap-5 lg:grid-cols-2">
         {/* Productivity settings */}
         <section className="rounded-xl border border-line bg-panel shadow-card">
-          <SectionTitle title="Productivity (links per hour)" />
-          <div className="divide-y divide-line">
-            {(productivity.data?.global || []).map((g) => (
-              <div key={g.link_type_name} className="flex items-center justify-between gap-3 p-3">
-                <span className="text-sm font-medium text-ink">{g.link_type_name}</span>
-                <input
-                  type="number"
-                  min={0.1}
-                  step={0.5}
-                  defaultValue={g.links_per_hour}
-                  onBlur={(e) => {
-                    const v = Number(e.target.value);
-                    if (v > 0 && v !== g.links_per_hour)
-                      saveProductivity.mutate({ link_type_name: g.link_type_name, links_per_hour: v });
-                  }}
-                  className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
-                />
-              </div>
-            ))}
-            {!(productivity.data?.global || []).length ? <Empty label="No link types yet." /> : null}
-          </div>
-          <div className="border-t border-line">
+          <SectionTitle title="Productivity (links per hour) — personal rates first" />
+          <div className="border-b border-line">
             <p className="flex items-center gap-1.5 px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
-              Per-person overrides
+              Per-person rates (highest priority)
               <HelpTip text="A personal rate for one link type, e.g. a fast profile-link builder. It beats the global rate above when calculating that person's expected links. Remove it to fall back to the global rate." />
             </p>
             <div className="divide-y divide-line">
@@ -3254,6 +3498,29 @@ function TasksDesk({
                 Add override
               </button>
             </div>
+          </div>
+          <p className="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
+            Global default rates (used when no personal rate exists)
+          </p>
+          <div className="divide-y divide-line">
+            {(productivity.data?.global || []).map((g) => (
+              <div key={g.link_type_name} className="flex items-center justify-between gap-3 p-3">
+                <span className="text-sm font-medium text-ink">{g.link_type_name}</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.5}
+                  defaultValue={g.links_per_hour}
+                  onBlur={(e) => {
+                    const v = Number(e.target.value);
+                    if (v > 0 && v !== g.links_per_hour)
+                      saveProductivity.mutate({ link_type_name: g.link_type_name, links_per_hour: v });
+                  }}
+                  className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
+                />
+              </div>
+            ))}
+            {!(productivity.data?.global || []).length ? <Empty label="No link types yet." /> : null}
           </div>
         </section>
 
@@ -3454,6 +3721,143 @@ function DeltaPill({ now, prev }: { now: number; prev?: number | null }) {
     <span className={clsx("ml-1 text-[10px] font-semibold", d > 0 ? "text-ocean" : "text-danger")}>
       {d > 0 ? "+" : ""}{d}
     </span>
+  );
+}
+
+// Read-only company working-days calendar (for user dashboards).
+function MiniWorkCalendar({ token }: { token: string | null }) {
+  const [cursor, setCursor] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  });
+  const cal = useQuery({
+    queryKey: ["work-calendar", token, cursor.year, cursor.month],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<Array<{ day: string; is_working: boolean; is_override: boolean }>>(
+        `/workforce/calendar?year=${cursor.year}&month=${cursor.month}`,
+        { token }
+      )
+  });
+  return (
+    <div>
+      <div className="flex items-center justify-between pb-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted">Working days</span>
+        <span className="flex items-center gap-1.5 text-xs">
+          <button onClick={() => setCursor((c) => (c.month === 1 ? { year: c.year - 1, month: 12 } : { ...c, month: c.month - 1 }))} className="rounded border border-line px-1.5 py-0.5 hover:bg-field">←</button>
+          <span className="font-medium text-ink">{cursor.year}-{String(cursor.month).padStart(2, "0")}</span>
+          <button onClick={() => setCursor((c) => (c.month === 12 ? { year: c.year + 1, month: 1 } : { ...c, month: c.month + 1 }))} className="rounded border border-line px-1.5 py-0.5 hover:bg-field">→</button>
+        </span>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {(cal.data || []).map((d) => (
+          <span
+            key={d.day}
+            title={`${d.day} — ${d.is_working ? "working day" : "day off"}`}
+            className={clsx(
+              "grid h-7 place-items-center rounded text-[11px] font-medium",
+              d.is_working ? "bg-ocean/10 text-ocean" : "bg-field text-muted"
+            )}
+          >
+            {Number(d.day.slice(8))}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// One person's current week at a glance — plans, targets, completion, leave.
+// Used by the admin per-user dashboard AND the user's own My Work page.
+function UserWeekStrip({
+  token,
+  userLabel,
+  projectId
+}: {
+  token: string | null;
+  userLabel: string;
+  projectId?: string;
+}) {
+  const fmtIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const monday = (() => {
+    const x = new Date();
+    x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+    return fmtIso(x);
+  })();
+  const days = [...Array(7)].map((_, i) => {
+    const d = new Date(`${monday}T00:00:00`);
+    d.setDate(d.getDate() + i);
+    return fmtIso(d);
+  });
+  type Row = {
+    id: string; day: string; project_id: string; hours: number; expected_links: number;
+    actual_links: number; completion_pct: number | null; excused: boolean;
+    excuse_reason: string | null; priority: string | null; note: string | null;
+    link_type_names: string[];
+  };
+  const rep = useQuery({
+    queryKey: ["user-week", token, userLabel, monday, projectId || ""],
+    enabled: Boolean(token) && Boolean(userLabel),
+    queryFn: () =>
+      api<Row[]>(
+        `/workforce/day-report?date_from=${days[0]}&date_to=${days[6]}&user_label=${encodeURIComponent(userLabel)}${projectId ? `&project_id=${projectId}` : ""}`,
+        { token }
+      )
+  });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const pName = (id: string) => (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+  const rows = rep.data || [];
+  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const target = rows.reduce((a, r) => a + (r.excused ? 0 : r.expected_links), 0);
+  const done = rows.reduce((a, r) => a + (r.excused ? 0 : r.actual_links), 0);
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+          This week — {userLabel}
+        </span>
+        <span className="text-xs text-muted">
+          {done}/{target} links{target > 0 ? ` · ${Math.round((100 * done) / target)}%` : ""}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-7">
+        {days.map((d, i) => {
+          const cell = rows.filter((r) => r.day === d);
+          return (
+            <div key={d} className="rounded-lg border border-line bg-panel p-1.5">
+              <div className="mb-1 text-[10px] font-semibold uppercase text-muted">
+                {names[i]} {d.slice(8)}/{d.slice(5, 7)}
+              </div>
+              {cell.map((r) => (
+                <div
+                  key={r.id}
+                  title={`${pName(r.project_id)} — ${r.hours}h · ${r.actual_links}/${r.expected_links}${r.excused ? ` · ${r.excuse_reason}` : ""}${r.note ? ` · ${r.note}` : ""}`}
+                  className={clsx(
+                    "mb-1 rounded border px-1 py-0.5 text-[10px] leading-tight",
+                    r.excused
+                      ? "border-line bg-field text-muted"
+                      : (r.completion_pct ?? 0) >= 100
+                        ? "border-ocean/40 bg-ocean/15 text-ocean"
+                        : (r.completion_pct ?? 0) >= 60
+                          ? "border-ember/40 bg-ember/15 text-ember"
+                          : "border-danger/40 bg-danger/15 text-danger"
+                  )}
+                >
+                  <span className="block truncate font-semibold">{pName(r.project_id)}</span>
+                  {r.hours}h · {r.actual_links}/{r.expected_links}
+                </div>
+              ))}
+              {!cell.length ? <span className="text-[10px] text-muted">—</span> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -3746,7 +4150,7 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
                               <div key={r.id} className="flex items-center gap-2 text-xs">
                                 <Status value={r.override_status || r.status} reason={r.top_issue_label} />
                                 <span className="w-8 text-right font-semibold">{r.score ?? "-"}</span>
-                                <a href={r.source_page_url} target="_blank" rel="noreferrer" className="flex-1 truncate text-ocean hover:underline">
+                                <a href={r.source_page_url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-ocean hover:underline">
                                   {r.source_page_url}
                                 </a>
                                 <span className="shrink-0 text-muted">{linkTypeLabel(r.link_type) || ""}</span>
@@ -3757,6 +4161,11 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
                             ) : null}
                           </div>
                         )}
+                        {/* The admin's per-person dashboard: week plan + company calendar */}
+                        <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_260px]">
+                          <UserWeekStrip token={token} userLabel={u.user_label} projectId={projectId || undefined} />
+                          <MiniWorkCalendar token={token} />
+                        </div>
                       </td>
                     </tr>
                   ) : null}
@@ -4114,6 +4523,17 @@ function CompetitorDesk({
         { token }
       )
   });
+  // One competitor upload expanded to show everything inside it.
+  const [openSheet, setOpenSheet] = useState<string | null>(null);
+  const sheetLinks = useQuery({
+    queryKey: ["competitor-sheet-links", token, openSheet],
+    enabled: Boolean(token) && Boolean(openSheet),
+    queryFn: () =>
+      api<Array<{ url: string; source_domain: string | null; anchor: string | null; rel: string | null; link_type: string | null }>>(
+        `/competitors/sheets/${openSheet}/backlinks`,
+        { token }
+      )
+  });
   const previewMut = useMutation({
     mutationFn: () =>
       api<CompPreview>("/competitors/preview", {
@@ -4351,38 +4771,81 @@ function CompetitorDesk({
         <section className="rounded-xl border border-line bg-panel shadow-card">
           <SectionTitle title="Uploads" />
           <div className="divide-y divide-line">
-            {(sheets.data || []).map((sh) => (
-              <div key={sh.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
-                <div className="min-w-0">
-                  <span className="font-medium text-ink">{sh.name}</span>{" "}
-                  {sh.competitor_url ? (
-                    <a
-                      href={sh.competitor_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="mr-1 text-xs text-ocean hover:underline"
+            {(sheets.data || []).map((sh) => {
+              const compDomain = (sh.competitor_url || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+              return (
+                <div key={sh.id}>
+                  <div
+                    onClick={() => setOpenSheet(openSheet === sh.id ? null : sh.id)}
+                    title="Click to see every backlink inside this upload"
+                    className={clsx(
+                      "flex cursor-pointer flex-wrap items-center justify-between gap-2 p-3 text-sm transition hover:bg-field/50",
+                      openSheet === sh.id && "bg-ocean/5"
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <span className={clsx("mr-1 inline-block text-muted transition", openSheet === sh.id && "rotate-90")}>▸</span>
+                      <span className="font-semibold text-ink">{compDomain || sh.name}</span>{" "}
+                      {sh.competitor_url ? (
+                        <a
+                          href={sh.competitor_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Open the competitor's website"
+                          className="mr-1 text-xs text-ocean hover:underline"
+                        >
+                          visit ↗
+                        </a>
+                      ) : null}
+                      {sh.name && compDomain && sh.name !== compDomain ? (
+                        <span className="mr-1 text-xs text-muted">({sh.name})</span>
+                      ) : null}
+                      <span className="whitespace-nowrap text-xs text-muted" title="New = domains first seen in this upload · Seen before = domains an earlier upload already covered">
+                        {sh.total_rows} links · {sh.new_domains} new domain{sh.new_domains === 1 ? "" : "s"} / {sh.existing_domains} seen before · {formatDate(sh.created_at)}
+                      </span>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm(`Delete upload “${sh.name}” and its ${sh.total_rows} competitor links? Opportunities will be recalculated.`)) {
+                          deleteSheet.mutate(sh.id);
+                        }
+                      }}
+                      className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
+                      aria-label={`Delete upload ${sh.name}`}
                     >
-                      {sh.competitor_url.replace(/^https?:\/\//, "").replace(/\/$/, "")}
-                    </a>
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                  {openSheet === sh.id ? (
+                    <div className="border-t border-line bg-field/40 p-3">
+                      <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                        Backlinks in this upload
+                      </div>
+                      {sheetLinks.isLoading ? (
+                        <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                      ) : (
+                        <div className="max-h-72 space-y-1 overflow-y-auto">
+                          {(sheetLinks.data || []).map((l, i) => (
+                            <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
+                              <a href={l.url} target="_blank" rel="noreferrer" className="max-w-[420px] truncate text-ocean hover:underline" title={l.url}>
+                                {l.url}
+                              </a>
+                              {l.source_domain ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.source_domain}</span> : null}
+                              {l.anchor ? <span className="text-muted">“{l.anchor}”</span> : null}
+                              {l.rel ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.rel}</span> : null}
+                              {l.link_type ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">{l.link_type}</span> : null}
+                            </div>
+                          ))}
+                          {!(sheetLinks.data || []).length ? <p className="text-xs text-muted">No links stored for this upload.</p> : null}
+                        </div>
+                      )}
+                    </div>
                   ) : null}
-                  <span className="whitespace-nowrap text-xs text-muted" title="New = domains first seen in this upload · Seen before = domains an earlier upload already covered">
-                    {sh.total_rows} links · {sh.new_domains} new domain{sh.new_domains === 1 ? "" : "s"} / {sh.existing_domains} seen before · {formatDate(sh.created_at)}
-                  </span>
                 </div>
-                <button
-                  onClick={() => {
-                    if (window.confirm(`Delete upload “${sh.name}” and its ${sh.total_rows} competitor links? Opportunities will be recalculated.`)) {
-                      deleteSheet.mutate(sh.id);
-                    }
-                  }}
-                  className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
-                  aria-label={`Delete upload ${sh.name}`}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -5851,6 +6314,20 @@ function EmployeesDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const setActiveMut = useMutation({
+    mutationFn: (v: { id: string; is_active: boolean }) =>
+      api(`/employees/mappings/${v.id}`, {
+        token,
+        method: "PATCH",
+        body: JSON.stringify({ is_active: v.is_active })
+      }),
+    onSuccess: () => {
+      onNotice("Saved");
+      queryClient.invalidateQueries({ queryKey: ["employees"] });
+      queryClient.invalidateQueries({ queryKey: ["workforce-labels"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
   const addCode = useMutation({
     mutationFn: () =>
       api("/employees/codes", {
@@ -5922,6 +6399,11 @@ function EmployeesDesk({
                 <Th>Sheet user</Th>
                 <Th>Backlinks</Th>
                 <Th>Mapped to</Th>
+                <Th>
+                  <span title="Laid off = excluded from assignment pickers, the planner and weekly templates. All their past work stays visible everywhere.">
+                    Status
+                  </span>
+                </Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -5941,6 +6423,27 @@ function EmployeesDesk({
                     >
                       {userOptions}
                     </select>
+                  </Td>
+                  <Td>
+                    <button
+                      onClick={() => {
+                        const laidOff = m.is_active === false;
+                        const msg = laidOff
+                          ? `Mark ${m.sheet_user_label} as ACTIVE again? They return to the assignment pickers and planner.`
+                          : `Mark ${m.sheet_user_label} as LAID OFF?
+
+They disappear from assignment pickers, the planner and weekly templates — all their past work stays.`;
+                        if (window.confirm(msg)) setActiveMut.mutate({ id: m.id, is_active: laidOff });
+                      }}
+                      className={clsx(
+                        "rounded-full border px-2.5 py-1 text-xs font-semibold transition",
+                        m.is_active === false
+                          ? "border-danger/40 bg-danger/10 text-danger hover:bg-danger/20"
+                          : "border-ocean/40 bg-ocean/10 text-ocean hover:bg-ocean/20"
+                      )}
+                    >
+                      {m.is_active === false ? "Laid off" : "Active"}
+                    </button>
                   </Td>
                 </tr>
               ))}
@@ -7319,6 +7822,119 @@ function ScoreTip({
         )}
       </span>
     </span>
+  );
+}
+
+// Select-2.0-style single select: a button that opens a searchable dropdown.
+// Use for any picker with more than a handful of options (people, projects).
+function SearchSelect({
+  value,
+  onChange,
+  options,
+  placeholder,
+  allowClear = true,
+  allowCustom = false,
+  width = "w-44"
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label?: string }>;
+  placeholder: string;
+  allowClear?: boolean;
+  allowCustom?: boolean; // typed text can be used as a brand-new value
+  width?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+  const current = options.find((o) => o.value === value);
+  const shown = options.filter((o) =>
+    (o.label || o.value).toLowerCase().includes(q.trim().toLowerCase())
+  );
+  return (
+    <div ref={ref} className={clsx("relative", width)}>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((v) => !v);
+          setQ("");
+        }}
+        className={clsx(
+          "flex h-9 w-full items-center justify-between gap-1 rounded-lg border bg-panel px-2.5 text-sm transition",
+          value ? "border-ocean/40 font-medium text-ink" : "border-line text-muted"
+        )}
+      >
+        <span className="truncate">{current ? current.label || current.value : placeholder}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {allowClear && value ? (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange("");
+              }}
+              className="text-muted hover:text-danger"
+              aria-label="Clear"
+            >
+              ×
+            </span>
+          ) : null}
+          <ChevronDown className="h-3.5 w-3.5 text-muted" />
+        </span>
+      </button>
+      {open ? (
+        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-line bg-panel p-1.5 shadow-pop">
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Type to search…"
+            className="mb-1 h-8 w-full rounded-md border border-line bg-field/50 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          />
+          <div className="max-h-56 overflow-y-auto">
+            {shown.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+                className={clsx(
+                  "block w-full truncate rounded-md px-2 py-1.5 text-left text-sm transition hover:bg-field",
+                  o.value === value ? "bg-ocean/10 font-semibold text-ocean" : "text-ink"
+                )}
+              >
+                {o.label || o.value}
+              </button>
+            ))}
+            {allowCustom && q.trim() && !options.some((o) => o.value.toLowerCase() === q.trim().toLowerCase()) ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onChange(q.trim());
+                  setOpen(false);
+                }}
+                className="block w-full truncate rounded-md px-2 py-1.5 text-left text-sm font-medium text-ocean transition hover:bg-field"
+              >
+                + Use “{q.trim()}”
+              </button>
+            ) : null}
+            {!shown.length && !(allowCustom && q.trim()) ? (
+              <p className="px-2 py-2 text-xs text-muted">No matches.</p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

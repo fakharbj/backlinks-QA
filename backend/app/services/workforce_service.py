@@ -163,8 +163,10 @@ async def _lph_map(db: AsyncSession, workspace_id: uuid.UUID) -> tuple[dict, dic
             )
         ).scalars().all()
     }
+    # Labels are case-insensitive people ("KEVIN" == "Kevin") — the override for
+    # one spelling MUST apply to every spelling, so both sides key on .lower().
     o = {
-        (r.user_label, r.link_type_name.lower()): float(r.links_per_hour)
+        (r.user_label.lower(), r.link_type_name.lower()): float(r.links_per_hour)
         for r in (
             await db.execute(
                 select(UserProductivityOverride).where(
@@ -183,7 +185,7 @@ def _expected(hours: float, types: list[str], user_label: str, g: dict, o: dict)
     total = 0.0
     for t in types:
         key = t.lower()
-        lph = o.get((user_label, key), g.get(key, _DEFAULT_LPH))
+        lph = o.get((user_label.lower(), key), g.get(key, _DEFAULT_LPH))
         total += per_type_hours * lph
     return int(round(total))
 
@@ -218,7 +220,7 @@ async def upsert_assignment(
     g, o = await _lph_map(db, ctx.workspace_id)
     if expected_links is None:
         expected_links = _expected(hours, types, label, g, o)
-        used_override = any((label, t.lower()) in o for t in types)
+        used_override = any((label.lower(), t.lower()) in o for t in types)
         rate_source = "override" if used_override else "global"
     else:
         rate_source = "manual"
@@ -456,15 +458,17 @@ async def my_work(
 
 
 async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
-    """Every person the caller may plan for: the employee catalog labels plus
-    anyone already appearing in assignments — TeamLead scoping applied."""
+    """Every person the caller may plan for: ACTIVE employee catalog labels plus
+    anyone already appearing in assignments — laid-off people are excluded
+    (their history stays; they just leave the pickers). TeamLead scoping applied."""
     from app.models.employee import UserEmployeeMapping
 
     labels = set(
         (
             await db.execute(
                 select(UserEmployeeMapping.sheet_user_label).where(
-                    UserEmployeeMapping.workspace_id == ctx.workspace_id
+                    UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                    UserEmployeeMapping.is_active.is_(True),
                 )
             )
         ).scalars().all()
@@ -478,10 +482,182 @@ async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
             )
         ).scalars().all()
     )
+    # Laid-off labels leave the pickers even if they have past assignments.
+    inactive = set(
+        (
+            await db.execute(
+                select(UserEmployeeMapping.sheet_user_label).where(
+                    UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                    UserEmployeeMapping.is_active.is_(False),
+                )
+            )
+        ).scalars().all()
+    )
+    labels -= inactive
     scope = await visible_labels(db, ctx)
     if scope is not None:
         labels &= scope
     return sorted(labels, key=str.lower)
+
+
+# ── Weekly templates (set the week up ONCE) ──────────────────────────────────
+def _monday_of(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+async def save_week_as_template(
+    db: AsyncSession, ctx: AuthContext, *, week_start: date
+) -> int:
+    """Capture the given week's assignments as the standing weekly template
+    (replaces the previous template). Laid-off people are skipped."""
+    from sqlalchemy import delete as sa_delete
+
+    from app.models.workforce import TaskWeekTemplate
+
+    monday = _monday_of(week_start)
+    rows = (
+        await db.execute(
+            select(TaskAssignment).where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.day >= monday,
+                TaskAssignment.day <= monday + timedelta(days=6),
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        raise ValidationAppError("That week has no assignments to save as a template.")
+    await db.execute(
+        sa_delete(TaskWeekTemplate).where(TaskWeekTemplate.workspace_id == ctx.workspace_id)
+    )
+    active = set(await known_labels(db, ctx))
+    saved = 0
+    for a in rows:
+        if a.user_label not in active:
+            continue
+        db.add(
+            TaskWeekTemplate(
+                workspace_id=ctx.workspace_id, user_label=a.user_label,
+                weekday=a.day.weekday(), project_id=a.project_id,
+                hours=float(a.hours), link_type_names=a.link_type_names or [],
+                priority=a.priority, note=a.note, created_by=ctx.user.id,
+            )
+        )
+        saved += 1
+    await db.flush()
+    return saved
+
+
+async def apply_template_to_week(
+    db: AsyncSession, ctx: AuthContext, *, week_start: date
+) -> dict:
+    """Materialize the standing weekly template into real assignments for the
+    given week (idempotent upsert — targets recompute from CURRENT rates)."""
+    from app.models.workforce import TaskWeekTemplate
+
+    monday = _monday_of(week_start)
+    tpl = (
+        await db.execute(
+            select(TaskWeekTemplate).where(
+                TaskWeekTemplate.workspace_id == ctx.workspace_id
+            )
+        )
+    ).scalars().all()
+    if not tpl:
+        raise ValidationAppError(
+            "No weekly template yet — set one week up, then use “Save week as template”."
+        )
+    active = set(await known_labels(db, ctx))
+    applied = skipped = 0
+    all_warnings: list[str] = []
+    for t in tpl:
+        if t.user_label not in active:
+            skipped += 1
+            continue
+        _, warnings = await upsert_assignment(
+            db, ctx, project_id=t.project_id, user_label=t.user_label,
+            day=monday + timedelta(days=t.weekday), hours=float(t.hours),
+            link_type_names=t.link_type_names or [], priority=t.priority, note=t.note,
+        )
+        all_warnings.extend(warnings)
+        applied += 1
+    return {"applied": applied, "skipped_inactive": skipped, "warnings": all_warnings[:6]}
+
+
+async def auto_apply_templates(db: AsyncSession) -> dict:
+    """Beat job: materialize NEXT week's plans from every workspace's weekly
+    template. Fill-gaps only (ON CONFLICT DO NOTHING) — a manually adjusted
+    plan for next week is never overwritten by automation."""
+    from app.models.employee import UserEmployeeMapping
+    from app.models.workforce import TaskWeekTemplate
+
+    next_monday = _monday_of(date.today()) + timedelta(days=7)
+    ws_ids = (
+        await db.execute(select(TaskWeekTemplate.workspace_id).distinct())
+    ).scalars().all()
+    created = 0
+    for ws in ws_ids:
+        tpl = (
+            await db.execute(
+                select(TaskWeekTemplate).where(TaskWeekTemplate.workspace_id == ws)
+            )
+        ).scalars().all()
+        inactive = set(
+            (
+                await db.execute(
+                    select(UserEmployeeMapping.sheet_user_label).where(
+                        UserEmployeeMapping.workspace_id == ws,
+                        UserEmployeeMapping.is_active.is_(False),
+                    )
+                )
+            ).scalars().all()
+        )
+        g, o = await _lph_map(db, ws)
+        for t in tpl:
+            if t.user_label in inactive:
+                continue
+            types = list(t.link_type_names or [])
+            hours = float(t.hours)
+            expected = _expected(hours, types, t.user_label, g, o)
+            used_override = any((t.user_label.lower(), x.lower()) in o for x in types)
+            stmt = (
+                pg_insert(TaskAssignment)
+                .values(
+                    workspace_id=ws, project_id=t.project_id, user_label=t.user_label,
+                    day=next_monday + timedelta(days=t.weekday), hours=hours,
+                    link_type_names=types, expected_links=max(0, expected),
+                    rate_source="override" if used_override else "global",
+                    lph_used=round(expected / hours, 1) if hours > 0 else None,
+                    priority=t.priority, note=t.note, created_by=t.created_by,
+                )
+                .on_conflict_do_nothing(constraint="uq_task_ws_proj_user_day")
+            )
+            result = await db.execute(stmt)
+            created += result.rowcount or 0
+    await db.commit()
+    return {"week_start": next_monday.isoformat(), "assignments_created": created}
+
+
+async def template_summary(db: AsyncSession, ctx: AuthContext) -> dict:
+    from app.models.workforce import TaskWeekTemplate
+
+    rows = (
+        await db.execute(
+            select(
+                TaskWeekTemplate.user_label,
+                func.count(TaskWeekTemplate.id),
+                func.coalesce(func.sum(TaskWeekTemplate.hours), 0),
+            )
+            .where(TaskWeekTemplate.workspace_id == ctx.workspace_id)
+            .group_by(TaskWeekTemplate.user_label)
+            .order_by(TaskWeekTemplate.user_label)
+        )
+    ).all()
+    return {
+        "users": [
+            {"user_label": u, "entries": int(n), "week_hours": float(h)} for u, n, h in rows
+        ],
+        "total_entries": sum(int(n) for _, n, _ in rows),
+    }
 
 
 # ── Working days ─────────────────────────────────────────────────────────────

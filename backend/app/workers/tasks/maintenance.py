@@ -141,3 +141,24 @@ def ensure_partitions(self, months_forward: int = 3) -> dict:
 )
 def retention_cleanup(self) -> dict:
     return run_async(_retention_cleanup_async())
+
+
+async def _apply_week_templates_async() -> dict:
+    from app.services import workforce_service
+
+    async with session_scope() as s:
+        return await workforce_service.auto_apply_templates(s)
+
+
+@celery_app.task(
+    name="tasks.maintenance.apply_week_templates",
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+)
+def apply_week_templates(self) -> dict:
+    """Materialize NEXT week's plans from each workspace's weekly template
+    (fill-gaps only — never overwrites manual planning)."""
+    return run_async(_apply_week_templates_async())

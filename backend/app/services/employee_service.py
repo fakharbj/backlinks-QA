@@ -88,6 +88,7 @@ async def overview(db: AsyncSession, ctx: AuthContext) -> dict:
                 "id": m.id, "sheet_user_label": m.sheet_user_label, "user_id": m.user_id,
                 "user_name": name_by_id.get(m.user_id),
                 "employee_code_id": m.employee_code_id,
+                "is_active": m.is_active,
                 "backlink_count": int(counts.get(m.sheet_user_label, 0)),
             }
             for m in mappings

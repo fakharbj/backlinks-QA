@@ -78,6 +78,31 @@ class TaskAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
 
+class TaskWeekTemplate(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """The standing weekly plan (0027): one row per (person, weekday, project).
+    Set up once — applying a week copies these into real ``task_assignments``,
+    and a weekly beat job materializes the NEXT week automatically."""
+
+    __tablename__ = "task_week_templates"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "user_label", "weekday", "project_id",
+            name="uq_task_template_ws_user_day_proj",
+        ),
+        Index("ix_task_week_templates_ws", "workspace_id", "user_label"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    user_label: Mapped[str] = mapped_column(String(200), nullable=False)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)  # 0=Mon … 6=Sun
+    project_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    hours: Mapped[float] = mapped_column(Numeric(4, 1), nullable=False, default=0)
+    link_type_names: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    priority: Mapped[str | None] = mapped_column(String(10))
+    note: Mapped[str | None] = mapped_column(String(300))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+
 class WorkingDay(UUIDPrimaryKeyMixin, Base):
     """Company calendar override for one date. No row = the default rule
     (Mon–Sat working, Sunday off)."""

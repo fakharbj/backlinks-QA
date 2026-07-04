@@ -105,6 +105,43 @@ async def known_labels(ctx: AuthCtx, db: ReadSession) -> list[str]:
     return await workforce_service.known_labels(db, ctx)
 
 
+# ── Weekly templates ("set the week up once") ────────────────────────────────
+class TemplateWeek(BaseModel):
+    week_start: date  # any day of the target week — normalized to Monday
+
+
+@router.post("/templates/save-week")
+async def save_week_template(
+    payload: TemplateWeek, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> dict:
+    """Capture that week's plans as the standing weekly template."""
+    saved = await workforce_service.save_week_as_template(db, ctx, week_start=payload.week_start)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="task_template", entity_id=ctx.workspace_id,
+        summary=f"Weekly template saved ({saved} entries)",
+    )
+    await db.commit()
+    return {"saved": saved, "message": f"Template saved — {saved} entries. Next weeks fill automatically."}
+
+
+@router.post("/templates/apply")
+async def apply_week_template(
+    payload: TemplateWeek, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> dict:
+    """Copy the standing weekly template into the given week right now."""
+    result = await workforce_service.apply_template_to_week(db, ctx, week_start=payload.week_start)
+    await db.commit()
+    return result
+
+
+@router.get("/templates")
+async def get_template_summary(ctx: AuthCtx, db: ReadSession) -> dict:
+    return await workforce_service.template_summary(db, ctx)
+
+
 @router.get("/me")
 async def my_work(
     ctx: AuthCtx,

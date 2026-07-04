@@ -8,10 +8,12 @@ cap to defend against decompression bombs.
 
 from __future__ import annotations
 
+import re
 import ssl
 import time
 import zlib
 from dataclasses import dataclass, field
+from urllib.parse import urljoin
 
 import httpx
 
@@ -19,6 +21,40 @@ from app.crawler.ssrf import SsrfBlockedError, assert_url_allowed
 from app.crawler.types import CrawlRequest, FetchError, RedirectHop
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+# JS/meta-refresh redirect stubs (parked/expired domains, "lander" shells).
+# Only tiny bodies with NO real content qualify — a normal article that happens
+# to use window.location somewhere in a script must never match.
+_STUB_MAX_BYTES = 2048
+_JS_REDIRECT_RE = re.compile(
+    r"""(?:window\.|document\.|top\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+_META_REFRESH_RE = re.compile(
+    r"""<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*url\s*=\s*([^"'>\s]+)""",
+    re.IGNORECASE,
+)
+
+
+def _stub_redirect_target(body_bytes: bytes, base_url: str) -> str | None:
+    """If the page is nothing but a JS/meta redirect shell, return where it
+    points (absolute); otherwise None."""
+    if len(body_bytes) > _STUB_MAX_BYTES:
+        return None
+    try:
+        text = body_bytes.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return None
+    if "<a " in text.lower():  # real links present → real page, not a stub
+        return None
+    m = _META_REFRESH_RE.search(text) or _JS_REDIRECT_RE.search(text)
+    if not m:
+        return None
+    target = m.group(1).strip()
+    if not target or target.startswith(("javascript:", "#")):
+        return None
+    resolved = urljoin(base_url, target)
+    return resolved if resolved.startswith(("http://", "https://")) else None
 
 
 @dataclass(slots=True)
@@ -231,6 +267,22 @@ async def fetch_raw(
             body_bytes, too_large = await _read_capped(response, max_bytes)
             await response.aclose()
             body_bytes = _maybe_decompress(body_bytes)
+
+            # Stub pages: some hosts (notably parked/expired domains) answer 200
+            # with a tiny HTML shell whose ONLY content is a JS or meta-refresh
+            # redirect. Browsers follow it; a naive crawler would report a
+            # healthy "200, no redirects" for a page that is effectively gone.
+            # Treat it as a redirect hop so the chain and final URL stay honest.
+            stub_target = _stub_redirect_target(body_bytes, str(response.url))
+            if stub_target and hop < max_redirects:
+                outcome.redirect_chain.append(
+                    RedirectHop(
+                        url=current, status=response.status_code, location=stub_target
+                    )
+                )
+                current = stub_target
+                continue
+
             outcome.redirect_chain.append(
                 RedirectHop(url=current, status=response.status_code)
             )

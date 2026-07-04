@@ -29,6 +29,7 @@ class EmployeeMappingOut(BaseModel):
     user_name: str | None = None
     employee_code_id: uuid.UUID | None = None
     backlink_count: int = 0
+    is_active: bool = True
 
 
 class EmployeeOverviewOut(BaseModel):
@@ -52,3 +53,6 @@ class EmployeeCodeUpdate(BaseModel):
 class EmployeeMappingUpdate(BaseModel):
     user_id: uuid.UUID | None = None
     employee_code_id: uuid.UUID | None = None
+    # False = laid off: excluded from assignment pickers/planner/templates;
+    # all historical work stays visible.
+    is_active: bool | None = None

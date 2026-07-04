@@ -86,6 +86,12 @@ async def list_sheets(project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> l
     return [CompetitorSheetOut.model_validate(r) for r in rows]
 
 
+@router.get("/sheets/{sheet_id}/backlinks")
+async def sheet_backlinks(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> list[dict]:
+    """Everything inside one competitor upload — the expand-under-parent view."""
+    return await competitor_service.sheet_backlinks(db, ctx, sheet_id)
+
+
 @router.delete("/sheets/{sheet_id}")
 async def delete_sheet(
     sheet_id: uuid.UUID, db: DbSession,

@@ -85,6 +85,12 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.maintenance.retention_cleanup",
         "schedule": crontab(hour="4", minute="0"),
     },
+    # Weekly planner automation: fill NEXT week's plans from each workspace's
+    # saved template (never overwrites manual planning). Daily = self-healing.
+    "apply-week-templates": {
+        "task": "tasks.maintenance.apply_week_templates",
+        "schedule": crontab(hour="18", minute="30"),
+    },
 }
 
 # Register tasks by importing the modules (their decorators bind to celery_app).

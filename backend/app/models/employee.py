@@ -65,3 +65,6 @@ class UserEmployeeMapping(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("employee_codes.id", ondelete="SET NULL")
     )
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Laid-off flag (0027): False → excluded from assignment pickers, planner
+    # rows and weekly templates. ALL history (links, tasks, reports) is kept.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

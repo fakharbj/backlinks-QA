@@ -87,6 +87,7 @@ export type EmployeeMapping = {
   user_name: string | null;
   employee_code_id: string | null;
   backlink_count: number;
+  is_active?: boolean; // false = laid off (hidden from pickers; history kept)
 };
 
 export type EmployeeOverview = {
