@@ -1876,7 +1876,22 @@ function Backlinks({
                   ) : null}
                 </Td>
                 <Td><span className="whitespace-nowrap text-xs" title={row.link_type || undefined}>{linkTypeLabel(row.link_type) || "—"}</span></Td>
-                <Td><span className="whitespace-nowrap text-xs font-medium text-ink">{row.assigned_user_label || "—"}</span></Td>
+                <Td>
+                  {row.assigned_user_label ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setUserF(row.assigned_user_label || "");
+                      }}
+                      title={`Show all links by ${row.assigned_user_label}`}
+                      className="whitespace-nowrap text-xs font-medium text-ocean hover:underline"
+                    >
+                      {row.assigned_user_label}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-muted">—</span>
+                  )}
+                </Td>
                 {!projectId ? (
                   <Td>
                     <span className="whitespace-nowrap text-xs text-muted">

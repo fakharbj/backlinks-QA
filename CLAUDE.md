@@ -232,6 +232,29 @@ Tasks **Schedule grid** (users×days) + per-user productivity override UI
 (`DELETE /workforce/productivity`), Team per-member **Projects** scoping column
 (`GET/PUT /team/members/{id}/projects`).
 
+**Final production-hardening pass shipped** (migration `0026`, 133 tests):
+Loop1 full-width shell + thin header + compact tables + one-line dates +
+plain-English statuses (PASS→Qualified, FAIL→Not qualified, PENDING→QA pending)
++ `linkTypeLabel` display names + clickable Analytics cards + inline drill +
+`SortTh`/`sortRows` sortable-header standard + password-manager-friendly login.
+Loop2 **manual QA by default** (`AUTO_QA_ON_IMPORT=false`; imports/syncs leave
+links "QA pending"), scoped check actions w/ confirmations (pending/filtered/
+stale/selected; "Recheck everything" removed), file-import upsert (no dup
+re-imports; `imports.new_rows/updated_rows`), sheet row-drift repoint+QA-reset,
+target filter, `targets_on_source` chip, Link date vs import date, server-side
+header sorting + Load more (keyset asc/desc). Loop3 competitor URL required
+(name optional→domain), per-upload new/seen-before diff (counts bug fixed),
+SEMrush header parsing + preview + template, GP guest-post variants, domain
+grid search/sort/PA/expand/load-more. Loop4 reports list-first (builder behind
+button), search/type filter, inline viewer under card, 3s generating poll.
+Loop5 editable **week planner** (users×Mon-Sun, +Add/edit/× in cells, leave +
+non-working overlays), by-project view, priority/note/manual-target,
+`rate_source`/`lph_used` snapshots, over-allocation/leave/non-working warnings,
+`/workforce/labels`. Loop6 role-safe nav via `/auth/me` (viewer→**My Work**
+only desk: today/week/targets/completion/self-leave), viewer data scoping
+(day-report/leaves/performance/productivity self-only; `/employees` manager+),
+self-only leave requests, deactivation message ("account is inactive").
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
