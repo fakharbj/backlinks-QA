@@ -127,6 +127,7 @@ async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
             modified_date=(latest.page_signals or {}).get("modified_date"),
             date_source=(latest.page_signals or {}).get("date_source"),
             raw_html_key=latest.raw_html_key, rendered_html_key=latest.rendered_html_key,
+            matched_href=latest.matched_href,
         )
     detail.history = [
         HistoryEventOut(event_type=h.event_type.value,

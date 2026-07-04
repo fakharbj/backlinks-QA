@@ -2087,8 +2087,28 @@ function BacklinkDetailDrawer({
               <FactRow k="Target" v={data.target_url} />
               <FactRow k="Expected target" v={data.expected_target_url} />
               <FactRow k="Final URL" v={data.final_url} />
+              <FactRow
+                k="Link on page"
+                v={
+                  data.link_found
+                    ? data.latest_result?.matched_href || "Found"
+                    : data.link_found === false
+                      ? "NOT found on the page"
+                      : "Not checked yet"
+                }
+              />
               <FactRow k="Rel (observed / expected)" v={`${data.current_rel ?? "-"} / ${data.expected_rel}`} />
-              <FactRow k="Anchor (observed)" v={data.current_anchor_text} />
+              <FactRow
+                k="Anchor (observed)"
+                v={
+                  data.current_anchor_text ||
+                  (data.link_found
+                    ? "Image/icon link — no text on the link itself"
+                    : data.link_found === false
+                      ? "— (the link wasn't found, so there's no anchor to read)"
+                      : "— (not checked yet)")
+                }
+              />
               <FactRow k="Expected anchor" v={data.expected_anchor_text} />
               <FactRow k="Canonical / Robots" v={`${data.canonical_status ?? "-"} / ${data.robots_status ?? "-"}`} />
               <FactRow

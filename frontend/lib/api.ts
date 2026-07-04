@@ -465,6 +465,7 @@ export type CrawlResultOut = {
   date_source: string | null;
   raw_html_key: string | null;
   rendered_html_key: string | null;
+  matched_href?: string | null; // the exact href we matched on the page
 };
 
 export type BacklinkDetail = BacklinkRow & {

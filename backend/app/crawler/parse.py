@@ -464,7 +464,11 @@ def _extract_links(
         rel = [r for r in re.split(r"\s+", (a.get("rel") or "").lower()) if r]
         anchor = re.sub(r"\s+", " ", " ".join(a.itertext())).strip()
         img = a.find(".//img")
-        image_alt = img.get("alt") if img is not None else None
+        # Any <img>/<svg> inside the anchor marks it as an image-style link even
+        # without alt text — so "found with an image anchor" never reads as blank.
+        image_alt = (img.get("alt") or "") if img is not None else None
+        if image_alt is None and a.find(".//svg") is not None:
+            image_alt = ""
 
         link = ParsedLink(
             href=href,
@@ -473,6 +477,8 @@ def _extract_links(
             unwrapped_url=unwrapped_norm,
             anchor_text=anchor,
             image_alt=image_alt,
+            aria_label=(a.get("aria-label") or "").strip() or None,
+            title_attr=(a.get("title") or "").strip() or None,
             rel=rel,
             region=region,
             in_comment=False,

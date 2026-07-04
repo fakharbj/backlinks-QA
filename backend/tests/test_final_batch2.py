@@ -145,3 +145,23 @@ def test_templates_overrides_layoff_and_competitor_parent(live_stack):
         links = client.get(f"/api/v1/competitors/sheets/{sheet_id}/backlinks", headers=h)
         assert links.status_code == 200 and len(links.json()) == 2
         assert links.json()[0]["source_domain"] == "blog-b2.test"
+
+
+def test_anchor_fallbacks_for_icon_links():
+    from app.crawler.parse import parse_html
+
+    html = """<html><body>
+      <a href="https://t1.test/">Visible <b>text</b></a>
+      <a href="https://t2.test/"><img src="x.png" alt="Brand logo"></a>
+      <a href="https://t3.test/" aria-label="Follow us on X"><svg viewBox="0 0 1 1"></svg></a>
+      <a href="https://t4.test/" title="Our old site"><img src="y.png"></a>
+      <a href="https://t5.test/"><img src="z.png"></a>
+    </body></html>"""
+    page = parse_html(html, final_url="https://src.test/")
+    by_href = {l.href: l for l in page.links}
+    assert by_href["https://t1.test/"].effective_anchor == "Visible text"
+    assert by_href["https://t2.test/"].effective_anchor == "Brand logo"       # img alt
+    assert by_href["https://t3.test/"].effective_anchor == "Follow us on X"  # aria-label
+    assert by_href["https://t4.test/"].effective_anchor == "Our old site"    # title attr
+    # Image link with no text anywhere → explicit marker, never a blank.
+    assert by_href["https://t5.test/"].effective_anchor == "[image link]"

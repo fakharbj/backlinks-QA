@@ -126,6 +126,8 @@ class CrawlResultOut(BaseModel):
     date_source: str | None = None
     raw_html_key: str | None
     rendered_html_key: str | None
+    # The exact href we matched on the page — proof of WHERE the link was found.
+    matched_href: str | None = None
 
 
 class BacklinkDetail(BacklinkRow):

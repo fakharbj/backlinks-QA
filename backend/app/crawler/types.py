@@ -89,6 +89,9 @@ class ParsedLink:
     unwrapped_url: str | None = None
     anchor_text: str = ""
     image_alt: str | None = None
+    # Fallback anchor sources for icon/button links with no visible text.
+    aria_label: str | None = None
+    title_attr: str | None = None
     rel: list[str] = field(default_factory=list)
     region: str = "body"              # header/nav/sidebar/footer/body
     in_comment: bool = False
@@ -106,7 +109,18 @@ class ParsedLink:
 
     @property
     def effective_anchor(self) -> str:
-        return self.anchor_text.strip() or (self.image_alt or "").strip()
+        """Best human-readable anchor: visible text → image alt → aria-label →
+        title attribute → an explicit '[image link]' marker so 'link found with
+        an image anchor' never reads as 'no anchor'."""
+        best = (
+            self.anchor_text.strip()
+            or (self.image_alt or "").strip()
+            or (self.aria_label or "").strip()
+            or (self.title_attr or "").strip()
+        )
+        if best:
+            return best
+        return "[image link]" if self.image_alt is not None else ""
 
 
 @dataclass(slots=True)
