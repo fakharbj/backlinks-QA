@@ -250,7 +250,24 @@ class CrawlArtifact:
     # Convenience -------------------------------------------------------------
     @property
     def primary_link(self) -> ParsedLink | None:
-        return self.matched_links[0] if self.matched_links else None
+        """The matched link QA reports on. Pages often link the target more than
+        once (logo + in-text mention); pick the most representative one — real
+        anchor text beats an empty/icon link, visible beats hidden, dofollow
+        beats nofollow — instead of blindly taking the first in DOM order."""
+        if not self.matched_links:
+            return None
+
+        def rank(link: ParsedLink) -> tuple:
+            anchor = link.effective_anchor
+            return (
+                bool(anchor and not anchor.startswith("[")),  # real text first
+                not link.css_hidden,
+                "nofollow" not in link.rel,
+                link.region == "body",
+                bool(anchor),
+            )
+
+        return max(self.matched_links, key=rank)
 
     @property
     def link_found(self) -> bool:

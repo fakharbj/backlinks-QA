@@ -165,3 +165,22 @@ def test_anchor_fallbacks_for_icon_links():
     assert by_href["https://t4.test/"].effective_anchor == "Our old site"    # title attr
     # Image link with no text anywhere → explicit marker, never a blank.
     assert by_href["https://t5.test/"].effective_anchor == "[image link]"
+
+
+def test_primary_link_prefers_real_anchor():
+    from app.crawler.types import CrawlArtifact, CrawlRequest, ParsedLink
+
+    art = CrawlArtifact(request=CrawlRequest(source_url="https://s.test/", target_url="https://t.test/"))
+    empty = ParsedLink(
+        href="https://t.test/", resolved_url="https://t.test/", normalized_url="https://t.test/",
+        anchor_text="", rel=["nofollow"],
+    )
+    texty = ParsedLink(
+        href="https://t.test/", resolved_url="https://t.test/", normalized_url="https://t.test/",
+        anchor_text="stone masonry", rel=[],
+    )
+    # DOM order puts the empty one first (the myvipon case) — QA must still
+    # report the real in-text link.
+    art.matched_links = [empty, texty]
+    assert art.primary_link is texty
+    assert art.primary_link.effective_anchor == "stone masonry"
