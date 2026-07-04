@@ -250,3 +250,26 @@ def test_captcha_widget_on_real_page_is_not_a_wall():
     wall = "<html><head><title>Verify you are human</title></head><body>g-recaptcha</body></html>"
     flags2 = detect(status=200, headers={}, body=wall, signals=PageSignals())
     assert flags2.captcha is True
+
+
+def test_redirect_wrapped_links_count_as_found():
+    from app.crawler.parse import _unwrap_redirect, parse_html
+
+    # Query-param wrapper (the site123 external_redirect.php case).
+    wrapped = (
+        "https://69b2d0d3499ba.site123.me/versions/2/include/external_redirect.php"
+        "?websiteID=11862603&url=https%3A%2F%2Flimo.black%2F"
+    )
+    assert _unwrap_redirect(wrapped) == "https://limo.black/"
+
+    # Path-embedded wrappers (encoded and plain).
+    assert _unwrap_redirect("https://x.test/out/https%3A%2F%2Flimo.black%2F") == "https://limo.black/"
+    assert _unwrap_redirect("https://x.test/goto/https://limo.black/") == "https://limo.black/"
+    # Normal direct links stay unwrapped-None.
+    assert _unwrap_redirect("https://limo.black/pricing") is None
+
+    # End-to-end: the wrapped link parses with its unwrapped destination.
+    html = f'<html><body><a href="{wrapped}">Hourly limo service</a></body></html>'
+    page = parse_html(html, final_url="https://69b2d0d3499ba.site123.me/")
+    assert page.links and page.links[0].unwrapped_url == "https://limo.black/"
+    assert page.links[0].anchor_text == "Hourly limo service"

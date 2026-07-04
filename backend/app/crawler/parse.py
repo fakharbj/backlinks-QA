@@ -52,17 +52,17 @@ _REDIRECT_PARAMS = (
 def _unwrap_redirect(href: str) -> str | None:
     """If ``href`` is a redirect/tracker URL, return the embedded destination URL.
 
-    Looks for a query param whose value (after URL-decoding) is itself an absolute
-    http(s) URL — first by known param names, then any param. Returns None for a
-    normal direct link.
+    Handles both styles sites use to wrap outbound links:
+    * query param — ``…/external_redirect.php?url=https%3A%2F%2Ftarget%2F``
+      (known param names first, then any param holding an absolute URL);
+    * path-embedded — ``…/out/https%3A%2F%2Ftarget%2F`` or ``…/goto/https://target/``.
+    Returns None for a normal direct link.
     """
     try:
-        query = urlparse(href).query
+        parsed = urlparse(href)
+        query = parsed.query
     except ValueError:
         return None
-    if not query:
-        return None
-    params = parse_qs(query, keep_blank_values=False)
 
     def _abs_url(values: list[str]) -> str | None:
         for value in values:
@@ -71,15 +71,26 @@ def _unwrap_redirect(href: str) -> str | None:
                 return candidate
         return None
 
-    for key in _REDIRECT_PARAMS:
-        if key in params:
-            found = _abs_url(params[key])
+    if query:
+        params = parse_qs(query, keep_blank_values=False)
+        for key in _REDIRECT_PARAMS:
+            if key in params:
+                found = _abs_url(params[key])
+                if found:
+                    return found
+        for values in params.values():   # fallback: any param holding an http url
+            found = _abs_url(values)
             if found:
                 return found
-    for values in params.values():       # fallback: any param holding an http url
-        found = _abs_url(values)
-        if found:
-            return found
+
+    # Path-embedded destination: an encoded (or plain) absolute URL inside the
+    # PATH itself, past the first character (so the href's own scheme is skipped).
+    path = parsed.path or ""
+    m = re.search(r"(https?%3a%2f%2f[^?#]+|https?://[^?#]+)", path[1:], re.IGNORECASE)
+    if m:
+        candidate = unquote(m.group(1)).strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            return candidate
     return None
 
 

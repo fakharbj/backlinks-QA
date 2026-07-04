@@ -2089,13 +2089,22 @@ function BacklinkDetailDrawer({
               <FactRow k="Final URL" v={data.final_url} />
               <FactRow
                 k="Link on page"
-                v={
-                  data.link_found
-                    ? data.latest_result?.matched_href || "Found"
-                    : data.link_found === false
-                      ? "NOT found on the page"
-                      : "Not checked yet"
-                }
+                v={(() => {
+                  if (!data.link_found)
+                    return data.link_found === false ? "NOT found on the page" : "Not checked yet";
+                  const href = data.latest_result?.matched_href;
+                  if (!href) return "Found";
+                  try {
+                    const linkHost = new URL(href).hostname.replace(/^www\./, "");
+                    const targetHost = new URL(data.target_url).hostname.replace(/^www\./, "");
+                    if (linkHost !== targetHost) {
+                      return `${href} — a redirect link that forwards to your target (counted as found)`;
+                    }
+                  } catch {
+                    /* fall through */
+                  }
+                  return href;
+                })()}
               />
               <FactRow k="Rel (observed / expected)" v={`${data.current_rel ?? "-"} / ${data.expected_rel}`} />
               <FactRow
