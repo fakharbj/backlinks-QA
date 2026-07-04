@@ -83,7 +83,9 @@ async def authenticate(db: AsyncSession, *, email: str, password: str) -> User:
         raise AuthenticationError("Invalid email or password")
 
     if not user.is_active:
-        raise AuthenticationError("Account is disabled")
+        # Deactivation is a login block ONLY — the person's links, tasks and
+        # reports stay untouched in every historical view.
+        raise AuthenticationError("This account is inactive. Please contact your admin.")
 
     # Success: reset counters, opportunistically rehash if params changed.
     user.failed_login_attempts = 0

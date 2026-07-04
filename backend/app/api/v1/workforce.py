@@ -105,6 +105,17 @@ async def known_labels(ctx: AuthCtx, db: ReadSession) -> list[str]:
     return await workforce_service.known_labels(db, ctx)
 
 
+@router.get("/me")
+async def my_work(
+    ctx: AuthCtx,
+    db: ReadSession,
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+) -> dict:
+    """The caller's OWN plans, completion and leave — the standard-user view."""
+    return await workforce_service.my_work(db, ctx, date_from=date_from, date_to=date_to)
+
+
 @router.delete("/assignments/{assignment_id}", response_model=Message)
 async def remove_assignment(
     assignment_id: uuid.UUID, db: DbSession,

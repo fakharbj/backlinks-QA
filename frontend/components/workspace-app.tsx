@@ -86,7 +86,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "performance" | "tasks" | "team" | "employees" | "scoring" | "settings";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "performance" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -149,7 +149,11 @@ export function WorkspaceApp() {
   const setActiveProjectId = (next: string) => {
     // Entering/leaving project context: keep the tab if the new nav has it,
     // otherwise land on the dashboard.
-    const nextTab = navTabs(Boolean(next)).includes(tab) ? tab : "overview";
+    const nextTab = navTabs(Boolean(next), role).includes(tab)
+      ? tab
+      : role === "viewer"
+        ? "mywork"
+        : "overview";
     setActiveProjectIdState(next);
     setTabState(nextTab);
     syncUrl(next, nextTab, true);
@@ -159,7 +163,7 @@ export function WorkspaceApp() {
     const q = new URLSearchParams(window.location.search);
     const p = q.get("project") ?? localStorage.getItem("ls_project") ?? "";
     const rawTab = q.get("tab") ?? localStorage.getItem("ls_tab");
-    const t: Tab = isTab(rawTab) && navTabs(Boolean(p)).includes(rawTab) ? rawTab : "overview";
+    const t: Tab = isTab(rawTab) ? rawTab : "overview";
     setActiveProjectIdState(p);
     setTabState(t);
     syncUrl(p, t, false);
@@ -169,7 +173,7 @@ export function WorkspaceApp() {
       const pp = qq.get("project") || "";
       const tt = qq.get("tab");
       setActiveProjectIdState(pp);
-      setTabState(isTab(tt) && navTabs(Boolean(pp)).includes(tt) ? tt : "overview");
+      setTabState(isTab(tt) ? tt : "overview");
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -208,6 +212,24 @@ export function WorkspaceApp() {
   }, [queryClient]);
 
   const authed = Boolean(token);
+  // Who am I → role-safe navigation (viewer = My Work only; manager/qa lose
+  // the admin desks they'd only 403 on).
+  const me = useQuery({
+    queryKey: ["me", token],
+    enabled: authed,
+    retry: false,
+    queryFn: () => api<{ role: string; user: { full_name: string; email: string } }>("/auth/me", { token })
+  });
+  const role = me.data?.role ?? null;
+  useEffect(() => {
+    if (!role) return;
+    if (!navTabs(Boolean(activeProjectId), role).includes(tab)) {
+      const fallback: Tab = role === "viewer" ? "mywork" : "overview";
+      setTabState(fallback);
+      syncUrl(activeProjectId, fallback, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, tab, activeProjectId]);
   const projects = useQuery({
     queryKey: ["projects", token],
     enabled: authed,
@@ -263,20 +285,23 @@ export function WorkspaceApp() {
               activeProjectId={activeProjectId}
               onSelect={setActiveProjectId}
               onNotice={setNotice}
+              role={role}
             />
           </div>
         </aside>
         <section key={`${tab}-${activeProjectId}`} className="desk-enter min-w-0 flex-1 space-y-5">
-          <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} />
-          <div className="lg:hidden">
-            <ProjectPanel
-              token={token}
-              projects={projects.data || []}
-              activeProjectId={activeProjectId}
-              onSelect={setActiveProjectId}
-              onNotice={setNotice}
-            />
-          </div>
+          <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} role={role} />
+          {role !== "viewer" ? (
+            <div className="lg:hidden">
+              <ProjectPanel
+                token={token}
+                projects={projects.data || []}
+                activeProjectId={activeProjectId}
+                onSelect={setActiveProjectId}
+                onNotice={setNotice}
+              />
+            </div>
+          ) : null}
           <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[380px] max-w-[92vw] flex-col gap-2">
             {toasts.map((t) => (
               <div
@@ -349,6 +374,7 @@ export function WorkspaceApp() {
           {tab === "settings" ? (
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
+          {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
         </section>
       </section>
     </main>
@@ -511,10 +537,36 @@ const PROJECT_NAV: NavGroup[] = [
   }
 ];
 
-const navGroups = (inProject: boolean): NavGroup[] => (inProject ? PROJECT_NAV : WORKSPACE_NAV);
-const navTabs = (inProject: boolean): Tab[] =>
-  navGroups(inProject).flatMap((g) => g.items.map(([id]) => id));
-const ALL_TAB_IDS = new Set<string>([...navTabs(false), ...navTabs(true)]);
+// Standard users (Viewer role) get their OWN focused surface — tasks, targets,
+// completion and leave — never the team-wide/admin desks.
+const MY_NAV: NavGroup[] = [
+  { label: "My Work", items: [["mywork", "My Work", CalendarDays]] }
+];
+
+// Role-safe navigation: hide what a role cannot use so nobody clicks into 403s.
+const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
+  if (!role || role === "admin") return groups;
+  const hidden = new Set<Tab>(
+    role === "manager"
+      ? ["team", "settings"]
+      : ["team", "settings", "sheets", "employees", "scoring"] // qa
+  );
+  return groups
+    .map((g) => ({ ...g, items: g.items.filter(([id]) => !hidden.has(id)) }))
+    .filter((g) => g.items.length);
+};
+
+const navGroups = (inProject: boolean, role: string | null): NavGroup[] => {
+  if (role === "viewer") return MY_NAV;
+  return roleFilterNav(inProject ? PROJECT_NAV : WORKSPACE_NAV, role);
+};
+const navTabs = (inProject: boolean, role: string | null): Tab[] =>
+  navGroups(inProject, role).flatMap((g) => g.items.map(([id]) => id));
+const ALL_TAB_IDS = new Set<string>([
+  ...navTabs(false, "admin"),
+  ...navTabs(true, "admin"),
+  "mywork"
+]);
 const isTab = (v: string | null): v is Tab => Boolean(v) && ALL_TAB_IDS.has(v as string);
 
 function ThemeToggle() {
@@ -576,7 +628,8 @@ function Sidebar({
   projects,
   activeProjectId,
   onSelect,
-  onNotice
+  onNotice,
+  role
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
@@ -585,17 +638,20 @@ function Sidebar({
   activeProjectId: string;
   onSelect: (id: string) => void;
   onNotice: (text: string) => void;
+  role: string | null;
 }) {
   return (
     <div className="space-y-4">
-      <ProjectPanel
-        token={token}
-        projects={projects}
-        activeProjectId={activeProjectId}
-        onSelect={onSelect}
-        onNotice={onNotice}
-      />
-      {activeProjectId ? (
+      {role !== "viewer" ? (
+        <ProjectPanel
+          token={token}
+          projects={projects}
+          activeProjectId={activeProjectId}
+          onSelect={onSelect}
+          onNotice={onNotice}
+        />
+      ) : null}
+      {activeProjectId && role !== "viewer" ? (
         <div className="flex items-center justify-between rounded-xl border border-ocean/30 bg-ocean/10 px-3 py-2">
           <span className="text-xs font-semibold uppercase tracking-wide text-ocean">
             Project context
@@ -609,7 +665,7 @@ function Sidebar({
         </div>
       ) : null}
       <nav className="rounded-xl border border-line bg-panel p-2 shadow-card">
-        {navGroups(Boolean(activeProjectId)).map((group) => (
+        {navGroups(Boolean(activeProjectId), role).map((group) => (
           <div key={group.label} className="mb-1 last:mb-0">
             <div className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
               {group.label}
@@ -647,15 +703,17 @@ function Sidebar({
 function MobileNav({
   activeTab,
   onTab,
-  inProject
+  inProject,
+  role
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
   inProject: boolean;
+  role: string | null;
 }) {
   return (
     <nav className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel p-1 shadow-card scrollbar-thin lg:hidden">
-      {navGroups(inProject).flatMap((g) => g.items).map(([id, label, Icon]) => (
+      {navGroups(inProject, role).flatMap((g) => g.items).map(([id, label, Icon]) => (
         <button
           key={id}
           onClick={() => onTab(id)}
@@ -2260,6 +2318,200 @@ function ImportDesk({
           Queue import
         </button>
       </div>
+    </section>
+  );
+}
+
+// The standard-user home: their OWN tasks, targets, completion and leave —
+// nothing team-wide, nothing admin.
+function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  const fmtIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const today = fmtIso(new Date());
+  const monday = (() => {
+    const x = new Date();
+    x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+    return fmtIso(x);
+  })();
+  const sunday = (() => {
+    const x = new Date(`${monday}T00:00:00`);
+    x.setDate(x.getDate() + 6);
+    return fmtIso(x);
+  })();
+
+  type MyRow = {
+    id: string; day: string; project_id: string; user_label: string; hours: number;
+    link_type_names: string[]; expected_links: number; actual_links: number;
+    completion_pct: number | null; excused: boolean; excuse_reason: string | null;
+    priority: string | null; note: string | null;
+  };
+  const me = useQuery({
+    queryKey: ["my-work", token, monday, sunday],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{
+        labels: string[];
+        rows: MyRow[];
+        leaves: Array<{ id: string; start_date: string; end_date: string; reason: string | null; status: string }>;
+      }>(`/workforce/me?date_from=${monday}&date_to=${sunday}`, { token })
+  });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const projectName = (id: string) => (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+
+  const [lvFrom, setLvFrom] = useState(today);
+  const [lvTo, setLvTo] = useState(today);
+  const [lvReason, setLvReason] = useState("");
+  const requestLeave = useMutation({
+    mutationFn: () =>
+      api<{ id: string }>("/workforce/leaves", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          user_label: me.data?.labels[0] || "",
+          start_date: lvFrom,
+          end_date: lvTo,
+          reason: lvReason.trim() || null
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Leave request sent — your admin will approve or reject it.");
+      setLvReason("");
+      queryClient.invalidateQueries({ queryKey: ["my-work"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const rows = me.data?.rows || [];
+  const todayRows = rows.filter((r) => r.day === today);
+  const weekTarget = rows.reduce((a, r) => a + (r.excused ? 0 : r.expected_links), 0);
+  const weekDone = rows.reduce((a, r) => a + (r.excused ? 0 : r.actual_links), 0);
+  const weekPct = weekTarget > 0 ? Math.round((100 * weekDone) / weekTarget) : null;
+
+  const taskCard = (r: MyRow) => (
+    <div key={r.id} className="rounded-lg border border-line bg-field/40 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold text-ink">{projectName(r.project_id)}</span>
+        <span
+          className={clsx(
+            "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
+            r.priority === "high" ? "bg-danger/10 text-danger" : r.priority === "low" ? "bg-field text-muted" : "bg-ember/10 text-ember"
+          )}
+        >
+          {r.priority || "medium"}
+        </span>
+        <span className="text-xs text-muted">{r.hours}h · {r.link_type_names.map(linkTypeLabel).join(", ") || "any type"}</span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-3 text-sm">
+        <span className="text-ink">
+          <span className="font-bold">{r.actual_links}</span>
+          <span className="text-muted"> / {r.expected_links} links</span>
+        </span>
+        {r.excused ? (
+          <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted">{r.excuse_reason}</span>
+        ) : r.completion_pct != null ? (
+          <span
+            className={clsx(
+              "rounded px-2 py-0.5 text-xs font-semibold",
+              r.completion_pct >= 100 ? "bg-ocean/10 text-ocean" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
+            )}
+          >
+            {r.completion_pct}% done
+          </span>
+        ) : null}
+      </div>
+      {r.note ? <p className="mt-1 text-xs text-muted">📝 {r.note}</p> : null}
+    </div>
+  );
+
+  if (!me.isLoading && me.data && !me.data.labels.length) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
+        <CalendarDays className="mx-auto mb-3 h-8 w-8 text-muted" />
+        <h2 className="text-base font-semibold text-ink">Welcome!</h2>
+        <p className="mx-auto mt-1 max-w-md text-sm text-muted">
+          Your account isn&apos;t linked to a team member name yet, so there are no tasks to show.
+          Ask your admin to link you on the Employees desk — your plans and targets will appear here.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-ink">
+          My Work{me.data?.labels.length ? ` — ${me.data.labels.join(", ")}` : ""}
+        </h2>
+        <p className="text-sm text-muted">Your tasks, targets and completion. Week of {formatDay(monday)}.</p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <Metric label="Today's tasks" value={todayRows.length} icon={CalendarDays} tone="ink"
+          sub={todayRows.length ? `${todayRows.reduce((a, r) => a + r.hours, 0)}h planned` : "Nothing planned today"} />
+        <Metric label="This week's target" value={weekTarget} icon={Gauge} tone="ocean"
+          sub={`${weekDone} done so far`} help="Total links you're expected to build this week, from your assigned hours and rates." />
+        <Metric label="Completion" value={weekPct != null ? `${weekPct}%` : "—"} icon={CheckCircle2}
+          tone={weekPct != null && weekPct >= 100 ? "ocean" : "ember"}
+          sub="Excused days (leave / days off) don't count against you" />
+      </div>
+
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="Today" />
+        <div className="space-y-2 p-3">
+          {todayRows.map(taskCard)}
+          {!todayRows.length ? <p className="p-2 text-sm text-muted">No tasks planned for today.</p> : null}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="This week" />
+        <div className="space-y-2 p-3">
+          {rows.filter((r) => r.day !== today).map((r) => (
+            <div key={r.id} className="flex items-start gap-3">
+              <span className="mt-3 w-20 shrink-0 whitespace-nowrap text-xs font-semibold text-muted">{formatDay(r.day)}</span>
+              <div className="min-w-0 flex-1">{taskCard(r)}</div>
+            </div>
+          ))}
+          {me.isLoading ? (
+            <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+          ) : null}
+          {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="My leave" />
+        <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
+          <input type="date" value={lvFrom} onChange={(e) => setLvFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input type="date" value={lvTo} onChange={(e) => setLvTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input value={lvReason} onChange={(e) => setLvReason(e.target.value)} placeholder="Reason (optional)…" className="h-9 w-56 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <button
+            onClick={() => requestLeave.mutate()}
+            disabled={requestLeave.isPending}
+            className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          >
+            Request leave
+          </button>
+          <span className="text-xs text-muted">Approved leave excuses your targets for those days.</span>
+        </div>
+        <div className="divide-y divide-line">
+          {(me.data?.leaves || []).map((l) => (
+            <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
+              <span className="text-ink">
+                {formatDay(l.start_date)} → {formatDay(l.end_date)}
+                {l.reason ? <span className="text-muted"> · {l.reason}</span> : null}
+              </span>
+              <Status value={l.status === "approved" ? "completed" : l.status === "rejected" ? "failed" : "pending"} />
+            </div>
+          ))}
+          {!(me.data?.leaves || []).length ? <p className="p-3 text-sm text-muted">No leave requests yet.</p> : null}
+        </div>
+      </section>
     </section>
   );
 }

@@ -27,7 +27,10 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 
 
 @router.get("", response_model=EmployeeOverviewOut)
-async def overview(ctx: AuthCtx, db: ReadSession) -> EmployeeOverviewOut:
+async def overview(
+    db: ReadSession, ctx: AuthContext = Depends(require_role(Role.MANAGER))
+) -> EmployeeOverviewOut:
+    """People/identity catalog is management-only (emails + team-wide mapping)."""
     return EmployeeOverviewOut(**await svc.overview(db, ctx))
 
 

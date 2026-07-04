@@ -29,12 +29,35 @@ from app.models.workforce import (
 _DEFAULT_LPH = 5.0
 
 
+async def own_labels(db: AsyncSession, ctx: AuthContext) -> set[str]:
+    """The sheet 'User' names linked to the CALLER's account (employee catalog)."""
+    from app.models.employee import UserEmployeeMapping
+
+    return set(
+        (
+            await db.execute(
+                select(UserEmployeeMapping.sheet_user_label).where(
+                    UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                    UserEmployeeMapping.user_id == ctx.user.id,
+                )
+            )
+        ).scalars().all()
+    )
+
+
 async def visible_labels(db: AsyncSession, ctx: AuthContext) -> set[str] | None:
-    """TeamLead scoping: a manager WITH member assignments sees only those user
-    labels in people-facing views. Admins — and managers with no assignments —
-    see everyone (``None`` = unrestricted)."""
+    """People-visibility scoping for every people-facing view:
+
+    * Admin / QA — unrestricted (``None``).
+    * TeamLead (manager) WITH member assignments — only those labels; with no
+      assignments — unrestricted.
+    * Viewer (standard user) — ONLY their own linked label(s); an empty set
+      means they see nobody but themselves once linked (never the whole team).
+    """
     from app.core.rbac import Role
 
+    if ctx.role == Role.VIEWER:
+        return await own_labels(db, ctx)
     if ctx.role != Role.MANAGER:
         return None
     rows = (
@@ -64,6 +87,7 @@ async def productivity(db: AsyncSession, ctx: AuthContext) -> dict:
             .order_by(UserProductivityOverride.user_label, UserProductivityOverride.link_type_name)
         )
     ).scalars().all()
+    scope = await visible_labels(db, ctx)
     return {
         "global": [
             {"link_type_name": g.link_type_name, "links_per_hour": float(g.links_per_hour)}
@@ -75,6 +99,7 @@ async def productivity(db: AsyncSession, ctx: AuthContext) -> dict:
                 "links_per_hour": float(o.links_per_hour),
             }
             for o in overrides
+            if scope is None or o.user_label in scope
         ],
     }
 
@@ -300,6 +325,11 @@ async def day_report(
     )
     if project_id is not None:
         stmt = stmt.where(TaskAssignment.project_id == project_id)
+    elif ctx.allowed_project_ids is not None:
+        # Project-scoped members only ever see plans for their own projects.
+        stmt = stmt.where(
+            TaskAssignment.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()})
+        )
     if user_label:
         stmt = stmt.where(TaskAssignment.user_label == user_label)
     rows = (
@@ -386,6 +416,45 @@ async def day_report(
     return out
 
 
+async def my_work(
+    db: AsyncSession, ctx: AuthContext, *, date_from: date, date_to: date
+) -> dict:
+    """The caller's OWN work only — powers the standard-user dashboard. Safe for
+    every role: rows are filtered to the labels linked to this account."""
+    labels = sorted(await own_labels(db, ctx))
+    if not labels:
+        return {"labels": [], "rows": [], "leaves": []}
+    label_set = set(labels)
+    rows = [
+        r
+        for r in await day_report(db, ctx, date_from=date_from, date_to=date_to)
+        if r["user_label"] in label_set
+    ]
+    leaves = (
+        await db.execute(
+            select(LeaveRequest)
+            .where(
+                LeaveRequest.workspace_id == ctx.workspace_id,
+                LeaveRequest.user_label.in_(labels),
+            )
+            .order_by(LeaveRequest.created_at.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+    return {
+        "labels": labels,
+        "rows": rows,
+        "leaves": [
+            {
+                "id": str(l.id), "user_label": l.user_label,
+                "start_date": l.start_date.isoformat(), "end_date": l.end_date.isoformat(),
+                "reason": l.reason, "status": l.status,
+            }
+            for l in leaves
+        ],
+    }
+
+
 async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
     """Every person the caller may plan for: the employee catalog labels plus
     anyone already appearing in assignments — TeamLead scoping applied."""
@@ -465,8 +534,22 @@ async def request_leave(
         raise ValidationAppError("End date is before the start date.")
     if (end_date - start_date).days > 60:
         raise ValidationAppError("A single request can cover at most 60 days.")
+    label = user_label.strip()[:200]
+    # Standard users can only request leave for THEMSELVES — no filing under
+    # someone else's name. Admins/TeamLeads may file for anyone they manage.
+    from app.core.rbac import Permission, has_permission
+
+    if not has_permission(ctx.role, Permission.ASSIGN_MEMBERS):
+        mine = await own_labels(db, ctx)
+        if not mine:
+            raise ValidationAppError(
+                "Your account isn't linked to a team member name yet — "
+                "ask your admin to link you on the Employees desk."
+            )
+        matched = next((m for m in mine if m.lower() == label.lower()), None)
+        label = matched or sorted(mine)[0]
     row = LeaveRequest(
-        workspace_id=ctx.workspace_id, user_label=user_label.strip()[:200],
+        workspace_id=ctx.workspace_id, user_label=label,
         start_date=start_date, end_date=end_date, reason=(reason or "")[:300] or None,
         status="pending", requested_by=ctx.user.id,
     )
