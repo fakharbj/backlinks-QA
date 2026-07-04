@@ -175,6 +175,12 @@ under `/api/v1` (nginx only proxies `/api/v1`) — reach them on the box at
   backfilled to `v1/is_latest`; the UI derives version numbers from recency to keep
   the history clean. A stored-data renumber needs user-authorized prod SQL.
 - **CRLF warnings** on `git add` (Windows) are harmless.
+- **Render pool is LIVE** (since 2026-07-05): `RENDER_ENABLED=true` on the server,
+  Playwright chromium installed in `backend/venv` (`playwright install chromium`).
+  JS-only pages (Notion/SPAs) render in the worker; pages that still can-not be
+  read classify as “Needs review — JavaScript page”, never “link missing”.
+  Chromium cannot use the authenticated IPRoyal proxy (ERR_PROXY_AUTH_UNSUPPORTED)
+  — renders go direct by design.
 
 ---
 
