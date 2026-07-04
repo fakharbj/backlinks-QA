@@ -4379,16 +4379,28 @@ function ReportsDesk({
   const reports = useQuery({
     queryKey: ["reports", token],
     enabled: Boolean(token),
+    // Live status while any report is still generating — no manual refresh.
+    refetchInterval: (q) =>
+      (q.state.data || []).some((r) => r.status === "generating" || r.status === "pending")
+        ? 3000
+        : false,
     queryFn: () => api<Report[]>("/reports", { token })
   });
+  const [showBuilder, setShowBuilder] = useState(false);
+  const [repSearch, setRepSearch] = useState("");
+  const [repType, setRepType] = useState("");
 
   // Group reports into version stacks by (type + project) — the same scope the
   // backend uses for versioning. Sort each stack newest-first by time (robust even
   // for older rows imported before versioning existed); the card derives a clean
   // sequential version number from position so the history always reads v1..vN.
   const groups = useMemo(() => {
+    const q = repSearch.trim().toLowerCase();
     const map = new Map<string, Report[]>();
     for (const r of reports.data || []) {
+      if (projectId && r.project_id && r.project_id !== projectId) continue;
+      if (repType && r.report_type !== repType) continue;
+      if (q && !`${r.title || ""} ${r.report_type}`.toLowerCase().includes(q)) continue;
       const key = `${r.report_type}__${r.project_id || "all"}`;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
@@ -4400,7 +4412,7 @@ function ReportsDesk({
       (a, b) => new Date(b[0].created_at).getTime() - new Date(a[0].created_at).getTime()
     );
     return arr;
-  }, [reports.data]);
+  }, [reports.data, repSearch, repType, projectId]);
 
   const create = useMutation({
     mutationFn: () => {
@@ -4473,9 +4485,123 @@ function ReportsDesk({
       )
   });
 
+  // Rendered directly under the clicked report card — never at the page bottom.
+  const viewerPanel = viewReport ? (
+    <div className="rounded-xl border border-ocean/40 bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold text-ink">{viewReport.title}</h3>
+          <p className="text-xs text-muted">
+            {viewRows.data ? `${viewRows.data.total.toLocaleString()} rows` : "Loading…"}
+            {viewRows.data && viewRows.data.total > 50
+              ? ` · showing ${viewOffset + 1}–${Math.min(viewOffset + 50, viewRows.data.total)}`
+              : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={viewOffset === 0}
+            onClick={() => setViewOffset((o) => Math.max(0, o - 50))}
+            className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
+          >
+            ← Prev
+          </button>
+          <button
+            disabled={!viewRows.data || viewOffset + 50 >= viewRows.data.total}
+            onClick={() => setViewOffset((o) => o + 50)}
+            className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
+          >
+            Next →
+          </button>
+          <button
+            onClick={() => setViewReport(null)}
+            className="text-xs font-medium text-ocean hover:underline"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+      <div className="max-h-[480px] overflow-auto">
+        <table className="w-full text-left text-xs">
+          <thead className="sticky top-0 bg-field uppercase text-muted">
+            <tr>
+              {(viewRows.data?.headers || []).map((h, i) => (
+                <th key={i} className="whitespace-nowrap px-3 py-2 font-semibold">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {(viewRows.data?.rows || []).map((r, i) => (
+              <tr key={i} className="hover:bg-field/60">
+                {r.map((c, j) => (
+                  <td key={j} className="max-w-[280px] truncate px-3 py-1.5 align-top text-ink" title={c}>
+                    {c}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {viewRows.isLoading ? (
+          <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+        ) : null}
+        {viewRows.isError ? (
+          <div className="p-4 text-center text-sm text-danger">
+            {(viewRows.error as Error)?.message || "Could not open this report."}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <section className="space-y-4">
-      {/* ── Builder ─────────────────────────────────────────────── */}
+      {/* ── Header: list is primary; the builder opens on demand ── */}
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Reports</h2>
+          <p className="text-sm text-muted">
+            {projectId ? "This project's reports." : "All reports."} Every regeneration is kept as a version.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={repSearch}
+            onChange={(e) => setRepSearch(e.target.value)}
+            placeholder="Search reports…"
+            className="h-9 w-44 rounded-lg border border-line bg-panel px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+          />
+          <select
+            value={repType}
+            onChange={(e) => setRepType(e.target.value)}
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+          >
+            <option value="">All types</option>
+            {REPORT_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => setShowBuilder((v) => !v)}
+            className={clsx(
+              "flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition",
+              showBuilder
+                ? "border border-line text-ink hover:bg-field"
+                : "bg-ocean text-white hover:opacity-90 dark:text-slate-900"
+            )}
+          >
+            {showBuilder ? <XCircle className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
+            {showBuilder ? "Close builder" : "Generate report"}
+          </button>
+        </div>
+      </div>
+      {reports.isError ? (
+        <p className="rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
+          Reports could not be loaded — {(reports.error as Error)?.message || "try refreshing"}.
+        </p>
+      ) : null}
+
+      {showBuilder ? (
       <div className="rounded-xl border border-line bg-panel shadow-card">
         <div className="border-b border-line p-4">
           <h2 className="text-base font-semibold text-ink">Build a report</h2>
@@ -4640,101 +4766,36 @@ function ReportsDesk({
           </div>
         </div>
       </div>
+      ) : null}
 
       {/* ── Saved reports (grouped by version) ──────────────────── */}
       <div>
         <div className="mb-2 flex items-center gap-2">
           <History className="h-4 w-4 text-muted" />
           <h3 className="text-sm font-semibold text-ink">Your reports</h3>
-          <span className="text-xs text-muted">— newest version on top, older versions tucked underneath</span>
+          <span className="text-xs text-muted">— newest version on top, older versions tucked underneath. Click View to read a report right here.</span>
         </div>
         <div className="space-y-3">
           {groups.map((versions) => (
-            <ReportGroup
-              key={versions[0].id}
-              versions={versions}
-              onDownload={download}
-              onView={(r) => {
-                setViewReport(r);
-                setViewOffset(0);
-              }}
-              onDelete={(r) => deleteReport.mutate(r.id)}
-            />
+            <Fragment key={versions[0].id}>
+              <ReportGroup
+                versions={versions}
+                onDownload={download}
+                onView={(r) => {
+                  setViewReport(viewReport?.id === r.id ? null : r);
+                  setViewOffset(0);
+                }}
+                onDelete={(r) => deleteReport.mutate(r.id)}
+              />
+              {viewReport && versions.some((v) => v.id === viewReport.id) ? viewerPanel : null}
+            </Fragment>
           ))}
           {reports.isLoading ? <Empty label="Loading reports…" /> : null}
           {!reports.isLoading && !groups.length ? (
-            <Empty label="No reports yet — build one above" />
+            <Empty label={repSearch || repType ? "No reports match this search/filter." : "No reports yet — click “Generate report” above to build one."} />
           ) : null}
         </div>
       </div>
-
-      {viewReport ? (
-        <div className="rounded-xl border border-line bg-panel shadow-card">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
-            <div className="min-w-0">
-              <h3 className="truncate text-sm font-semibold text-ink">{viewReport.title}</h3>
-              <p className="text-xs text-muted">
-                {viewRows.data ? `${viewRows.data.total.toLocaleString()} rows` : "Loading…"}
-                {viewRows.data && viewRows.data.total > 50
-                  ? ` · showing ${viewOffset + 1}–${Math.min(viewOffset + 50, viewRows.data.total)}`
-                  : ""}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                disabled={viewOffset === 0}
-                onClick={() => setViewOffset((o) => Math.max(0, o - 50))}
-                className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
-              >
-                ← Prev
-              </button>
-              <button
-                disabled={!viewRows.data || viewOffset + 50 >= viewRows.data.total}
-                onClick={() => setViewOffset((o) => o + 50)}
-                className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
-              >
-                Next →
-              </button>
-              <button
-                onClick={() => setViewReport(null)}
-                className="text-xs font-medium text-ocean hover:underline"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-          <div className="max-h-[480px] overflow-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-field uppercase text-muted">
-                <tr>
-                  {(viewRows.data?.headers || []).map((h, i) => (
-                    <th key={i} className="whitespace-nowrap px-3 py-2 font-semibold">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {(viewRows.data?.rows || []).map((r, i) => (
-                  <tr key={i} className="hover:bg-field/60">
-                    {r.map((c, j) => (
-                      <td key={j} className="max-w-[280px] truncate px-3 py-1.5 align-top text-ink" title={c}>
-                        {c}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {viewRows.isLoading ? (
-              <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
-            ) : null}
-            {viewRows.isError ? (
-              <div className="p-4 text-center text-sm text-danger">
-                {(viewRows.error as Error)?.message || "Could not open this report."}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }
