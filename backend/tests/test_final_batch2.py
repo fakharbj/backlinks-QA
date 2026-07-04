@@ -184,3 +184,22 @@ def test_primary_link_prefers_real_anchor():
     art.matched_links = [empty, texty]
     assert art.primary_link is texty
     assert art.primary_link.effective_anchor == "stone masonry"
+
+
+def test_markdown_link_matching():
+    from app.crawler.parse import extract_markdown_links
+
+    # The exact yeswiki/HedgeDoc case: raw markdown served as the page body.
+    body = (
+        "A professional [**vip black car service**](https://limo.black/) provides "
+        "tailored transportation. Also [plain link](https://other.test/page) and "
+        "a fenced `[not a real](https://x)` still parses — matching decides."
+    )
+    links = extract_markdown_links(body, final_url="https://md.yeswiki.net/s/RZJCiiiLZN")
+    by_url = {l.href: l for l in links}
+    limo = by_url.get("https://limo.black/")
+    assert limo is not None
+    assert limo.anchor_text == "vip black car service"  # emphasis markers stripped
+    assert limo.effective_anchor == "vip black car service"
+    assert "limo.black" in limo.normalized_url
+    assert "tailored transportation" in limo.context_text

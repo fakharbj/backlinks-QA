@@ -554,3 +554,41 @@ def _extract_signals(tree: object, body: str, page: ParsedPage) -> None:
 
     low = text.lower()
     s.spam_keyword_hits = [kw for kw in _SPAM_KEYWORDS if kw in low]
+
+
+# ── Markdown-syntax links (LNK-10) ───────────────────────────────────────────
+# Some hosts (HedgeDoc/CodiMD pads, wikis) serve RAW MARKDOWN that the browser
+# renders into real anchors client-side. The raw HTML then contains
+# "[anchor text](https://target/)" but no <a> element — matching the markdown
+# directly avoids a false "link missing" AND recovers the true anchor text.
+_MD_LINK_RE = re.compile(
+    r"\[([^\]\n]{0,300})\]\(\s*<?(https?://[^)\s>]+)>?\s*(?:\"[^\"]*\")?\s*\)"
+)
+
+
+def extract_markdown_links(
+    body: str, *, final_url: str, trailing_slash_policy: str = "lenient"
+) -> list[ParsedLink]:
+    links: list[ParsedLink] = []
+    for m in _MD_LINK_RE.finditer(body or ""):
+        text, url = m.group(1), m.group(2)
+        norm = normalize_url(url, base_url=final_url, trailing_slash_policy=trailing_slash_policy)
+        if not norm.valid:
+            continue
+        anchor = re.sub(r"[*_`~]+", "", text)
+        anchor = re.sub(r"\s+", " ", anchor).strip()
+        start = max(0, m.start() - 120)
+        context = re.sub(r"\s+", " ", body[start : m.end() + 120]).strip()
+        links.append(
+            ParsedLink(
+                href=url,
+                resolved_url=url,
+                normalized_url=norm.normalized,
+                anchor_text=anchor,
+                rel=[],
+                region="body",
+                context_text=context[:300],
+                source_mode=CrawlMode.RAW,
+            )
+        )
+    return links

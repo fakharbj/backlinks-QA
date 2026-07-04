@@ -24,7 +24,7 @@ import httpx
 from app.crawler import detect as detect_mod
 from app.crawler.fetch import FetchOutcome, build_client, fetch_raw
 from app.crawler.normalize import normalize_url, registrable_domain
-from app.crawler.parse import parse_html, parse_x_robots_header
+from app.crawler.parse import extract_markdown_links, parse_html, parse_x_robots_header
 from app.crawler.robots import RobotsTxt
 from app.crawler.types import (
     CrawlArtifact,
@@ -316,6 +316,13 @@ class CrawlEngine:
         )
 
         matched = self._match_links(page.links, request)
+        if not matched:
+            # Markdown pads (HedgeDoc/CodiMD, wikis) serve raw markdown that the
+            # browser renders into real anchors — match "[anchor](target)" text
+            # directly so these pages don't false-fail as "link missing".
+            matched = self._match_markdown(outcome.body, request, outcome.final_url or source.original)
+            if matched:
+                page.links.extend(matched)
         if matched:
             artifact.matched_links = matched
             artifact.found_in_raw = True
@@ -352,6 +359,12 @@ class CrawlEngine:
                         body=outcome.body, signals=artifact.signals,
                     )
                     matched = self._match_links(page.links, request)
+                    if not matched:
+                        matched = self._match_markdown(
+                            outcome.body, request, outcome.final_url or source.original
+                        )
+                        if matched:
+                            page.links.extend(matched)
                     if matched:
                         artifact.matched_links = matched
                         artifact.found_in_raw = True
@@ -397,6 +410,17 @@ class CrawlEngine:
         if page.canonical_url and artifact.final_url:
             resolved = normalize_url(page.canonical_url, base_url=artifact.final_url)
             artifact.canonical_resolved = resolved.normalized if resolved.valid else None
+
+    def _match_markdown(
+        self, body: str | None, request: CrawlRequest, final_url: str
+    ) -> list[ParsedLink]:
+        """Fallback matcher for pages that serve markdown instead of HTML."""
+        if not body:
+            return []
+        md_links = extract_markdown_links(
+            body, final_url=final_url, trailing_slash_policy=request.trailing_slash_policy
+        )
+        return self._match_links(md_links, request) if md_links else []
 
     def _match_links(self, links: list[ParsedLink], request: CrawlRequest) -> list[ParsedLink]:
         # Domain-scope matching: the agreed target is the project's main domain, so
