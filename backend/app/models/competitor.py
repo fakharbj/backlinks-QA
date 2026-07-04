@@ -46,6 +46,9 @@ class CompetitorSheet(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # The competitor's own site URL — the upload's identity (0026). Name is just
+    # a display label; when blank the UI shows this URL's domain instead.
+    competitor_url: Mapped[str | None] = mapped_column(String(500))
     source_kind: Mapped[str] = mapped_column(String(20), default="paste", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="ready", nullable=False)
     total_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

@@ -166,6 +166,7 @@ export type ImportRowError = { row_number: number; error: string; raw: Record<st
 export type CompetitorSheet = {
   id: string;
   name: string;
+  competitor_url?: string | null;
   source_kind: string;
   status: string;
   total_rows: number;

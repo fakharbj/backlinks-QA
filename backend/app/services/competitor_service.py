@@ -38,26 +38,106 @@ async def _ensure_project(db: AsyncSession, ctx: AuthContext, project_id: uuid.U
     ctx.assert_project(project_id)
 
 
-def _parse_rows(raw_text: str) -> list[tuple[str, str | None, str | None, str | None]]:
-    """Parse pasted text → [(url, anchor, rel, link_type)]. One URL per line,
-    optionally followed by comma/tab-separated anchor, rel and link type
-    (e.g. "…, brand anchor, dofollow, Guest Post"). Header-ish lines skipped."""
+# Header synonyms → parsed field. Covers SEMrush/Ahrefs backlink exports plus
+# plain agency sheets. Compared after lower/strip.
+_COMP_URL_HEADERS = {
+    "source url", "url", "source_url", "backlink", "backlink url", "page url",
+    "referring page url", "source page url", "referring page",
+}
+_COMP_HEADERS: dict[str, str] = {
+    **{h: "url" for h in _COMP_URL_HEADERS},
+    "anchor": "anchor", "anchor text": "anchor", "link anchor": "anchor",
+    "rel": "rel", "follow": "rel", "link rel": "rel",
+    "nofollow": "nofollow",  # SEMrush: TRUE/FALSE column
+    "link type": "link_type", "type": "link_type", "seo task": "link_type",
+}
+
+
+def _split_line(line: str) -> list[str]:
+    """Quote-aware split of one pasted line (tab wins over comma so URLs/anchors
+    containing commas survive)."""
+    import csv as _csv
+    import io as _io
+
+    delim = "\t" if "\t" in line else ","
+    try:
+        return [c.strip() for c in next(_csv.reader(_io.StringIO(line), delimiter=delim))]
+    except (StopIteration, _csv.Error):
+        return [line.strip()]
+
+
+def parse_competitor_text(raw_text: str) -> dict:
+    """Parse pasted text / a pasted CSV export → parsed rows + what was detected.
+
+    Two modes:
+    * header mode — the first line names its columns (SEMrush/Ahrefs exports or
+      any sheet with a header row): columns are mapped by name, extra columns
+      are ignored, missing optional columns don't block the import.
+    * plain mode — positional ``url[, anchor[, rel[, link type]]]`` per line.
+    Returns {format, mapping, rows: [(url, anchor, rel, link_type)], warnings}.
+    """
+    lines = [ln for ln in raw_text.splitlines() if ln.strip()]
+    if not lines:
+        return {"format": "plain", "mapping": {}, "rows": [], "warnings": []}
+
+    first = [c.strip().strip('"').lower() for c in _split_line(lines[0])]
+    header_hits = {i: _COMP_HEADERS[c] for i, c in enumerate(first) if c in _COMP_HEADERS}
+    has_url_header = any(f == "url" for f in header_hits.values())
+
     rows: list[tuple[str, str | None, str | None, str | None]] = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = [p.strip() for p in (line.split("\t") if "\t" in line else line.split(","))]
-        url = parts[0].strip().strip('"')
-        if not url or url.lower() in ("url", "source url", "source_url", "backlink"):
-            continue
+    warnings: list[str] = []
+
+    def _clean_url(url: str) -> str | None:
+        url = url.strip().strip('"')
+        if not url:
+            return None
         if not (url.startswith("http://") or url.startswith("https://")):
             url = "https://" + url
+        return url
+
+    if has_url_header:
+        fmt = "semrush" if ("page ascore" in first or "domain ascore" in first) else "headers"
+        idx: dict[str, int] = {}
+        for i, field in header_hits.items():
+            idx.setdefault(field, i)
+        mapping = {first[i]: f for i, f in header_hits.items()}
+        for line in lines[1:]:
+            cells = _split_line(line)
+
+            def cell(field: str) -> str | None:
+                i = idx.get(field)
+                return cells[i].strip().strip('"') if i is not None and i < len(cells) and cells[i].strip() else None
+
+            url = _clean_url(cell("url") or "")
+            if not url:
+                warnings.append(f"Skipped row: source URL is missing ({line[:60]}…)")
+                continue
+            rel = cell("rel")
+            if rel is None and "nofollow" in idx:
+                flag = (cell("nofollow") or "").lower()
+                rel = "nofollow" if flag in ("true", "1", "yes") else ("dofollow" if flag in ("false", "0", "no") else None)
+            rows.append((url, cell("anchor"), rel, cell("link_type")))
+        return {"format": fmt, "mapping": mapping, "rows": rows, "warnings": warnings[:20]}
+
+    for line in lines:
+        parts = _split_line(line)
+        url = _clean_url(parts[0] if parts else "")
+        if not url or parts[0].strip().strip('"').lower() in _COMP_URL_HEADERS:
+            continue
         anchor = parts[1] if len(parts) > 1 and parts[1] else None
         rel = parts[2] if len(parts) > 2 and parts[2] else None
         link_type = parts[3] if len(parts) > 3 and parts[3] else None
         rows.append((url, anchor, rel, link_type))
-    return rows
+    return {
+        "format": "plain",
+        "mapping": {"column 1": "url", "column 2": "anchor", "column 3": "rel", "column 4": "link_type"},
+        "rows": rows,
+        "warnings": warnings,
+    }
+
+
+def _parse_rows(raw_text: str) -> list[tuple[str, str | None, str | None, str | None]]:
+    return parse_competitor_text(raw_text)["rows"]
 
 
 async def ingest(
@@ -65,25 +145,71 @@ async def ingest(
     ctx: AuthContext,
     *,
     project_id: uuid.UUID,
+    competitor_url: str,
     name: str,
     raw_text: str,
 ) -> CompetitorSheet:
     await _ensure_project(db, ctx, project_id)
+    from app.services import batch_service
+
+    comp = normalize_url(
+        competitor_url if competitor_url.startswith(("http://", "https://")) else f"https://{competitor_url}"
+    )
+    if not comp.valid:
+        raise ValidationAppError("Competitor URL is not a valid website address.")
+    display_name = (name or "").strip()[:200] or (comp.registrable_domain or "Competitor")
+
     parsed = _parse_rows(raw_text)
     if not parsed:
         raise ValidationAppError("No competitor URLs found. Paste one source URL per line.")
 
+    # Honest per-upload accounting: which of THESE links were already uploaded
+    # for this project before (any previous sheet), by normalized URL.
+    known_urls: set[str] = set()
+    for (u,) in (
+        await db.execute(
+            select(CompetitorBacklink.raw_url).where(
+                CompetitorBacklink.workspace_id == ctx.workspace_id,
+                CompetitorBacklink.project_id == project_id,
+            )
+        )
+    ).all():
+        n = normalize_url(u)
+        known_urls.add(n.normalized if n.valid else u)
+    known_domains: set[str] = set(
+        (
+            await db.execute(
+                select(CompetitorBacklink.source_domain).where(
+                    CompetitorBacklink.workspace_id == ctx.workspace_id,
+                    CompetitorBacklink.project_id == project_id,
+                    CompetitorBacklink.source_domain.is_not(None),
+                ).distinct()
+            )
+        ).scalars().all()
+    )
+
     sheet = CompetitorSheet(
-        workspace_id=ctx.workspace_id, project_id=project_id, name=name[:200] or "Competitor upload",
+        workspace_id=ctx.workspace_id, project_id=project_id, name=display_name,
+        competitor_url=(comp.normalized or competitor_url)[:500],
         source_kind="paste", status="ready", total_rows=len(parsed), created_by=ctx.user.id,
     )
     db.add(sheet)
     await db.flush()
 
+    new_links = existing_links = 0
+    upload_domains: set[str] = set()
     cache: dict[str, uuid.UUID] = {}
     for url, anchor, rel, link_type in parsed:
         parsed_url = normalize_url(url)
         domain = parsed_url.registrable_domain if parsed_url.valid else None
+        norm = parsed_url.normalized if parsed_url.valid else url
+        if norm in known_urls:
+            existing_links += 1
+        else:
+            new_links += 1
+            known_urls.add(norm)
+        if domain:
+            upload_domains.add(domain)
         canonical = await canonical_service.resolve_canonical(db, url, cache=cache)
         db.add(
             CompetitorBacklink(
@@ -95,11 +221,33 @@ async def ingest(
         )
     await db.flush()
 
+    # Per-UPLOAD numbers (what the owner sees on the row): domains first seen in
+    # this upload vs domains this project already had competitor links from.
+    sheet.new_domains = len(upload_domains - known_domains)
+    sheet.existing_domains = len(upload_domains & known_domains)
+
     counts = await recompute_domains(db, ctx.workspace_id, project_id, sheet_id=sheet.id)
     sheet.domain_count = counts["domains"]
-    sheet.new_domains = counts["new"]
-    sheet.existing_domains = counts["existing"]
     await db.flush()
+
+    # Operations trail with the CORRECT split (fail-open).
+    batch_id = await batch_service.start(
+        "competitor_import", ctx.workspace_id, project_id=project_id,
+        label=f"Competitor upload — {display_name}", started_by=ctx.user.id, total=len(parsed),
+    )
+    await batch_service.update(
+        batch_id,
+        totals={"total": len(parsed), "done": len(parsed), "ok": len(parsed)},
+        counters_inc={"new_links": new_links, "already_there": existing_links},
+    )
+    await batch_service.add_log(
+        batch_id,
+        f"“{display_name}”: {len(parsed)} links pasted — {new_links} NEW, "
+        f"{existing_links} already uploaded before, across {len(upload_domains)} domain(s) "
+        f"({sheet.new_domains} domain(s) first seen in this upload). "
+        f"Project now compares against {counts['new']} open opportunity domain(s).",
+    )
+    await batch_service.finish(batch_id)
     return sheet
 
 
@@ -191,6 +339,21 @@ async def list_sheets(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID)
     )
 
 
+# Guest-post label variants: "Guest Post", "guestpost", "guest-post", "GP".
+_GUEST_MATCH = r"(g.link_type_label ILIKE '%guest%' OR g.link_type_label ~* '^\s*gp\s*$')"
+_GUEST_MATCH_CB = _GUEST_MATCH.replace("g.", "cb.")
+
+# Whitelisted sort keys for the domain grid (never interpolate user input).
+_DOMAIN_SORTS: dict[str, str] = {
+    "domain": "d.domain_key",
+    "links": "d.url_count",
+    "ours": "d.our_link_count",
+    "indexed": "d.our_indexed_pct",
+    "da": "coalesce(d.da, sd.da)",
+    "pa": "coalesce(d.pa, sd.pa)",
+}
+
+
 async def list_domains(
     db: AsyncSession,
     ctx: AuthContext,
@@ -199,11 +362,15 @@ async def list_domains(
     category: str | None = None,
     include_dismissed: bool = True,
     exclude_guest_posts: bool = False,
+    search: str | None = None,
+    sort: str | None = None,
+    direction: str = "desc",
     limit: int = 500,
+    offset: int = 0,
 ) -> list[dict]:
     """Domain rows + manual decision + guest-post tag. 'Used' is derived live
     (category = existing); manual dismissals survive recomputes via the
-    decisions table."""
+    decisions table. Searchable, sortable (whitelist) and paginated."""
     await _ensure_project(db, ctx, project_id)
     conds = ["d.workspace_id = :ws", "d.project_id = :pid"]
     if category in ("existing", "new_opportunity"):
@@ -213,8 +380,14 @@ async def list_domains(
     if exclude_guest_posts:
         conds.append(
             "NOT EXISTS (SELECT 1 FROM competitor_backlinks g WHERE g.project_id = d.project_id "
-            "AND g.source_domain = d.domain_key AND g.link_type_label ILIKE '%guest%')"
+            f"AND g.source_domain = d.domain_key AND {_GUEST_MATCH})"
         )
+    if search and search.strip():
+        conds.append("d.domain_key ILIKE :q")
+    order = "d.category ASC, d.url_count DESC"
+    if sort in _DOMAIN_SORTS:
+        dir_sql = "ASC" if direction == "asc" else "DESC"
+        order = f"{_DOMAIN_SORTS[sort]} {dir_sql} NULLS LAST, d.domain_key ASC"
     sql = text(
         f"""
         SELECT d.id::text AS id, d.domain_key, d.url_count, d.category,
@@ -225,7 +398,7 @@ async def list_domains(
                EXISTS (
                  SELECT 1 FROM competitor_backlinks cb
                  WHERE cb.project_id = d.project_id AND cb.source_domain = d.domain_key
-                   AND cb.link_type_label ILIKE '%guest%'
+                   AND {_GUEST_MATCH_CB}
                ) AS has_guest_post
         FROM competitor_source_domains d
         LEFT JOIN competitor_domain_decisions dec
@@ -234,15 +407,54 @@ async def list_domains(
         LEFT JOIN source_domains sd
           ON sd.workspace_id = d.workspace_id AND sd.domain_key = d.domain_key
         WHERE {' AND '.join(conds)}
-        ORDER BY d.category ASC, d.url_count DESC
-        LIMIT :lim
+        ORDER BY {order}
+        LIMIT :lim OFFSET :off
         """
     )
-    params: dict = {"ws": ctx.workspace_id, "pid": project_id, "lim": max(1, min(limit, 2000))}
+    params: dict = {
+        "ws": ctx.workspace_id, "pid": project_id,
+        "lim": max(1, min(limit, 2000)), "off": max(0, offset),
+    }
     if category in ("existing", "new_opportunity"):
         params["cat"] = category
+    if search and search.strip():
+        params["q"] = f"%{search.strip()}%"
     rows = (await db.execute(sql, params)).mappings().all()
     return [dict(r) for r in rows]
+
+
+async def domain_backlinks(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, domain: str, *, limit: int = 300
+) -> list[dict]:
+    """The competitor links behind one domain row (for the expand-in-place view)."""
+    await _ensure_project(db, ctx, project_id)
+    rows = (
+        await db.execute(
+            select(
+                CompetitorBacklink.raw_url,
+                CompetitorBacklink.anchor,
+                CompetitorBacklink.rel,
+                CompetitorBacklink.link_type_label,
+                CompetitorSheet.name,
+                CompetitorSheet.competitor_url,
+            )
+            .join(CompetitorSheet, CompetitorSheet.id == CompetitorBacklink.competitor_sheet_id)
+            .where(
+                CompetitorBacklink.workspace_id == ctx.workspace_id,
+                CompetitorBacklink.project_id == project_id,
+                CompetitorBacklink.source_domain == domain.lower().strip()[:255],
+            )
+            .order_by(CompetitorBacklink.raw_url.asc())
+            .limit(max(1, min(limit, 1000)))
+        )
+    ).all()
+    return [
+        {
+            "url": u, "anchor": a, "rel": r, "link_type": lt,
+            "upload_name": sn, "competitor_url": cu,
+        }
+        for u, a, r, lt, sn, cu in rows
+    ]
 
 
 async def decide(

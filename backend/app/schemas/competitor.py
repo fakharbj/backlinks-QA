@@ -12,13 +12,29 @@ from app.schemas.common import ORMModel
 
 class CompetitorIngestRequest(BaseModel):
     project_id: uuid.UUID
-    name: str = Field(default="Competitor upload", max_length=200)
+    # The competitor's site URL is the upload's identity (required); the name is
+    # optional — the UI falls back to the URL's domain.
+    competitor_url: str = Field(min_length=4, max_length=500)
+    name: str = Field(default="", max_length=200)
     text: str
+
+
+class CompetitorPreviewRequest(BaseModel):
+    text: str
+
+
+class CompetitorPreviewOut(BaseModel):
+    format: str                     # semrush | headers | plain
+    mapping: dict[str, str]         # detected column → field
+    row_count: int
+    sample: list[dict]              # first rows as parsed (url/anchor/rel/link_type)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class CompetitorSheetOut(ORMModel):
     id: uuid.UUID
     name: str
+    competitor_url: str | None = None
     source_kind: str
     status: str
     total_rows: int

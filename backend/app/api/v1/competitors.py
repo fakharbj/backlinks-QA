@@ -13,12 +13,50 @@ from app.schemas.competitor import (
     CompetitorDecisionRequest,
     CompetitorDomainOut,
     CompetitorIngestRequest,
+    CompetitorPreviewOut,
+    CompetitorPreviewRequest,
     CompetitorSheetOut,
     CompetitorSummary,
 )
 from app.services import audit_service, competitor_service
 
 router = APIRouter(prefix="/competitors", tags=["competitors"])
+
+# SEMrush-style sample template so mapping "just works" on the first try.
+_TEMPLATE_CSV = (
+    "Source url,Anchor,Nofollow,Link type\r\n"
+    "https://example-blog.com/best-tools-2026,best limo tools,FALSE,Article\r\n"
+    "https://another-site.com/resources,resources page,TRUE,Business Listing\r\n"
+    "https://writers-hub.com/guest-column,limo tips,FALSE,Guest Post\r\n"
+)
+
+
+@router.get("/template")
+async def download_template() -> "PlainTextResponse":
+    """Downloadable sample sheet for competitor backlink imports. Columns match a
+    SEMrush backlink export ('Source url' is the only required column)."""
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(
+        _TEMPLATE_CSV,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="competitor-backlinks-template.csv"'},
+    )
+
+
+@router.post("/preview", response_model=CompetitorPreviewOut)
+async def preview(payload: CompetitorPreviewRequest, ctx: AuthCtx) -> CompetitorPreviewOut:
+    """Show how pasted text will be read BEFORE importing: detected format,
+    column mapping, row count and a sample — so mapping issues never block."""
+    parsed = competitor_service.parse_competitor_text(payload.text)
+    sample = [
+        {"url": u, "anchor": a, "rel": r, "link_type": lt}
+        for u, a, r, lt in parsed["rows"][:5]
+    ]
+    return CompetitorPreviewOut(
+        format=parsed["format"], mapping=parsed["mapping"],
+        row_count=len(parsed["rows"]), sample=sample, warnings=parsed["warnings"],
+    )
 
 
 @router.post("/ingest", response_model=CompetitorSheetOut, status_code=201)
@@ -27,12 +65,16 @@ async def ingest(
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
 ) -> CompetitorSheetOut:
     sheet = await competitor_service.ingest(
-        db, ctx, project_id=payload.project_id, name=payload.name, raw_text=payload.text
+        db, ctx, project_id=payload.project_id, competitor_url=payload.competitor_url,
+        name=payload.name, raw_text=payload.text,
     )
     await audit_service.record(
         db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
         entity_type="competitor_sheet", entity_id=sheet.id,
-        summary=f"Competitor upload '{sheet.name}' ({sheet.total_rows} links, {sheet.new_domains} new domains)",
+        summary=(
+            f"Competitor upload '{sheet.name}' ({sheet.total_rows} links; "
+            f"{sheet.new_domains} new domain(s), {sheet.existing_domains} already known)"
+        ),
     )
     await db.commit()
     return CompetitorSheetOut.model_validate(sheet)
@@ -67,12 +109,29 @@ async def list_domains(
     category: str | None = Query(None),
     include_dismissed: bool = Query(True),
     exclude_guest_posts: bool = Query(False),
+    search: str | None = Query(None),
+    sort: str | None = Query(None, pattern="^(domain|links|ours|indexed|da|pa)$"),
+    direction: str = Query("desc", pattern="^(asc|desc)$"),
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
 ) -> list[CompetitorDomainOut]:
     rows = await competitor_service.list_domains(
         db, ctx, project_id, category=category,
         include_dismissed=include_dismissed, exclude_guest_posts=exclude_guest_posts,
+        search=search, sort=sort, direction=direction, limit=limit, offset=offset,
     )
     return [CompetitorDomainOut(**r) for r in rows]
+
+
+@router.get("/domain-backlinks")
+async def domain_backlinks(
+    project_id: uuid.UUID,
+    domain: str,
+    ctx: AuthCtx,
+    db: ReadSession,
+) -> list[dict]:
+    """The competitor links behind one domain row (expand-in-place)."""
+    return await competitor_service.domain_backlinks(db, ctx, project_id, domain)
 
 
 @router.patch("/domains/decision", response_model=CompetitorSummary)

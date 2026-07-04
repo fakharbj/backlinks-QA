@@ -3498,10 +3498,29 @@ function CompetitorDesk({
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [compUrl, setCompUrl] = useState("");
   const [pasted, setPasted] = useState("");
   const [cat, setCat] = useState("");
   const [hideDismissed, setHideDismissed] = useState(true);
   const [hideGuest, setHideGuest] = useState(false);
+  const [domSearch, setDomSearch] = useState("");
+  const [domSearchDeb, setDomSearchDeb] = useState("");
+  const [domSort, setDomSort] = useState("");
+  const [domDir, setDomDir] = useState<"asc" | "desc">("desc");
+  const [domLimit, setDomLimit] = useState(100);
+  const [openDomain, setOpenDomain] = useState<string | null>(null);
+  type CompPreview = {
+    format: string;
+    mapping: Record<string, string>;
+    row_count: number;
+    sample: Array<{ url: string; anchor: string | null; rel: string | null; link_type: string | null }>;
+    warnings: string[];
+  };
+  const [preview, setPreview] = useState<CompPreview | null>(null);
+  useEffect(() => {
+    const t = setTimeout(() => setDomSearchDeb(domSearch.trim()), 300);
+    return () => clearTimeout(t);
+  }, [domSearch]);
 
   const summary = useQuery({
     queryKey: ["competitor-summary", token, projectId],
@@ -3509,14 +3528,42 @@ function CompetitorDesk({
     queryFn: () => api<CompetitorSummary>(`/competitors/summary?project_id=${projectId}`, { token })
   });
   const domains = useQuery({
-    queryKey: ["competitor-domains", token, projectId, cat, hideDismissed, hideGuest],
+    queryKey: ["competitor-domains", token, projectId, cat, hideDismissed, hideGuest, domSearchDeb, domSort, domDir, domLimit],
     enabled: Boolean(token) && Boolean(projectId),
     queryFn: () =>
       api<CompetitorDomain[]>(
         `/competitors/domains?project_id=${projectId}${cat ? `&category=${cat}` : ""}` +
-          `&include_dismissed=${!hideDismissed}&exclude_guest_posts=${hideGuest}`,
+          `&include_dismissed=${!hideDismissed}&exclude_guest_posts=${hideGuest}` +
+          `${domSearchDeb ? `&search=${encodeURIComponent(domSearchDeb)}` : ""}` +
+          `${domSort ? `&sort=${domSort}&direction=${domDir}` : ""}&limit=${domLimit}`,
         { token }
       )
+  });
+  const onDomSort = (key: string) => {
+    if (domSort === key) setDomDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setDomSort(key);
+      setDomDir(key === "domain" ? "asc" : "desc");
+    }
+  };
+  const domainLinks = useQuery({
+    queryKey: ["competitor-domain-links", token, projectId, openDomain],
+    enabled: Boolean(token) && Boolean(projectId) && Boolean(openDomain),
+    queryFn: () =>
+      api<Array<{ url: string; anchor: string | null; rel: string | null; link_type: string | null; upload_name: string; competitor_url: string | null }>>(
+        `/competitors/domain-backlinks?project_id=${projectId}&domain=${encodeURIComponent(openDomain || "")}`,
+        { token }
+      )
+  });
+  const previewMut = useMutation({
+    mutationFn: () =>
+      api<CompPreview>("/competitors/preview", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ text: pasted })
+      }),
+    onSuccess: (r) => setPreview(r),
+    onError: (e: Error) => onNotice(e.message)
   });
   const decide = useMutation({
     mutationFn: (p: { domain_key: string; status: string }) =>
@@ -3591,19 +3638,39 @@ function CompetitorDesk({
   };
   const ingest = useMutation({
     mutationFn: () =>
-      api<{ id: string }>("/competitors/ingest", {
+      api<CompetitorSheet>("/competitors/ingest", {
         token,
         method: "POST",
-        body: JSON.stringify({ project_id: projectId, name: name || "Competitor upload", text: pasted })
+        body: JSON.stringify({
+          project_id: projectId,
+          competitor_url: compUrl.trim(),
+          name: name.trim(),
+          text: pasted
+        })
       }),
-    onSuccess: () => {
-      onNotice("Competitor links analyzed");
+    onSuccess: (sh) => {
+      onNotice(
+        `“${sh.name}” imported — ${sh.total_rows} links, ${sh.new_domains} new domain${sh.new_domains === 1 ? "" : "s"}, ${sh.existing_domains} seen before.`
+      );
       setPasted("");
+      setPreview(null);
       queryClient.invalidateQueries({ queryKey: ["competitor-summary"] });
       queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-sheets"] });
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const runImport = () => {
+    const label = name.trim() || compUrl.trim().replace(/^https?:\/\//, "").split("/")[0];
+    const count = preview?.row_count;
+    if (
+      window.confirm(
+        `Import ${count ?? "these"} competitor link${count === 1 ? "" : "s"} for “${label}”?\n\nDuplicates of earlier uploads are counted as “seen before”, and opportunities are recalculated.`
+      )
+    )
+      ingest.mutate();
+  };
 
   if (!projectId) return <Empty label="Select a project to analyze competitor backlinks." />;
 
@@ -3632,22 +3699,92 @@ function CompetitorDesk({
       <section className="rounded-xl border border-line bg-panel shadow-card p-4">
         <SectionTitle title="Upload competitor links" flush />
         <div className="space-y-3 pt-3">
-          <Field label="Name (optional)" value={name} onChange={setName} />
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Competitor website URL (required)" value={compUrl} onChange={setCompUrl} name="competitor-url" />
+            <Field label="Display name (optional — the domain is used if blank)" value={name} onChange={setName} />
+          </div>
           <textarea
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
             rows={6}
-            placeholder={"https://blog.example.com/post-linking-to-competitor\nhttps://directory.example.com/listing, brand anchor, dofollow, Guest Post"}
+            placeholder={"Paste their backlinks — one URL per line, OR paste a SEMrush backlink export (with headers) directly:\nhttps://blog.example.com/post-linking-to-competitor\nhttps://directory.example.com/listing, brand anchor, dofollow, Guest Post"}
             className="w-full rounded-md border border-line p-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ocean/20"
           />
-          <button
-            onClick={() => ingest.mutate()}
-            disabled={ingest.isPending || !pasted.trim()}
-            className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
-          >
-            {ingest.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-            Analyze
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => previewMut.mutate()}
+              disabled={previewMut.isPending || !pasted.trim()}
+              title="See how the pasted columns will be read BEFORE importing"
+              className="flex h-10 items-center gap-2 rounded-md border border-line px-4 text-sm font-semibold text-ink transition hover:bg-field disabled:opacity-50"
+            >
+              {previewMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+              Preview mapping
+            </button>
+            <button
+              onClick={runImport}
+              disabled={ingest.isPending || !pasted.trim() || !compUrl.trim()}
+              title={!compUrl.trim() ? "Enter the competitor's website URL first" : "Import the pasted links"}
+              className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
+            >
+              {ingest.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              Import links
+            </button>
+            <button
+              onClick={() =>
+                downloadCsv(
+                  "competitor-backlinks-template.csv",
+                  ["Source url", "Anchor", "Nofollow", "Link type"],
+                  [
+                    ["https://example-blog.com/best-tools-2026", "best tools", "FALSE", "Article"],
+                    ["https://another-site.com/resources", "resources page", "TRUE", "Business Listing"],
+                    ["https://writers-hub.com/guest-column", "brand anchor", "FALSE", "Guest Post"]
+                  ]
+                )
+              }
+              className="flex h-10 items-center gap-2 rounded-md border border-line px-4 text-sm font-medium text-ink transition hover:bg-field"
+              title="A sample sheet matching the SEMrush backlink export format — only 'Source url' is required"
+            >
+              <Download className="h-4 w-4" />
+              Sample sheet
+            </button>
+            <span className="text-xs text-muted">
+              SEMrush exports are detected automatically — extra columns are ignored, missing optional columns don&apos;t block.
+            </span>
+          </div>
+          {preview ? (
+            <div className="rounded-lg border border-line bg-field/40 p-3 text-sm">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-ocean/10 px-2.5 py-0.5 text-xs font-semibold text-ocean">
+                  {preview.format === "semrush" ? "SEMrush export detected" : preview.format === "headers" ? "Header row detected" : "Plain list"}
+                </span>
+                <span className="text-xs text-muted">{preview.row_count} link{preview.row_count === 1 ? "" : "s"} will be imported</span>
+                {Object.entries(preview.mapping).map(([col, field]) => (
+                  <span key={col} className="rounded bg-panel px-1.5 py-0.5 text-[11px] text-muted">
+                    {col} → <span className="font-medium text-ink">{field}</span>
+                  </span>
+                ))}
+              </div>
+              {preview.sample.length ? (
+                <div className="space-y-1">
+                  {preview.sample.map((r, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="max-w-[380px] truncate font-medium text-ink" title={r.url}>{r.url}</span>
+                      {r.anchor ? <span className="text-muted">“{r.anchor}”</span> : null}
+                      {r.rel ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{r.rel}</span> : null}
+                      {r.link_type ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">{r.link_type}</span> : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {preview.warnings.length ? (
+                <div className="mt-2 space-y-0.5">
+                  {preview.warnings.map((w, i) => (
+                    <p key={i} className="text-xs text-ember">{w}</p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </section>
 
@@ -3659,8 +3796,19 @@ function CompetitorDesk({
               <div key={sh.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
                 <div className="min-w-0">
                   <span className="font-medium text-ink">{sh.name}</span>{" "}
-                  <span className="text-xs text-muted">
-                    {sh.total_rows} links · {sh.new_domains} new / {sh.existing_domains} existing · {formatDate(sh.created_at)}
+                  {sh.competitor_url ? (
+                    <a
+                      href={sh.competitor_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="mr-1 text-xs text-ocean hover:underline"
+                    >
+                      {sh.competitor_url.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+                    </a>
+                  ) : null}
+                  <span className="whitespace-nowrap text-xs text-muted" title="New = domains first seen in this upload · Seen before = domains an earlier upload already covered">
+                    {sh.total_rows} links · {sh.new_domains} new domain{sh.new_domains === 1 ? "" : "s"} / {sh.existing_domains} seen before · {formatDate(sh.created_at)}
                   </span>
                 </div>
                 <button
@@ -3684,6 +3832,12 @@ function CompetitorDesk({
         <div className="flex items-center justify-between border-b border-line p-3">
           <h3 className="text-sm font-semibold text-ink">Competitor source domains</h3>
           <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={domSearch}
+              onChange={(e) => setDomSearch(e.target.value)}
+              placeholder="Search domain…"
+              className="h-9 w-40 rounded-md border border-line bg-panel px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+            />
             <select
               value={cat}
               onChange={(e) => setCat(e.target.value)}
@@ -3732,66 +3886,132 @@ function CompetitorDesk({
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="bg-field text-xs uppercase text-muted">
+            <thead className="sticky top-0 z-10 bg-field text-xs uppercase text-muted">
               <tr>
-                <Th>Domain</Th><Th>Status</Th><Th>Competitor links</Th><Th>Our links</Th><Th>Indexed %</Th><Th>DA</Th><Th>Action</Th>
+                <SortTh label="Domain" sortKey="domain" sort={domSort} dir={domDir} onSort={onDomSort} />
+                <Th>Status</Th>
+                <SortTh label="Competitor links" sortKey="links" sort={domSort} dir={domDir} onSort={onDomSort} />
+                <SortTh label="Our links" sortKey="ours" sort={domSort} dir={domDir} onSort={onDomSort} />
+                <SortTh label="Indexed %" sortKey="indexed" sort={domSort} dir={domDir} onSort={onDomSort} />
+                <SortTh label="DA" sortKey="da" sort={domSort} dir={domDir} onSort={onDomSort}
+                  help="Domain authority (Moz). Click to rank the outreach list by strongest domains." />
+                <SortTh label="PA" sortKey="pa" sort={domSort} dir={domDir} onSort={onDomSort} />
+                <Th>Action</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {(domains.data || []).map((d) => (
-                <tr key={d.id} className={clsx("hover:bg-field/60", d.decision === "dismissed" && "opacity-55")}>
-                  <Td>
-                    <a href={`https://${d.domain_key}`} target="_blank" rel="noreferrer" className="text-ocean hover:underline">
-                      {d.domain_key}
-                    </a>
-                    {d.has_guest_post ? (
-                      <span className="ml-1.5 rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum">
-                        Guest post
-                      </span>
-                    ) : null}
-                  </Td>
-                  <Td>
-                    {d.decision === "dismissed" ? (
-                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title={d.decision_reason || "Dismissed manually"}>
-                        Dismissed
-                      </span>
-                    ) : d.category === "new_opportunity" ? (
-                      <span className="rounded bg-ocean/10 px-2 py-0.5 text-xs font-medium text-ocean">Opportunity</span>
-                    ) : (
-                      <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title="Removed from opportunities because this project already has a link from this domain">
-                        Already used
-                      </span>
+                <Fragment key={d.id}>
+                  <tr
+                    onClick={() => setOpenDomain(openDomain === d.domain_key ? null : d.domain_key)}
+                    className={clsx(
+                      "cursor-pointer hover:bg-field/60",
+                      d.decision === "dismissed" && "opacity-55",
+                      openDomain === d.domain_key && "bg-ocean/5"
                     )}
-                  </Td>
-                  <Td>{d.url_count}</Td>
-                  <Td>{d.our_link_count}</Td>
-                  <Td>{d.our_indexed_pct != null ? `${d.our_indexed_pct}%` : "-"}</Td>
-                  <Td>{d.da ?? "—"}</Td>
-                  <Td>
-                    {d.category === "new_opportunity" ? (
-                      d.decision === "dismissed" ? (
-                        <button
-                          onClick={() => decide.mutate({ domain_key: d.domain_key, status: "open" })}
-                          className="text-xs font-medium text-ocean hover:underline"
+                  >
+                    <Td>
+                      <a
+                        href={`https://${d.domain_key}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-ocean hover:underline"
+                      >
+                        {d.domain_key}
+                      </a>
+                      {d.has_guest_post ? (
+                        <span
+                          className="ml-1.5 rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum"
+                          title="At least one competitor link here is tagged Guest Post (Guest Post / guestpost / GP)"
                         >
-                          Re-open
-                        </button>
+                          Guest post
+                        </span>
+                      ) : null}
+                    </Td>
+                    <Td>
+                      {d.decision === "dismissed" ? (
+                        <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title={d.decision_reason || "Dismissed manually"}>
+                          Dismissed
+                        </span>
+                      ) : d.category === "new_opportunity" ? (
+                        <span className="rounded bg-ocean/10 px-2 py-0.5 text-xs font-medium text-ocean">Opportunity</span>
                       ) : (
-                        <button
-                          onClick={() => decide.mutate({ domain_key: d.domain_key, status: "dismissed" })}
-                          className="text-xs font-medium text-muted hover:text-danger hover:underline"
-                        >
-                          Dismiss
-                        </button>
-                      )
-                    ) : null}
-                  </Td>
-                </tr>
+                        <span className="rounded bg-field px-2 py-0.5 text-xs font-medium text-muted" title="Removed from opportunities because this project already has a link from this domain">
+                          Already used
+                        </span>
+                      )}
+                    </Td>
+                    <Td>{d.url_count}</Td>
+                    <Td>{d.our_link_count}</Td>
+                    <Td>{d.our_indexed_pct != null ? `${d.our_indexed_pct}%` : "-"}</Td>
+                    <Td>{d.da ?? "—"}</Td>
+                    <Td>{d.pa ?? "—"}</Td>
+                    <Td>
+                      {d.category === "new_opportunity" ? (
+                        d.decision === "dismissed" ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); decide.mutate({ domain_key: d.domain_key, status: "open" }); }}
+                            className="text-xs font-medium text-ocean hover:underline"
+                          >
+                            Re-open
+                          </button>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); decide.mutate({ domain_key: d.domain_key, status: "dismissed" }); }}
+                            className="text-xs font-medium text-muted hover:text-danger hover:underline"
+                          >
+                            Dismiss
+                          </button>
+                        )
+                      ) : null}
+                    </Td>
+                  </tr>
+                  {openDomain === d.domain_key ? (
+                    <tr>
+                      <td colSpan={8} className="bg-field/40 p-3">
+                        <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                          Competitor links on {d.domain_key}
+                        </div>
+                        {domainLinks.isLoading ? (
+                          <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                        ) : (
+                          <div className="max-h-64 space-y-1 overflow-y-auto">
+                            {(domainLinks.data || []).map((l, i) => (
+                              <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
+                                <a href={l.url} target="_blank" rel="noreferrer" className="max-w-[420px] truncate text-ocean hover:underline" title={l.url}>
+                                  {l.url}
+                                </a>
+                                {l.anchor ? <span className="text-muted">“{l.anchor}”</span> : null}
+                                {l.rel ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.rel}</span> : null}
+                                {l.link_type ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">{l.link_type}</span> : null}
+                                <span className="text-muted">from “{l.upload_name}”</span>
+                              </div>
+                            ))}
+                            {!(domainLinks.data || []).length ? (
+                              <p className="text-xs text-muted">No stored links for this domain.</p>
+                            ) : null}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>
           {!domains.isLoading && !(domains.data || []).length ? (
             <Empty label="No competitor data yet — paste some links above." />
+          ) : null}
+          {(domains.data || []).length >= domLimit ? (
+            <div className="border-t border-line p-2 text-center">
+              <button
+                onClick={() => setDomLimit((l) => l + 200)}
+                className="h-9 rounded-lg border border-line px-4 text-sm font-medium text-ink transition hover:bg-field"
+              >
+                Load more domains
+              </button>
+            </div>
           ) : null}
         </div>
       </section>
