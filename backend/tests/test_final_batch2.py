@@ -203,3 +203,50 @@ def test_markdown_link_matching():
     assert limo.effective_anchor == "vip black car service"
     assert "limo.black" in limo.normalized_url
     assert "tailored transportation" in limo.context_text
+
+
+def test_aws_waf_challenge_detection():
+    from app.crawler.detect import detect
+    from app.crawler.engine import _looks_blocked
+    from app.crawler.fetch import FetchOutcome
+    from app.crawler.types import PageSignals
+
+    # The site123.me interstitial (HTTP 202 + AWS WAF JS challenge).
+    body = (
+        '<!DOCTYPE html><html><head><script type="text/javascript">'
+        'window.awsWafCookieDomainList = []; window.gokuProps = {"key":"AQID"};'
+        "</script></head><body></body></html>"
+    )
+    out = FetchOutcome()
+    out.status = 202
+    out.body = body
+    assert _looks_blocked(out) is True  # → proxy escalation fires
+
+    flags = detect(status=202, headers={}, body=body, signals=PageSignals())
+    assert flags.captcha is True  # → Needs review, never "link missing"
+
+    # A REAL page that merely ships the AWS WAF SDK must NOT flag (big body).
+    real = body.replace("</body>", "<p>content</p>" + "x" * 30000 + "</body>")
+    flags2 = detect(status=200, headers={}, body=real, signals=PageSignals())
+    assert flags2.captcha is False
+
+
+def test_captcha_widget_on_real_page_is_not_a_wall():
+    from app.crawler.detect import detect
+    from app.crawler.types import PageSignals
+
+    # A big, healthy page with a reCAPTCHA-protected contact form (site123 case):
+    # the link is right there — this must NOT flag as bot protection.
+    real = (
+        "<html><head><title>Limo services blog</title></head><body>"
+        '<a href="https://limo.black/">Hourly limo service</a>'
+        + "x" * 40000
+        + '<div class="g-recaptcha" data-sitekey="abc"></div></body></html>'
+    )
+    flags = detect(status=200, headers={}, body=real, signals=PageSignals())
+    assert flags.captcha is False
+
+    # A small 200 CAPTCHA WALL (the weebly case) must still flag.
+    wall = "<html><head><title>Verify you are human</title></head><body>g-recaptcha</body></html>"
+    flags2 = detect(status=200, headers={}, body=wall, signals=PageSignals())
+    assert flags2.captcha is True

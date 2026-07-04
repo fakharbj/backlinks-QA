@@ -64,6 +64,9 @@ _CHALLENGE_MARKERS = (
     "attention required! | cloudflare", "checking your browser before",
     "ddos protection by cloudflare", "please enable cookies and reload",
     "verifying you are human",
+    # AWS WAF browser challenge (served with HTTP 202 by site builders like
+    # site123): browsers solve it silently; a naive crawler sees an empty shell.
+    "awswafcookiedomainlist", "gokuprops", "aws-waf-token", "challenge.compact.js",
 )
 # Challenge interstitials are small; a full content page that merely mentions a
 # captcha script is large, so a size guard avoids false positives.

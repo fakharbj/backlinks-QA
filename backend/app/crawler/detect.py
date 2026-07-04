@@ -15,6 +15,12 @@ _CAPTCHA_MARKERS = (
     "please verify you are a human", "verify you are human", "i'm not a robot",
     "px-captcha", "funcaptcha", "arkoselabs",
 )
+
+# AWS WAF browser challenge (HTTP 202 interstitial). IMPORTANT: real pages on
+# AWS-WAF-protected hosts ALSO ship this SDK snippet, so these markers only
+# count on a tiny challenge SHELL — never on a full page.
+_AWS_WAF_MARKERS = ("awswafcookiedomainlist", "gokuprops", "aws-waf-token")
+_AWS_WAF_SHELL_MAX_BYTES = 20_000
 _CLOUDFLARE_MARKERS = (
     "cf-browser-verification", "checking your browser before accessing",
     "cf-challenge", "just a moment", "cf_chl_opt", "__cf_chl", "ray id",
@@ -60,7 +66,21 @@ def detect(
     title_h1 = " ".join(filter(None, [signals.title or "", signals.h1 or ""])).lower()
 
     # CAPTCHA -----------------------------------------------------------------
-    if (m := _has_any(low, _CAPTCHA_MARKERS)) is not None:
+    # A captcha WALL blocks the whole page (block status, tiny interstitial, or
+    # verification wording in the title). A normal page that merely embeds a
+    # reCAPTCHA-protected contact form must NOT count as bot protection.
+    wall_context = (
+        (status or 0) in (202, 401, 403, 405, 406, 409, 429, 503)
+        or len(low) < _AWS_WAF_SHELL_MAX_BYTES
+        or _has_any(title_h1, _CAPTCHA_MARKERS) is not None
+        or "verify" in title_h1
+        or "robot" in title_h1
+    )
+    if wall_context and (m := _has_any(low, _CAPTCHA_MARKERS)) is not None:
+        flags.captcha = True
+        flags.signature = m
+    elif len(low) < _AWS_WAF_SHELL_MAX_BYTES and (m := _has_any(low, _AWS_WAF_MARKERS)) is not None:
+        # Tiny AWS WAF challenge shell → bot check, never "link missing".
         flags.captcha = True
         flags.signature = m
 
