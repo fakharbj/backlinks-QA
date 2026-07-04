@@ -1789,7 +1789,8 @@ function Backlinks({
         </div>
       </div>
       <div className="max-h-[70vh] overflow-auto scrollbar-thin">
-        <table className="min-w-[1600px] w-full border-collapse text-left text-sm">
+        {/* Dense grid: slim one-line rows ([&_td] overrides the shared cell padding). */}
+        <table className="min-w-[1240px] w-full border-collapse text-left text-sm [&_td]:px-2 [&_td]:py-1 [&_td]:align-middle [&_th]:px-2">
           <thead className="sticky top-0 z-10 bg-field text-xs uppercase text-muted">
             <tr>
               <Th>
@@ -1813,7 +1814,7 @@ function Backlinks({
               <Th>Index</Th>
               <SortTh label="HTTP" sortKey="http_status" sort={sort} dir={sortDir} onSort={onSortCol} />
               <Th>Rel</Th>
-              <Th>Rank / Visits</Th>
+              <Th><span title="Domain rank / monthly visits (from the metrics provider)">Rank</span></Th>
               <Th>Issue</Th>
               <SortTh label="Link date" sortKey="created_at" sort={sort} dir={sortDir} onSort={onSortCol}
                 help="The sheet's own link-building date when available (hover shows when it was imported). Sorted by import date." />
@@ -1843,37 +1844,41 @@ function Backlinks({
                     }}
                   />
                 </Td>
-                <Td><Status value={row.override_status || row.status} reason={row.top_issue_label} /></Td>
+                <Td><Status value={row.override_status || row.status} reason={row.top_issue_label} compact /></Td>
                 <Td>
                   <span onClick={(e) => e.stopPropagation()}>
                     <ScoreTip token={token} backlinkId={row.id} score={row.score} />
                   </span>
                 </Td>
                 <Td>
-                  <Url value={row.source_page_url} />
-                  {row.is_duplicate ? (
-                    <span
-                      className="mt-0.5 mr-1 inline-block rounded bg-ember/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ember"
-                      title={row.duplicate_status || "duplicate"}
-                    >
-                      {(row.duplicate_status || "duplicate").replace("dup_", "").replace(/_/g, " ")}
-                    </span>
-                  ) : null}
+                  <span className="flex items-center gap-1.5">
+                    <Url value={row.source_page_url} />
+                    {row.is_duplicate ? (
+                      <span
+                        className="shrink-0 rounded bg-ember/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ember"
+                        title={`Duplicate: ${(row.duplicate_status || "duplicate").replace("dup_", "").replace(/_/g, " ")}`}
+                      >
+                        dup
+                      </span>
+                    ) : null}
+                  </span>
                 </Td>
                 <Td>
-                  <Url value={row.target_url} />
-                  {(row.targets_on_source ?? 1) > 1 ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSearch(row.source_page_url);
-                      }}
-                      className="mt-0.5 inline-block rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum hover:bg-plum/20"
-                      title={`This source page links to ${row.targets_on_source} different targets — click to see all of them`}
-                    >
-                      {row.targets_on_source} targets
-                    </button>
-                  ) : null}
+                  <span className="flex items-center gap-1.5">
+                    <Url value={row.target_url} />
+                    {(row.targets_on_source ?? 1) > 1 ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSearch(row.source_page_url);
+                        }}
+                        className="shrink-0 rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum hover:bg-plum/20"
+                        title={`This source page links to ${row.targets_on_source} different targets — click to see all of them`}
+                      >
+                        ×{row.targets_on_source}
+                      </button>
+                    ) : null}
+                  </span>
                 </Td>
                 <Td><span className="whitespace-nowrap text-xs" title={row.link_type || undefined}>{linkTypeLabel(row.link_type) || "—"}</span></Td>
                 <Td>
@@ -7188,7 +7193,18 @@ const STATUS_HELP: Record<string, { label?: string; what: string; next: string }
   pending: { what: "This run is queued and will start shortly.", next: "Nothing to do." }
 };
 
-function Status({ value, reason }: { value: string; reason?: string | null }) {
+// One-word pill labels for dense grids — the full wording + plain-English
+// explanation stays in the hover tooltip.
+const STATUS_SHORT: Record<string, string> = {
+  PASS: "OK",
+  WARNING: "Improve",
+  FAIL: "Not OK",
+  NEEDS_MANUAL_REVIEW: "Review",
+  UNKNOWN: "Unclear",
+  PENDING: "Pending"
+};
+
+function Status({ value, reason, compact }: { value: string; reason?: string | null; compact?: boolean }) {
   const tone =
     value === "PASS" || value === "completed"
       ? "bg-ocean/10 text-ocean border-ocean/30"
@@ -7200,14 +7216,27 @@ function Status({ value, reason }: { value: string; reason?: string | null }) {
             ? "bg-plum/10 text-plum border-plum/30"
             : "bg-field text-muted border-line";
   const help = STATUS_HELP[value];
-  const label = (help?.label || value).replaceAll("_", " ");
+  const label = compact
+    ? STATUS_SHORT[value] || (help?.label || value).replaceAll("_", " ")
+    : (help?.label || value).replaceAll("_", " ");
   return (
     <span className="group relative inline-flex">
-      <span className={clsx("inline-flex cursor-default rounded-full border px-2 py-1 text-xs font-semibold", tone)}>
+      <span
+        className={clsx(
+          "inline-flex cursor-default whitespace-nowrap rounded-full border font-semibold",
+          compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs",
+          tone
+        )}
+      >
         {label}
       </span>
       {help ? (
         <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-72 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
+          {compact ? (
+            <span className="block text-xs font-semibold normal-case text-ink">
+              {(help.label || value).replaceAll("_", " ")}
+            </span>
+          ) : null}
           <span className="block text-xs font-normal normal-case text-ink">{help.what}</span>
           {reason ? (
             <span className="mt-1 block text-xs font-medium normal-case text-ember">
