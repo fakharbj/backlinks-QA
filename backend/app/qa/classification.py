@@ -15,7 +15,12 @@ from app.crawler.types import CrawlArtifact, FetchError
 from app.qa.enums import IssueLabel, OverallStatus, Severity
 from app.qa.types import Issue
 
-_REVIEW_LABELS = {IssueLabel.CAPTCHA_DETECTED, IssueLabel.INDEXABILITY_UNKNOWN}
+_REVIEW_LABELS = {
+    IssueLabel.CAPTCHA_DETECTED,
+    IssueLabel.INDEXABILITY_UNKNOWN,
+    # JS-only page we could not load content for — never a confident verdict.
+    IssueLabel.JS_RENDER_REQUIRED,
+}
 _TRANSIENT_ERRORS = (FetchError.TIMEOUT, FetchError.CONNECTION, FetchError.UNKNOWN)
 _TRANSIENT_STATUSES = {429, 503, 504}
 _CONFLICT_CODES = {"MR-05", "XR-05"}

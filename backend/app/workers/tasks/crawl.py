@@ -97,7 +97,11 @@ async def _crawl_batch_async(ids: list[str], job_id: str | None, *, with_browser
     engine = CrawlEngine(
         config, robots_cache=RedisRobotsCache(), browser=browser, rate_limiter=limiter
     )
-    requests = [_build_request(r, projects.get(r.project_id), allow_render=with_browser) for r in records]  # noqa: E501
+    # allow_render is ALWAYS on: in the render pool the engine renders inline;
+    # in the http pool it only sets render_recommended, which step 5 hands off
+    # to the render queue. (It was tied to with_browser before, so the http pool
+    # never recommended rendering — JS-only pages false-failed.)
+    requests = [_build_request(r, projects.get(r.project_id), allow_render=True) for r in records]  # noqa: E501
 
     async with engine:
         artifacts = await asyncio.gather(

@@ -39,6 +39,7 @@ _JS_FRAMEWORK_MARKERS = (
     "data-reactroot", "__next_data__", "ng-app", "ng-version", "v-cloak",
     "data-vue", "__nuxt__", "data-svelte", "window.__initial_state__",
     "data-server-rendered", "id=\"root\"", "id=\"app\"",
+    "id=\"notion-app\"", "id=\"__next\"", "id=\"__nuxt\"", "id=\"___gatsby\"",
 )
 _ROBOTS_FETCH_TIMEOUT = 8.0
 
@@ -64,6 +65,9 @@ _CHALLENGE_MARKERS = (
     "attention required! | cloudflare", "checking your browser before",
     "ddos protection by cloudflare", "please enable cookies and reload",
     "verifying you are human",
+    # Cloudflare managed-challenge fingerprints (served with HTTP 200 to bots —
+    # e.g. notion.site): the unblocker proxy can clear these.
+    "__cf_chl", "cf_chl_opt", "enable javascript and cookies to continue",
     # AWS WAF browser challenge (served with HTTP 202 by site builders like
     # site123): browsers solve it silently; a naive crawler sees an empty shell.
     "awswafcookiedomainlist", "gokuprops", "aws-waf-token", "challenge.compact.js",
@@ -341,7 +345,7 @@ class CrawlEngine:
             and self._proxy_client is not None
             and artifact.egress != "proxy"
             and not artifact.detection.captcha
-            and self._looks_js_driven(outcome.body)
+            and (self._looks_js_driven(outcome.body) or not page.links)
         ):
             proxied = await _fetch_via(self._proxy_client, via_proxy=True)
             if proxied.error is FetchError.NONE and proxied.status and proxied.status < 400:
@@ -379,7 +383,9 @@ class CrawlEngine:
             and self.config.render_enabled
             and not artifact.detection.captcha
             and not artifact.detection.cloudflare_challenge
-            and self._looks_js_driven(outcome.body)
+            # An HTML page that parses to ZERO links is an app shell (Notion,
+            # SPAs) — real pages always carry some links. Render it.
+            and (self._looks_js_driven(outcome.body) or not page.links)
         )
         if should_render and self._browser is not None:
             await self._render_and_rematch(artifact, request, outcome)
@@ -492,6 +498,9 @@ class CrawlEngine:
             outcome.final_url or request.source_url,
             timeout_ms=self.config.render_timeout_ms,
             wait_until=self.config.render_wait_until,
+            # Wait for the thing QA is actually looking for: any link to the
+            # target's domain — hydration-proof and faster than generic idle.
+            wait_selector=self._target_selector(request),
         )
         if not getattr(result, "ok", False):
             return
@@ -509,6 +518,15 @@ class CrawlEngine:
             artifact.found_in_rendered = True
             artifact.crawl_mode = CrawlMode.RENDERED
             artifact.all_links = rendered_page.links
+
+    @staticmethod
+    def _target_selector(request: CrawlRequest) -> str | None:
+        """CSS selector matching any anchor to the target's registrable domain."""
+        norm = normalize_url(request.expected_target_url or request.target_url)
+        dom = norm.registrable_domain if norm.valid else None
+        if not dom or '"' in dom:
+            return None
+        return f'a[href*="{dom}"]'
 
     async def _evaluate_robots(
         self, url: str, user_agent: str, request: CrawlRequest

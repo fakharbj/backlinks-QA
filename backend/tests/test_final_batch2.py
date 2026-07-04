@@ -273,3 +273,39 @@ def test_redirect_wrapped_links_count_as_found():
     page = parse_html(html, final_url="https://69b2d0d3499ba.site123.me/")
     assert page.links and page.links[0].unwrapped_url == "https://limo.black/"
     assert page.links[0].anchor_text == "Hourly limo service"
+
+
+def test_render_guard_allows_domains_blocks_internal_ips():
+    from app.crawler.render import _host_is_obviously_internal
+
+    # Domain names MUST pass (the old guard aborted every hostname, which
+    # broke rendering for all real websites).
+    assert _host_is_obviously_internal("https://cyclic-kilometer-729.notion.site/x") is False
+    assert _host_is_obviously_internal("https://limo.black/") is False
+    # Literal internal IPs stay blocked (SSRF defence-in-depth).
+    assert _host_is_obviously_internal("https://169.254.169.254/meta") is True
+    assert _host_is_obviously_internal("https://10.0.0.5/x") is True
+    assert _host_is_obviously_internal("https://[::1]/x") is True
+    # Public literal IPs pass.
+    assert _host_is_obviously_internal("https://1.2.3.4/x") is False
+
+
+def test_js_shell_page_is_review_not_link_missing():
+    from app.crawler.types import CrawlArtifact, CrawlRequest, DetectionFlags
+    from app.qa.engine import evaluate
+
+    # A 200 HTML page with ZERO links (Notion-style JS shell we couldn't render).
+    art = CrawlArtifact(
+        request=CrawlRequest(
+            source_url="https://x.notion.site/page", target_url="https://kingswoodlandscape.com/"
+        )
+    )
+    art.http_status = 200
+    art.content_type = "text/html"
+    art.detection = DetectionFlags()
+    art.all_links = []
+    qa = evaluate(art)
+    labels = {i.label.value for i in qa.issues}
+    assert "JS_RENDER_REQUIRED" in labels
+    assert "LINK_MISSING" not in labels
+    assert qa.status.value == "NEEDS_MANUAL_REVIEW"

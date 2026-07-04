@@ -48,6 +48,18 @@ def link_presence(ctx: CheckContext) -> Iterable[Issue]:
                               "count": len(art.matched_links)})
         return
 
+    # A page with ZERO outbound links is a JavaScript shell (Notion, SPAs)
+    # whose content we could not load (render blocked/bot-walled) — that is
+    # "couldn't check", NEVER a confident "link missing".
+    if not art.all_links:
+        yield issue(code="LNK-09", label=IssueLabel.JS_RENDER_REQUIRED, category=CAT,
+                    severity=Severity.INFO,
+                    message=("The page builds its content with JavaScript and our checker "
+                             "couldn't load it. Open the page yourself to confirm — the link "
+                             "could not be verified automatically."),
+                    evidence={"outbound_links": 0, "rendered": art.rendered})
+        return
+
     # No exact match → wrong-target (same domain) or genuinely missing.
     exp_dom = _expected_domain(ctx)
     same_domain_link = next(

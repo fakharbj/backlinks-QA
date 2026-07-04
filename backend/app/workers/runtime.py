@@ -75,5 +75,8 @@ def get_browser():
 
         if not RENDER_AVAILABLE:
             return None
+        # NOTE: chromium rejects authenticated proxies (ERR_PROXY_AUTH_UNSUPPORTED),
+        # so renders go direct; pages whose content stays bot-walled classify as
+        # "Needs review — JavaScript page" instead of a false "link missing".
         _browser = BrowserManager(user_agent=settings.CRAWL_USER_AGENT, max_contexts=6)
     return _browser

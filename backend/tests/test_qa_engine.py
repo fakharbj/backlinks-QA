@@ -33,6 +33,8 @@ def test_qa_passes_when_link_found_and_clean():
 
 
 def test_qa_fails_when_link_missing():
+    from app.crawler.types import ParsedLink
+
     artifact = CrawlArtifact(
         request=CrawlRequest(
             source_url="https://publisher.test/page",
@@ -43,6 +45,16 @@ def test_qa_fails_when_link_missing():
         content_type="text/html",
     )
     artifact.robots.source_allowed = True
+    # The page has real content/links — just not OURS. (A page with ZERO links
+    # is a JS shell and classifies as Needs review instead — separate test.)
+    artifact.all_links = [
+        ParsedLink(
+            href="https://elsewhere.test/",
+            resolved_url="https://elsewhere.test/",
+            normalized_url="https://elsewhere.test/",
+            anchor_text="unrelated",
+        )
+    ]
 
     result = evaluate(artifact)
 

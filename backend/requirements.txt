@@ -58,3 +58,4 @@ prometheus-client==0.20.0
 sentry-sdk==2.7.1
 
 # ── Testing (kept here so the worker image can self-test; see requirements-dev) ─
+playwright>=1.61  # headless render escalation (Chromium via 'playwright install chromium')
