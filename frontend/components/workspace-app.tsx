@@ -373,7 +373,7 @@ export function WorkspaceApp() {
             <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "performance" ? (
-            <PerformanceDesk token={token} projectId={activeProjectId} />
+            <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} />
           ) : null}
           {tab === "tasks" ? (
             <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} />
@@ -1170,6 +1170,7 @@ function Overview({
 
       {stats?.is_project ? (
         <div className="space-y-5">
+          <ProjectEffort token={token} projectId={projectId} onOpenBacklinks={onOpenBacklinks} />
           <div className="grid gap-5 lg:grid-cols-2">
             <section className="rounded-xl border border-line bg-panel shadow-card">
               <SectionTitle title="By link type" />
@@ -2834,8 +2835,11 @@ function TasksDesk({
     enabled: Boolean(token),
     queryFn: () => api<LinkType[]>("/link-types", { token })
   });
+  // The assign form stays hidden until needed — the desk opens clean.
+  const [showAssign, setShowAssign] = useState(false);
   // Planner cells prefill the form ("+ Add" or clicking a chip to edit).
   const prefillForm = (p: { user?: string; day?: string; row?: DayRow }) => {
+    setShowAssign(true);
     if (p.row) {
       setFDay(p.row.day);
       setFUser(p.row.user_label);
@@ -2974,9 +2978,25 @@ function TasksDesk({
         </p>
       </div>
 
-      {/* Assign */}
+      {/* Assign — hidden by default; "+ Add" in the planner opens it prefilled */}
+      {!showAssign ? (
+        <div>
+          <button
+            onClick={() => setShowAssign(true)}
+            className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+          >
+            <Plus className="h-4 w-4" />
+            Assign work
+          </button>
+        </div>
+      ) : (
       <section ref={formRef} className="rounded-xl border border-line bg-panel p-4 shadow-card">
-        <SectionTitle title="Assign work" flush />
+        <div className="flex items-center justify-between">
+          <SectionTitle title="Assign work" flush />
+          <button onClick={() => setShowAssign(false)} className="text-xs font-medium text-muted hover:text-ink hover:underline">
+            Hide
+          </button>
+        </div>
         <div className="flex flex-wrap items-end gap-2 pt-3">
           <input type="date" value={fDay} onChange={(e) => setFDay(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
           <SearchSelect
@@ -3048,6 +3068,7 @@ function TasksDesk({
           </span>
         </div>
       </section>
+      )}
 
       {/* Where the time goes — hours & completion by person and by project */}
       {visibleRows.length ? (
@@ -3700,6 +3721,92 @@ function TrendChart({
   );
 }
 
+// Grouped two-series bar chart (e.g. Target vs Done per week/person) with
+// hover tooltips — same visual language as TrendChart.
+function BarCompare({
+  labels,
+  a,
+  b,
+  aName,
+  bName,
+  aVar = "--line",
+  bVar = "--ocean",
+  height = 170,
+  onClickIndex
+}: {
+  labels: string[];
+  a: number[];
+  b: number[];
+  aName: string;
+  bName: string;
+  aVar?: string;
+  bVar?: string;
+  height?: number;
+  onClickIndex?: (i: number) => void;
+}) {
+  const W = 640;
+  const H = height;
+  const PADX = 34;
+  const PADY = 22;
+  const max = Math.max(1, ...a, ...b);
+  const n = Math.max(labels.length, 1);
+  const slot = (W - PADX * 2) / n;
+  const bw = Math.max(3, Math.min(22, slot * 0.32));
+  const y = (v: number) => H - PADY - (v / max) * (H - PADY * 2);
+  if (!labels.length) return <Empty label="Not enough data for a chart yet." />;
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap gap-3 px-1">
+        {[[aName, aVar], [bName, bVar]].map(([name, cssVar]) => (
+          <span key={name} className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
+            <span className="h-2 w-2 rounded-sm" style={{ background: `rgb(var(${cssVar}))` }} />
+            {name}
+          </span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img">
+        {[0, 0.5, 1].map((f) => (
+          <g key={f}>
+            <line
+              x1={PADX} x2={W - PADX} y1={y(max * f)} y2={y(max * f)}
+              stroke="rgb(var(--line))" strokeWidth="1" strokeDasharray={f === 0 ? "" : "3 4"}
+            />
+            <text x={PADX - 6} y={y(max * f) + 3} textAnchor="end" fontSize="9" fill="rgb(var(--muted))">
+              {Math.round(max * f)}
+            </text>
+          </g>
+        ))}
+        {labels.map((l, i) => {
+          const cx = PADX + slot * i + slot / 2;
+          const av = a[i] ?? 0;
+          const bv = b[i] ?? 0;
+          return (
+            <g
+              key={i}
+              onClick={onClickIndex ? () => onClickIndex(i) : undefined}
+              style={onClickIndex ? { cursor: "pointer" } : undefined}
+            >
+              <rect x={cx - bw - 1} y={y(av)} width={bw} height={Math.max(0, H - PADY - y(av))}
+                rx="2" fill={`rgb(var(${aVar}) / 0.55)`}>
+                <title>{`${l} — ${aName}: ${av}`}</title>
+              </rect>
+              <rect x={cx + 1} y={y(bv)} width={bw} height={Math.max(0, H - PADY - y(bv))}
+                rx="2" fill={`rgb(var(${bVar}))`}>
+                <title>{`${l} — ${bName}: ${bv}`}</title>
+              </rect>
+              {labels.length <= 10 || i === 0 || i === labels.length - 1 || i % Math.ceil(labels.length / 6) === 0 ? (
+                <text x={cx} y={H - 6} textAnchor="middle" fontSize="9" fill="rgb(var(--muted))">
+                  {l.length > 10 ? `${l.slice(0, 9)}…` : l}
+                </text>
+              ) : null}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function downloadCsv(
   filename: string,
   headers: string[],
@@ -3890,6 +3997,795 @@ function UserWeekStrip({
   );
 }
 
+// ── Admin user dashboard: one page with EVERYTHING about a person ───────────
+function UserDashboard({
+  token,
+  userLabel,
+  initialProjectId,
+  onClose,
+  onOpenBacklinks,
+  onNotice
+}: {
+  token: string | null;
+  userLabel: string;
+  initialProjectId?: string;
+  onClose: () => void;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [days, setDays] = useState("30");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [projFilter, setProjFilter] = useState(initialProjectId || "");
+  const [ltFilter, setLtFilter] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("");
+
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const projectName = (id: string) => (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+  const linkTypes = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+
+  const customReady = days !== "custom" || Boolean(customFrom && customTo);
+  type DashPayload = {
+    from: string; to: string;
+    links: Record<string, number | null>;
+    plan: Record<string, number | null>;
+    previous: { links: Record<string, number | null>; plan: Record<string, number | null> } | null;
+    projects: Array<{ project_id: string; links: number; indexed: number; fail: number; project_new_domains: number; hours: number; target: number }>;
+    weekly: Array<{ week: string; links: number; indexed: number; fail: number; new_domains: number }>;
+    plan_weekly: Array<{ week: string; target: number; done: number }>;
+    rates: { global: Array<{ link_type_name: string; links_per_hour: number }>; overrides: Array<{ link_type_name: string; links_per_hour: number }> };
+    leaves: Array<{ id: string; start_date: string; end_date: string; reason: string | null; status: string }>;
+  };
+  const dash = useQuery({
+    queryKey: ["user-dashboard", token, userLabel, days, customFrom, customTo, projFilter, ltFilter],
+    enabled: Boolean(token) && customReady,
+    queryFn: () => {
+      const p = new URLSearchParams({ user_label: userLabel, compare: "true" });
+      if (days === "custom") {
+        p.set("date_from", `${customFrom}T00:00:00Z`);
+        p.set("date_to", `${customTo}T23:59:59Z`);
+      } else p.set("days", days);
+      if (projFilter) p.set("project_id", projFilter);
+      if (ltFilter) p.set("link_type", ltFilter);
+      return api<DashPayload>(`/performance/user-dashboard?${p.toString()}`, { token });
+    }
+  });
+
+  // Recent task history (day report is capped at 92 days — window clamps).
+  const fmtIso = (dt: Date) =>
+    `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  const histTo = fmtIso(new Date());
+  const histFrom = fmtIso(new Date(Date.now() - 60 * 86400000));
+  type DayRow = {
+    id: string; day: string; project_id: string; user_label: string; hours: number;
+    link_type_names: string[]; expected_links: number; actual_links: number;
+    completion_pct: number | null; excused: boolean; excuse_reason: string | null;
+    priority: string | null; rate_source: string | null; lph_used: number | null; note: string | null;
+  };
+  const history = useQuery({
+    queryKey: ["user-dash-history", token, userLabel, projFilter],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<DayRow[]>(
+        `/workforce/day-report?date_from=${histFrom}&date_to=${histTo}&user_label=${encodeURIComponent(userLabel)}${projFilter ? `&project_id=${projFilter}` : ""}`,
+        { token }
+      )
+  });
+  const weakest = useQuery({
+    queryKey: ["user-dash-weakest", token, userLabel, projFilter],
+    enabled: Boolean(token),
+    queryFn: () => {
+      const p = new URLSearchParams({ limit: "8", sort: "score" });
+      p.set("assigned_user_label", userLabel);
+      if (projFilter) p.set("project_id", projFilter);
+      return api<Page<BacklinkRow>>(`/backlinks?${p.toString()}`, { token });
+    }
+  });
+
+  // ── Calendar month with quick admin actions ─────────────────────────────
+  const [calCursor, setCalCursor] = useState(() => {
+    const dt = new Date();
+    return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
+  });
+  const monthFrom = `${calCursor.year}-${String(calCursor.month).padStart(2, "0")}-01`;
+  const monthEnd = new Date(calCursor.year, calCursor.month, 0).getDate();
+  const monthTo = `${calCursor.year}-${String(calCursor.month).padStart(2, "0")}-${String(monthEnd).padStart(2, "0")}`;
+  const monthPlan = useQuery({
+    queryKey: ["user-dash-month", token, userLabel, monthFrom, projFilter],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<DayRow[]>(
+        `/workforce/day-report?date_from=${monthFrom}&date_to=${monthTo}&user_label=${encodeURIComponent(userLabel)}${projFilter ? `&project_id=${projFilter}` : ""}`,
+        { token }
+      )
+  });
+  const monthCal = useQuery({
+    queryKey: ["work-calendar", token, calCursor.year, calCursor.month],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<Array<{ day: string; is_working: boolean; is_override: boolean }>>(
+        `/workforce/calendar?year=${calCursor.year}&month=${calCursor.month}`,
+        { token }
+      )
+  });
+  const [quick, setQuick] = useState<{ day: string; row?: DayRow } | null>(null);
+  const [qProject, setQProject] = useState("");
+  const [qHours, setQHours] = useState("2");
+  const [qTypes, setQTypes] = useState("");
+  const [qPriority, setQPriority] = useState("medium");
+  const [qTarget, setQTarget] = useState("");
+  const [qNote, setQNote] = useState("");
+  const openQuick = (day: string, row?: DayRow) => {
+    setQuick({ day, row });
+    setQProject(row?.project_id || projFilter || "");
+    setQHours(row ? String(row.hours) : "2");
+    setQTypes(row ? row.link_type_names.join(",") : "");
+    setQPriority(row?.priority || "medium");
+    setQTarget(row && row.rate_source === "manual" ? String(row.expected_links) : "");
+    setQNote(row?.note || "");
+  };
+  const saveQuick = useMutation({
+    mutationFn: () =>
+      api<{ expected_links: number; rate_source: string | null; lph_used: number | null; warnings: string[] }>(
+        "/workforce/assignments",
+        {
+          token,
+          method: "POST",
+          body: JSON.stringify({
+            project_id: qProject, user_label: userLabel, day: quick?.day,
+            hours: Number(qHours) || 0,
+            link_type_names: qTypes ? qTypes.split(",") : [],
+            priority: qPriority || null,
+            note: qNote.trim() || null,
+            expected_links: qTarget.trim() ? Number(qTarget) : null
+          })
+        }
+      ),
+    onSuccess: (r) => {
+      onNotice(`Saved — target ${r.expected_links} links.`);
+      (r.warnings || []).forEach((w) => onNotice(`⚠ ${w}`));
+      setQuick(null);
+      queryClient.invalidateQueries({ queryKey: ["user-dash-month"] });
+      queryClient.invalidateQueries({ queryKey: ["user-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["user-dash-history"] });
+      queryClient.invalidateQueries({ queryKey: ["day-report"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const removeQuick = useMutation({
+    mutationFn: (id: string) =>
+      api<{ message: string }>(`/workforce/assignments/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Assignment removed");
+      setQuick(null);
+      queryClient.invalidateQueries({ queryKey: ["user-dash-month"] });
+      queryClient.invalidateQueries({ queryKey: ["user-dashboard"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const markLeave = useMutation({
+    mutationFn: async (day: string) => {
+      const lv = await api<{ id: string }>("/workforce/leaves", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ user_label: userLabel, start_date: day, end_date: day, reason: "Marked by admin" })
+      });
+      return api<{ status: string }>(`/workforce/leaves/${lv.id}?approve=true`, { token, method: "PATCH" });
+    },
+    onSuccess: () => {
+      onNotice("Leave marked (approved) — that day is excused.");
+      queryClient.invalidateQueries({ queryKey: ["user-dash-month"] });
+      queryClient.invalidateQueries({ queryKey: ["user-dashboard"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const d = dash.data;
+  const pv = d?.previous;
+  const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
+  const open = (extra: Record<string, string>) => onOpenBacklinks({ user: userLabel, ...extra });
+
+  const historyRows = (history.data || []).filter((r) => {
+    if (historyStatus === "excused") return r.excused;
+    if (historyStatus === "reached") return !r.excused && (r.completion_pct ?? 0) >= 100;
+    if (historyStatus === "behind") return !r.excused && (r.completion_pct ?? 0) < 100;
+    return true;
+  });
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={onClose}
+          className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+        >
+          ← Team
+        </button>
+        <h2 className="text-base font-semibold text-ink">{userLabel} — user dashboard</h2>
+        {projFilter ? (
+          <span className="flex items-center gap-1 rounded-full border border-ocean/40 bg-ocean/10 px-2.5 py-1 text-xs font-medium text-ocean">
+            {projectName(projFilter)}
+            <button onClick={() => setProjFilter("")} title="Remove the project filter — show all projects" className="hover:text-danger">×</button>
+          </span>
+        ) : (
+          <span className="rounded-full bg-field px-2.5 py-1 text-xs font-medium text-muted">All projects</span>
+        )}
+        <span className="ml-auto" />
+        <SearchSelect
+          value={projFilter}
+          onChange={setProjFilter}
+          options={(projectsQ.data || []).map((p) => ({ value: p.id, label: p.name }))}
+          placeholder="Project: all"
+          width="w-44"
+        />
+        <SearchSelect
+          value={ltFilter}
+          onChange={setLtFilter}
+          options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
+          placeholder="Link type: all"
+          width="w-40"
+        />
+        <select value={days} onChange={(e) => setDays(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+          {TIMEFRAMES.map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+          <option value="custom">Custom range…</option>
+        </select>
+        {days === "custom" ? (
+          <>
+            <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+            <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          </>
+        ) : null}
+      </div>
+
+      {dash.isLoading ? (
+        <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+      ) : null}
+      {dash.isError ? (
+        <p className="rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
+          Could not load this dashboard — {(dash.error as Error)?.message}
+        </p>
+      ) : null}
+
+      {d ? (
+        <>
+          {/* Plan & effort */}
+          <div className="grid gap-3 md:grid-cols-4">
+            <Metric label="Hours assigned" value={num(d.plan.hours_assigned)} icon={CalendarDays} tone="ink"
+              sub={`${num(d.plan.hours_counted)}h counted · ${num(d.plan.excused_days)} excused day${num(d.plan.excused_days) === 1 ? "" : "s"}${pv ? ` · prev: ${num(pv.plan.hours_assigned)}h` : ""}`}
+              help="Total planned hours in this period. 'Counted' excludes days off and approved leave — those never count against anyone." />
+            <Metric label="Target links" value={num(d.plan.target)} icon={Gauge} tone="ink"
+              sub={`from ${num(d.plan.assignments)} assignment${num(d.plan.assignments) === 1 ? "" : "s"}${pv ? ` · prev: ${num(pv.plan.target)}` : ""}`}
+              help="What the plans expected for this period (manual targets and personal/global rates all included, as saved at assignment time)." />
+            <Metric label="Done vs plan" value={num(d.plan.done)} icon={CheckCircle2} tone="ocean"
+              sub={pv ? `prev: ${num(pv.plan.done)}` : "links on planned project-days"}
+              help="Links actually created on the planned days, per project." />
+            <Metric label="Plan completion" value={d.plan.completion_pct != null ? `${d.plan.completion_pct}%` : "—"} icon={Activity}
+              tone={(d.plan.completion_pct ?? 0) >= 100 ? "ocean" : "ember"}
+              sub={pv && pv.plan.completion_pct != null ? `prev: ${pv.plan.completion_pct}%` : "excused days don't count"}
+              help="Done ÷ target for the period, excusal-aware." />
+          </div>
+
+          {/* Link production & quality — every card opens the exact rows */}
+          <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-7">
+            <Metric label="Links created" value={num(d.links.links)} icon={Link2} tone="ink"
+              sub={pv ? `prev: ${num(pv.links.links)}` : undefined}
+              onClick={() => open({})} help="All links credited to this person in the period. Click to see them." />
+            <Metric label="New domains (project)" value={num(d.links.project_new_domains)} icon={Globe} tone="ocean"
+              sub={pv ? `prev: ${num(pv.links.project_new_domains)}` : undefined}
+              help="First-ever link from that domain inside its project." />
+            <Metric label="New domains (overall)" value={num(d.links.global_new_domains)} icon={Globe} tone="plum"
+              sub={pv ? `prev: ${num(pv.links.global_new_domains)}` : undefined}
+              help="First time the domain appears anywhere in the workspace." />
+            <Metric label="Indexed" value={num(d.links.indexed)} icon={CheckCircle2} tone="ocean"
+              sub={`${pct(num(d.links.indexed), num(d.links.links))} of created`}
+              onClick={() => open({ index_status: "indexed" })} help="Links Google shows in its index. Click to see them." />
+            <Metric label="QA pending" value={num(d.links.qa_pending)} icon={History} tone="ember"
+              sub="need their first check"
+              onClick={() => open({ status: "PENDING" })} help="Links never QA-checked yet. Click to see them." />
+            <Metric label="Not qualified" value={num(d.links.fail)} icon={XCircle} tone="danger"
+              sub={pv ? `prev: ${num(pv.links.fail)}` : undefined}
+              onClick={() => open({ status: "FAIL" })} help="Links with a serious problem. Click to see them." />
+            <Metric label="Duplicates" value={num(d.links.duplicates)} icon={Layers} tone="plum"
+              sub={pv ? `prev: ${num(pv.links.duplicates)}` : undefined}
+              onClick={() => open({ duplicate_status: "duplicate" })} help="Links whose page another record already uses. Click to see them." />
+          </div>
+
+          {/* Trends */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <SectionTitle title="Production trend (weekly)" flush />
+              <div className="pt-2">
+                <TrendChart
+                  labels={d.weekly.map((w) => w.week)}
+                  series={[
+                    { name: "Links created", cssVar: "--ocean", values: d.weekly.map((w) => w.links) },
+                    { name: "New source domains", cssVar: "--plum", values: d.weekly.map((w) => w.new_domains) },
+                    { name: "Indexed", cssVar: "--ember", values: d.weekly.map((w) => w.indexed) },
+                    { name: "Not qualified", cssVar: "--danger", values: d.weekly.map((w) => w.fail) }
+                  ]}
+                />
+              </div>
+            </section>
+            <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <SectionTitle title="Target vs done (weekly)" flush />
+              <div className="pt-2">
+                <BarCompare
+                  labels={d.plan_weekly.map((w) => w.week.slice(5))}
+                  a={d.plan_weekly.map((w) => w.target)}
+                  b={d.plan_weekly.map((w) => w.done)}
+                  aName="Target"
+                  bName="Done"
+                />
+              </div>
+            </section>
+          </div>
+
+          {/* Per-project comparison */}
+          <section className="rounded-xl border border-line bg-panel shadow-card">
+            <SectionTitle title="Projects — this person, side by side" />
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-field text-xs uppercase text-muted">
+                  <tr>
+                    <Th>Project</Th><Th>Hours</Th><Th>Target</Th><Th>Links</Th><Th>Completion</Th>
+                    <Th>Indexed</Th><Th>Not qualified</Th><Th>New domains</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {d.projects.map((p) => {
+                    const cpl = p.target > 0 ? Math.round((100 * p.links) / p.target) : null;
+                    return (
+                      <tr
+                        key={p.project_id}
+                        onClick={() => setProjFilter(projFilter === p.project_id ? "" : p.project_id)}
+                        title="Click to focus the whole dashboard on this project"
+                        className={clsx("cursor-pointer hover:bg-field/60", projFilter === p.project_id && "bg-ocean/5")}
+                      >
+                        <Td><span className="font-medium text-ocean hover:underline">{projectName(p.project_id)}</span></Td>
+                        <Td>{p.hours}h</Td>
+                        <Td>{p.target}</Td>
+                        <Td>{p.links}</Td>
+                        <Td>
+                          {cpl == null ? "—" : (
+                            <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
+                              cpl >= 100 ? "bg-ocean/10 text-ocean" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                              {cpl}%
+                            </span>
+                          )}
+                        </Td>
+                        <Td>{p.indexed}</Td>
+                        <Td><span className="text-danger">{p.fail}</span></Td>
+                        <Td>{p.project_new_domains}</Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {!d.projects.length ? <Empty label="No activity in this period." /> : null}
+            </div>
+          </section>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Rates in effect */}
+            <section className="rounded-xl border border-line bg-panel shadow-card">
+              <SectionTitle title="Rates in effect (personal beats global)" />
+              <div className="divide-y divide-line">
+                {d.rates.global.map((g) => {
+                  const ov = d.rates.overrides.find((o) => o.link_type_name.toLowerCase() === g.link_type_name.toLowerCase());
+                  return (
+                    <div key={g.link_type_name} className="flex items-center justify-between px-3 py-2 text-sm">
+                      <span className="font-medium text-ink">{linkTypeLabel(g.link_type_name)}</span>
+                      <span className="flex items-center gap-2">
+                        {ov ? (
+                          <>
+                            <span className="rounded bg-plum/10 px-2 py-0.5 text-xs font-semibold text-plum" title="This person's own rate — wins over the global default">
+                              {ov.links_per_hour}/h personal
+                            </span>
+                            <span className="text-xs text-muted line-through">{g.links_per_hour}/h global</span>
+                          </>
+                        ) : (
+                          <span className="text-xs text-muted">{g.links_per_hour}/h global</span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+                {!d.rates.global.length ? <Empty label="No productivity rates configured yet." /> : null}
+              </div>
+            </section>
+
+            {/* Leave & absence history */}
+            <section className="rounded-xl border border-line bg-panel shadow-card">
+              <SectionTitle title="Leave history" />
+              <div className="divide-y divide-line">
+                {d.leaves.map((l) => (
+                  <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
+                    <span className="text-ink">
+                      {formatDay(l.start_date)} → {formatDay(l.end_date)}
+                      {l.reason ? <span className="text-muted"> · {l.reason}</span> : null}
+                    </span>
+                    <Status value={l.status === "approved" ? "completed" : l.status === "rejected" ? "failed" : "pending"} />
+                  </div>
+                ))}
+                {!d.leaves.length ? <Empty label="No leave requests." /> : null}
+              </div>
+            </section>
+          </div>
+        </>
+      ) : null}
+
+      {/* Calendar with admin quick actions */}
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">
+            {userLabel}&apos;s calendar
+            <HelpTip text="Every day's plans for this person: project, hours, done/target, plus days off (gray) and approved leave (purple). Click a plan to edit it, '+' to add one, or mark a leave day — history snapshots stay intact (editing a day only changes that day)." />
+          </h3>
+          <div className="flex items-center gap-2 text-sm">
+            <button onClick={() => setCalCursor((c) => (c.month === 1 ? { year: c.year - 1, month: 12 } : { ...c, month: c.month - 1 }))} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">←</button>
+            <span className="font-medium text-ink">{calCursor.year}-{String(calCursor.month).padStart(2, "0")}</span>
+            <button onClick={() => setCalCursor((c) => (c.month === 12 ? { year: c.year + 1, month: 1 } : { ...c, month: c.month + 1 }))} className="rounded-lg border border-line px-2 py-1 text-xs hover:bg-field">→</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-7 gap-1 p-3">
+          {(monthCal.data || []).map((cd) => {
+            const rows = (monthPlan.data || []).filter((r) => r.day === cd.day);
+            const onLeave = rows.some((r) => r.excused && r.excuse_reason === "On approved leave");
+            return (
+              <div
+                key={cd.day}
+                className={clsx(
+                  "min-h-[74px] rounded-lg border p-1",
+                  cd.is_working ? "border-line bg-panel" : "border-line bg-field/60 opacity-70"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-muted">{Number(cd.day.slice(8))}</span>
+                  <span className="flex items-center gap-0.5">
+                    {!onLeave && cd.is_working ? (
+                      <button
+                        onClick={() => markLeave.mutate(cd.day)}
+                        title={`Mark ${cd.day} as approved leave for ${userLabel}`}
+                        className="rounded px-1 text-[10px] text-muted hover:bg-plum/10 hover:text-plum"
+                      >
+                        lv
+                      </button>
+                    ) : null}
+                    <button
+                      onClick={() => openQuick(cd.day)}
+                      title={`Plan work for ${userLabel} on ${cd.day}`}
+                      className="rounded px-1 text-[11px] text-muted hover:bg-ocean/10 hover:text-ocean"
+                    >
+                      +
+                    </button>
+                  </span>
+                </div>
+                {onLeave ? (
+                  <span className="mt-0.5 block rounded bg-plum/15 px-1 py-0.5 text-[9px] font-semibold text-plum">On leave</span>
+                ) : null}
+                {rows.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => openQuick(cd.day, r)}
+                    title={`${projectName(r.project_id)} — ${r.hours}h · ${r.actual_links}/${r.expected_links}${r.note ? ` · ${r.note}` : ""}. Click to edit.`}
+                    className={clsx(
+                      "mt-0.5 block w-full truncate rounded border px-1 py-0.5 text-left text-[9px] font-medium leading-tight",
+                      r.excused
+                        ? "border-line bg-field text-muted"
+                        : (r.completion_pct ?? 0) >= 100
+                          ? "border-ocean/40 bg-ocean/15 text-ocean"
+                          : (r.completion_pct ?? 0) >= 60
+                            ? "border-ember/40 bg-ember/15 text-ember"
+                            : "border-danger/40 bg-danger/15 text-danger"
+                    )}
+                  >
+                    {projectName(r.project_id)} · {r.hours}h · {r.actual_links}/{r.expected_links}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+        {quick ? (
+          <div className="border-t border-line bg-field/40 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+              {quick.row ? "Edit plan" : "New plan"} — {userLabel} · {formatDay(quick.day)}
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <SearchSelect
+                value={qProject}
+                onChange={setQProject}
+                options={(projectsQ.data || []).map((p) => ({ value: p.id, label: p.name }))}
+                placeholder="Project…"
+                width="w-48"
+              />
+              <input type="number" min={0} max={24} step={0.5} value={qHours} onChange={(e) => setQHours(e.target.value)} title="Hours" className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <FilterMultiSelect
+                label="Link types"
+                options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
+                selected={qTypes ? qTypes.split(",") : []}
+                onChange={(v) => setQTypes(v.join(","))}
+              />
+              <select value={qPriority} onChange={(e) => setQPriority(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <input type="number" min={0} value={qTarget} onChange={(e) => setQTarget(e.target.value)} placeholder="Target (auto)" title="Manual target override — highest priority" className="h-9 w-28 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <input value={qNote} onChange={(e) => setQNote(e.target.value)} placeholder="Note…" className="h-9 w-48 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <button
+                onClick={() => saveQuick.mutate()}
+                disabled={saveQuick.isPending || !qProject}
+                className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+              >
+                Save
+              </button>
+              {quick.row ? (
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Remove this plan (${projectName(quick.row!.project_id)} on ${quick.day})?`))
+                      removeQuick.mutate(quick.row!.id);
+                  }}
+                  className="h-9 rounded-lg border border-danger/40 px-3 text-sm font-medium text-danger transition hover:bg-danger/10"
+                >
+                  Remove
+                </button>
+              ) : null}
+              <button onClick={() => setQuick(null)} className="text-xs font-medium text-muted hover:text-ink hover:underline">Cancel</button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Task completion history */}
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex items-center justify-between border-b border-line p-3">
+            <h3 className="text-sm font-semibold text-ink">Task history (last 60 days)</h3>
+            <select value={historyStatus} onChange={(e) => setHistoryStatus(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-xs">
+              <option value="">All days</option>
+              <option value="reached">Target reached</option>
+              <option value="behind">Behind target</option>
+              <option value="excused">Excused (leave/day off)</option>
+            </select>
+          </div>
+          <div className="max-h-72 overflow-y-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-0 bg-field text-xs uppercase text-muted">
+                <tr><Th>Date</Th><Th>Project</Th><Th>Hours</Th><Th>Done / target</Th><Th>Result</Th></tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {historyRows.map((r) => (
+                  <tr key={r.id} className="hover:bg-field/60">
+                    <Td><span className="whitespace-nowrap text-xs">{formatDay(r.day)}</span></Td>
+                    <Td><span className="text-xs">{projectName(r.project_id)}</span></Td>
+                    <Td>{r.hours}h</Td>
+                    <Td>{r.actual_links}/{r.expected_links}</Td>
+                    <Td>
+                      {r.excused ? (
+                        <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-muted" title={r.excuse_reason || ""}>Excused</span>
+                      ) : r.completion_pct == null ? "—" : (
+                        <span className={clsx("rounded px-1.5 py-0.5 text-[11px] font-semibold",
+                          r.completion_pct >= 100 ? "bg-ocean/10 text-ocean" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          {r.completion_pct}%
+                        </span>
+                      )}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!history.isLoading && !historyRows.length ? <Empty label="No task history for this filter." /> : null}
+          </div>
+        </section>
+
+        {/* Weakest links */}
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Weakest links (lowest score first)" />
+          <div className="space-y-1 p-3">
+            {(weakest.data?.items || []).map((r) => (
+              <div key={r.id} className="flex items-center gap-2 text-xs">
+                <Status value={r.override_status || r.status} reason={r.top_issue_label} compact />
+                <span className="w-8 text-right font-semibold">{r.score ?? "-"}</span>
+                <a href={r.source_page_url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-ocean hover:underline">
+                  {r.source_page_url}
+                </a>
+                <span className="shrink-0 text-muted">{linkTypeLabel(r.link_type) || ""}</span>
+              </div>
+            ))}
+            {!(weakest.data?.items || []).length ? <Empty label="No links in this scope." /> : null}
+            <button onClick={() => open({})} className="pt-1 text-xs font-medium text-ocean hover:underline">
+              Open all of {userLabel}&apos;s links →
+            </button>
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+// ── Project effort: who works how much on THIS project, target vs done ──────
+function ProjectEffort({
+  token,
+  projectId,
+  onOpenBacklinks
+}: {
+  token: string | null;
+  projectId: string;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+}) {
+  const [days, setDays] = useState("30");
+  const [userF, setUserF] = useState("");
+  const [ltF, setLtF] = useState("");
+  const knownLabels = useQuery({
+    queryKey: ["workforce-labels", token],
+    enabled: Boolean(token),
+    queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+  const linkTypes = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+  type Effort = {
+    totals: { hours: number; target: number; links: number; indexed: number; fail: number; qa_pending: number; duplicates: number; users: number; completion_pct: number | null };
+    users: Array<{ user_label: string; links: number; indexed: number; fail: number; qa_pending: number; duplicates: number; hours: number; target: number; completion_pct: number | null }>;
+    by_type: Array<{ link_type: string; links: number }>;
+    weekly: Array<{ week: string; done: number; target: number }>;
+  };
+  const eff = useQuery({
+    queryKey: ["project-effort", token, projectId, days, userF, ltF],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () => {
+      const p = new URLSearchParams({ project_id: projectId, days });
+      if (userF) p.set("user_label", userF);
+      if (ltF) p.set("link_type", ltF);
+      return api<Effort>(`/performance/project-effort?${p.toString()}`, { token });
+    }
+  });
+  const d = eff.data;
+  const maxType = Math.max(1, ...(d?.by_type || []).map((t) => t.links));
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+          Project effort
+          <HelpTip text="Who is working on this project and what it produces: planned hours, targets, links done, quality — per person, with a weekly trend. Every number is clickable." />
+        </h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <SearchSelect
+            value={userF}
+            onChange={setUserF}
+            options={(knownLabels.data || []).map((l) => ({ value: l }))}
+            placeholder="Person: everyone"
+            width="w-44"
+          />
+          <SearchSelect
+            value={ltF}
+            onChange={setLtF}
+            options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
+            placeholder="Link type: all"
+            width="w-40"
+          />
+          <select value={days} onChange={(e) => setDays(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+            {TIMEFRAMES.map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {d ? (
+        <>
+          <div className="grid gap-3 p-3 md:grid-cols-3 xl:grid-cols-6">
+            <Metric label="People working" value={d.totals.users} icon={Users} tone="ink"
+              help="People with links or planned hours on this project in the period." />
+            <Metric label="Hours assigned" value={d.totals.hours} icon={CalendarDays} tone="ink"
+              help="Planned hours on this project in the period." />
+            <Metric label="Target links" value={d.totals.target} icon={Gauge} tone="ink"
+              help="What the plans expected for this period." />
+            <Metric label="Links created" value={d.totals.links} icon={Link2} tone="ocean"
+              sub={d.totals.completion_pct != null ? `${d.totals.completion_pct}% of target` : undefined}
+              onClick={() => onOpenBacklinks({})} help="Links created on this project in the period. Click to see them." />
+            <Metric label="QA pending" value={d.totals.qa_pending} icon={History} tone="ember"
+              onClick={() => onOpenBacklinks({ status: "PENDING" })} help="Created in this period, never checked yet. Click to see them." />
+            <Metric label="Not qualified" value={d.totals.fail} icon={XCircle} tone="danger"
+              onClick={() => onOpenBacklinks({ status: "FAIL" })} help="Created in this period with a serious problem. Click to see them." />
+          </div>
+
+          <div className="grid gap-4 p-3 pt-0 lg:grid-cols-2">
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Target vs done — weekly</p>
+              <BarCompare
+                labels={d.weekly.map((w) => w.week.slice(5))}
+                a={d.weekly.map((w) => w.target)}
+                b={d.weekly.map((w) => w.done)}
+                aName="Target"
+                bName="Done"
+              />
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Link types built in this period</p>
+              <div className="space-y-1.5">
+                {d.by_type.map((t) => (
+                  <button
+                    key={t.link_type}
+                    onClick={() => onOpenBacklinks(t.link_type === "(none)" ? { link_type: "(blanks)" } : { link_type: t.link_type })}
+                    title="Click to see these links"
+                    className="flex w-full items-center gap-2 text-left text-xs hover:opacity-80"
+                  >
+                    <span className="w-32 truncate font-medium text-ink">{linkTypeLabel(t.link_type)}</span>
+                    <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-field">
+                      <span className="block h-full rounded-full bg-ocean/70" style={{ width: `${Math.round((100 * t.links) / maxType)}%` }} />
+                    </span>
+                    <span className="w-10 text-right font-semibold text-ink">{t.links}</span>
+                  </button>
+                ))}
+                {!d.by_type.length ? <p className="text-xs text-muted">No links in this period.</p> : null}
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto border-t border-line">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-field text-xs uppercase text-muted">
+                <tr>
+                  <Th>Person</Th><Th>Hours</Th><Th>Target</Th><Th>Links</Th><Th>Completion</Th>
+                  <Th>Indexed</Th><Th>QA pending</Th><Th>Not qualified</Th><Th>Duplicates</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {d.users.map((u) => (
+                  <tr key={u.user_label} className="hover:bg-field/60">
+                    <Td>
+                      <button
+                        onClick={() => onOpenBacklinks({ user: u.user_label })}
+                        title={`See ${u.user_label}'s links on this project`}
+                        className="font-medium text-ocean hover:underline"
+                      >
+                        {u.user_label}
+                      </button>
+                    </Td>
+                    <Td>{u.hours}h</Td>
+                    <Td>{u.target}</Td>
+                    <Td>{u.links}</Td>
+                    <Td>
+                      {u.completion_pct == null ? "—" : (
+                        <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
+                          u.completion_pct >= 100 ? "bg-ocean/10 text-ocean" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          {u.completion_pct}%
+                        </span>
+                      )}
+                    </Td>
+                    <Td>{u.indexed}</Td>
+                    <Td>{u.qa_pending}</Td>
+                    <Td><span className="text-danger">{u.fail}</span></Td>
+                    <Td>{u.duplicates}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!d.users.length ? <Empty label="No effort recorded in this period." /> : null}
+          </div>
+        </>
+      ) : eff.isLoading ? (
+        <div className="flex justify-center p-6"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      ) : null}
+    </section>
+  );
+}
+
 const TIMEFRAMES: Array<[string, string]> = [
   ["30", "Last 30 days"],
   ["90", "Last 3 months"],
@@ -3898,7 +4794,19 @@ const TIMEFRAMES: Array<[string, string]> = [
   ["3650", "All time"]
 ];
 
-function PerformanceDesk({ token, projectId }: { token: string | null; projectId: string }) {
+function PerformanceDesk({
+  token,
+  projectId,
+  onOpenBacklinks,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+  onNotice: (text: string) => void;
+}) {
+  // Full per-person dashboard (admin view) — opened by clicking a name.
+  const [dashUser, setDashUser] = useState<string | null>(null);
   const [days, setDays] = useState("30");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -3967,6 +4875,19 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
     }
   };
   const sortedUsers = sortRows(users, perfSort, perfDir, (u, k) => (u as unknown as Record<string, unknown>)[k]);
+
+  if (dashUser) {
+    return (
+      <UserDashboard
+        token={token}
+        userLabel={dashUser}
+        initialProjectId={projectId || undefined}
+        onClose={() => setDashUser(null)}
+        onOpenBacklinks={onOpenBacklinks}
+        onNotice={onNotice}
+      />
+    );
+  }
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -4146,7 +5067,18 @@ function PerformanceDesk({ token, projectId }: { token: string | null; projectId
                     onClick={() => setOpenUser(openUser === u.user_label ? null : u.user_label)}
                     className={clsx("cursor-pointer hover:bg-field/60", openUser === u.user_label && "bg-ocean/5")}
                   >
-                    <Td><span className="font-medium text-ocean hover:underline">{u.user_label}</span></Td>
+                    <Td>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDashUser(u.user_label);
+                        }}
+                        title={`Open ${u.user_label}'s full dashboard (hours, targets, calendar, quality, trends)`}
+                        className="font-medium text-ocean hover:underline"
+                      >
+                        {u.user_label}
+                      </button>
+                    </Td>
                     <Td>{u.links}<DeltaPill now={u.links} prev={u.previous?.links} /></Td>
                     <Td>{u.project_new_domains}<DeltaPill now={u.project_new_domains} prev={u.previous?.project_new_domains} /></Td>
                     <Td>{u.global_new_domains}<DeltaPill now={u.global_new_domains} prev={u.previous?.global_new_domains} /></Td>
@@ -4338,6 +5270,45 @@ function BatchesDesk({
           }
         />
       </div>
+
+      {/* What these runs cost & produced — API credits vs cache, new vs refreshed */}
+      {(() => {
+        const rows = batches.data || [];
+        const sum = (k: string) => rows.reduce((acc, x) => acc + Number((x.counters || {})[k] || 0), 0);
+        const api_calls = sum("api_calls");
+        const api_cached = sum("api_cached");
+        const new_links = sum("new_links");
+        const already = sum("already_there");
+        if (!(api_calls + api_cached + new_links + already)) return null;
+        const bar = (aVal: number, bVal: number, aName: string, bName: string, aCls: string, bCls: string, hint: string) => {
+          const total = Math.max(1, aVal + bVal);
+          return (
+            <div title={hint} className="min-w-[220px] flex-1">
+              <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-muted">
+                <span>{aName}: <span className="text-ink">{aVal}</span></span>
+                <span>{bName}: <span className="text-ink">{bVal}</span></span>
+              </div>
+              <div className="flex h-2.5 overflow-hidden rounded-full bg-field">
+                <span className={aCls} style={{ width: `${Math.round((100 * aVal) / total)}%` }} />
+                <span className={bCls} style={{ width: `${Math.round((100 * bVal) / total)}%` }} />
+              </div>
+            </div>
+          );
+        };
+        return (
+          <div className="flex flex-wrap items-center gap-5 rounded-xl border border-line bg-panel p-3 shadow-card">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">These runs</span>
+            {api_calls + api_cached > 0
+              ? bar(api_calls, api_cached, "API credits used", "Reused from cache (free)", "block bg-danger/70", "block bg-ocean/70",
+                    "Metric checks: fresh API calls cost credits; cached reuse is free")
+              : null}
+            {new_links + already > 0
+              ? bar(new_links, already, "NEW links", "Already there (refreshed)", "block bg-ocean", "block bg-line",
+                    "Imports & syncs: truly new links vs rows that already existed and were refreshed")
+              : null}
+          </div>
+        );
+      })()}
 
       <div className="rounded-xl border border-line bg-panel shadow-card">
         <div className="overflow-x-auto">

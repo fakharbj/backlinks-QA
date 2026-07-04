@@ -35,6 +35,8 @@ class BacklinkUpdate(BaseModel):
     notes: str | None = None
     tags: list[str] | None = None
     assigned_user_id: uuid.UUID | None = None
+    # Reassign the link to a (sheet) person by name — feeds performance/tasks.
+    assigned_user_label: str | None = Field(default=None, max_length=200)
     vendor_id: uuid.UUID | None = None
     campaign_id: uuid.UUID | None = None
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, func, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +86,415 @@ async def _window(
     )
     rows = (await db.execute(sql, params)).mappings().all()
     return [dict(r) for r in rows]
+
+
+async def user_dashboard(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    user_label: str,
+    days: int = 30,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    project_id: uuid.UUID | None = None,
+    link_type: str | None = None,
+    compare: bool = True,
+) -> dict:
+    """Everything an admin needs about ONE person in a single payload: hours &
+    plan completion (excusal-aware, any window length), link production +
+    quality, per-project breakdown, weekly trends, rates, leave history —
+    plus the previous equal-length window for comparison."""
+    t1 = date_to or datetime.now(timezone.utc)
+    t0 = date_from or (t1 - timedelta(days=max(1, min(days, 3660))))
+    span = t1 - t0
+
+    where, params = _scope(ctx, project_id)
+    params |= {"label": user_label}
+
+    lt_clause = ""
+    if link_type:
+        lt_clause = " AND b.link_type = :lt"
+        params["lt"] = link_type
+
+    async def _link_stats(a: datetime, b: datetime) -> dict:
+        p = dict(params) | {"t0": a, "t1": b}
+        sql = _bind(
+            f"""
+            SELECT count(*) AS links,
+                   count(*) FILTER (WHERE b.index_status = 'indexed')        AS indexed,
+                   count(*) FILTER (WHERE {_EFF} = 'FAIL')                   AS fail,
+                   count(*) FILTER (WHERE {_EFF} = 'PASS')                   AS pass,
+                   count(*) FILTER (WHERE {_EFF} = 'PENDING')                AS qa_pending,
+                   count(*) FILTER (WHERE b.is_duplicate IS TRUE)            AS duplicates,
+                   round(avg(b.score) FILTER (WHERE b.score IS NOT NULL), 1) AS avg_score,
+                   count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM backlink_records e
+                       WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
+                         AND e.created_at < b.created_at))                   AS project_new_domains,
+                   count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM backlink_records e
+                       WHERE e.workspace_id = b.workspace_id AND e.source_domain = b.source_domain
+                         AND e.created_at < b.created_at))                   AS global_new_domains
+            FROM backlink_records b
+            WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
+              AND b.created_at >= :t0 AND b.created_at < :t1{lt_clause}
+            """,
+            p,
+        )
+        row = (await db.execute(sql, p)).mappings().first() or {}
+        return {k: (float(v) if k == "avg_score" and v is not None else (int(v) if v is not None else (None if k == "avg_score" else 0))) for k, v in dict(row).items()}
+
+    # Plan vs done — excusal-aware in SQL so ANY window length works (the
+    # interactive day-report is capped at 92 days).
+    async def _plan_stats(a: datetime, b: datetime) -> dict:
+        p = {
+            "ws": ctx.workspace_id, "label": user_label,
+            "f": a.date(), "t": b.date(),
+        }
+        proj_clause = ""
+        if project_id is not None:
+            proj_clause = " AND a.project_id = :pid"
+            p["pid"] = project_id
+        sql = text(
+            f"""
+            WITH actuals AS (
+                SELECT project_id, lower(assigned_user_label) AS u, created_at::date AS d, count(*) AS n
+                FROM backlink_records
+                WHERE workspace_id = :ws AND created_at >= :f
+                  AND created_at < CAST(:t AS date) + INTERVAL '1 day'
+                  AND lower(assigned_user_label) = lower(:label)
+                GROUP BY 1, 2, 3
+            ),
+            plan AS (
+                SELECT a.id, a.project_id, a.day, a.hours, a.expected_links,
+                       coalesce(act.n, 0) AS done,
+                       (
+                         coalesce(w.is_working, extract(dow FROM a.day) <> 0)
+                         IS DISTINCT FROM TRUE
+                         OR EXISTS (
+                           SELECT 1 FROM leave_requests lv
+                           WHERE lv.workspace_id = a.workspace_id AND lv.status = 'approved'
+                             AND lower(lv.user_label) = lower(a.user_label)
+                             AND lv.start_date <= a.day AND lv.end_date >= a.day)
+                       ) AS excused
+                FROM task_assignments a
+                LEFT JOIN working_days w
+                  ON w.workspace_id = a.workspace_id AND w.day = a.day
+                LEFT JOIN actuals act
+                  ON act.project_id = a.project_id AND act.d = a.day
+                 AND act.u = lower(a.user_label)
+                WHERE a.workspace_id = :ws AND lower(a.user_label) = lower(:label)
+                  AND a.day >= :f AND a.day <= :t{proj_clause}
+            )
+            SELECT count(*)                                            AS assignments,
+                   coalesce(sum(hours), 0)                             AS hours_assigned,
+                   coalesce(sum(hours) FILTER (WHERE NOT excused), 0)  AS hours_counted,
+                   coalesce(sum(expected_links) FILTER (WHERE NOT excused), 0) AS target,
+                   coalesce(sum(done) FILTER (WHERE NOT excused), 0)   AS done,
+                   count(*) FILTER (WHERE excused)                     AS excused_days
+            FROM plan
+            """
+        )
+        row = (await db.execute(sql, p)).mappings().first() or {}
+        out = {k: float(v) if k in ("hours_assigned", "hours_counted") else int(v or 0) for k, v in dict(row).items()}
+        out["completion_pct"] = (
+            round(100.0 * out["done"] / out["target"], 1) if out.get("target") else None
+        )
+        return out
+
+    current_links = await _link_stats(t0, t1)
+    current_plan = await _plan_stats(t0, t1)
+    previous = None
+    if compare:
+        previous = {
+            "links": await _link_stats(t0 - span, t0),
+            "plan": await _plan_stats(t0 - span, t0),
+        }
+
+    # Per-project breakdown (links + plan) for the current window.
+    p2 = dict(params) | {"t0": t0, "t1": t1}
+    proj_sql = _bind(
+        f"""
+        SELECT b.project_id, count(*) AS links,
+               count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
+               count(*) FILTER (WHERE {_EFF} = 'FAIL')            AS fail,
+               count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM backlink_records e
+                   WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
+                     AND e.created_at < b.created_at))            AS project_new_domains
+        FROM backlink_records b
+        WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
+          AND b.created_at >= :t0 AND b.created_at < :t1{lt_clause}
+        GROUP BY 1 ORDER BY 2 DESC
+        """,
+        p2,
+    )
+    by_project = {str(r["project_id"]): dict(r) for r in (await db.execute(proj_sql, p2)).mappings().all()}
+    plan_proj_sql = text(
+        """
+        SELECT a.project_id, coalesce(sum(a.hours), 0) AS hours,
+               coalesce(sum(a.expected_links), 0) AS target
+        FROM task_assignments a
+        WHERE a.workspace_id = :ws AND lower(a.user_label) = lower(:label)
+          AND a.day >= :f AND a.day <= :t
+        GROUP BY 1
+        """
+    )
+    for r in (
+        await db.execute(
+            plan_proj_sql,
+            {"ws": ctx.workspace_id, "label": user_label, "f": t0.date(), "t": t1.date()},
+        )
+    ).mappings().all():
+        key = str(r["project_id"])
+        entry = by_project.setdefault(key, {"project_id": r["project_id"], "links": 0, "indexed": 0, "fail": 0, "project_new_domains": 0})
+        entry["hours"] = float(r["hours"])
+        entry["target"] = int(r["target"])
+    projects_out = []
+    for key, v in by_project.items():
+        v["project_id"] = key
+        v.setdefault("hours", 0.0)
+        v.setdefault("target", 0)
+        projects_out.append({k: (float(x) if k == "hours" else (str(x) if k == "project_id" else int(x))) for k, x in v.items()})
+    projects_out.sort(key=lambda r: (-r["links"], -r["hours"]))
+
+    # Weekly series (links / new domains / indexed / not qualified) + plan trend.
+    wk_sql = _bind(
+        f"""
+        SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week,
+               count(*) AS links,
+               count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
+               count(*) FILTER (WHERE {_EFF} = 'FAIL')            AS fail,
+               count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM backlink_records e
+                   WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
+                     AND e.created_at < b.created_at))            AS new_domains
+        FROM backlink_records b
+        WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
+          AND b.created_at >= :t0 AND b.created_at < :t1{lt_clause}
+        GROUP BY 1 ORDER BY 1
+        """,
+        p2,
+    )
+    weekly = [dict(r) for r in (await db.execute(wk_sql, p2)).mappings().all()]
+    plan_wk_sql = text(
+        """
+        WITH actuals AS (
+            SELECT project_id, created_at::date AS d, count(*) AS n
+            FROM backlink_records
+            WHERE workspace_id = :ws AND lower(assigned_user_label) = lower(:label)
+              AND created_at >= :f AND created_at < CAST(:t AS date) + INTERVAL '1 day'
+            GROUP BY 1, 2
+        )
+        SELECT to_char(date_trunc('week', a.day), 'YYYY-MM-DD') AS week,
+               coalesce(sum(a.expected_links), 0) AS target,
+               coalesce(sum(act.n), 0)            AS done
+        FROM task_assignments a
+        LEFT JOIN actuals act ON act.project_id = a.project_id AND act.d = a.day
+        WHERE a.workspace_id = :ws AND lower(a.user_label) = lower(:label)
+          AND a.day >= :f AND a.day <= :t
+        GROUP BY 1 ORDER BY 1
+        """
+    )
+    plan_weekly = [
+        dict(r)
+        for r in (
+            await db.execute(
+                plan_wk_sql,
+                {"ws": ctx.workspace_id, "label": user_label, "f": t0.date(), "t": t1.date()},
+            )
+        ).mappings().all()
+    ]
+
+    # Rates in effect + leave history.
+    from app.models.workforce import LeaveRequest, LinkTypeProductivity, UserProductivityOverride
+    from sqlalchemy import select
+
+    rates_global = [
+        {"link_type_name": r.link_type_name, "links_per_hour": float(r.links_per_hour)}
+        for r in (
+            await db.execute(
+                select(LinkTypeProductivity)
+                .where(LinkTypeProductivity.workspace_id == ctx.workspace_id)
+                .order_by(LinkTypeProductivity.link_type_name)
+            )
+        ).scalars().all()
+    ]
+    rates_override = [
+        {"link_type_name": r.link_type_name, "links_per_hour": float(r.links_per_hour)}
+        for r in (
+            await db.execute(
+                select(UserProductivityOverride).where(
+                    UserProductivityOverride.workspace_id == ctx.workspace_id,
+                    func.lower(UserProductivityOverride.user_label) == user_label.lower(),
+                )
+            )
+        ).scalars().all()
+    ]
+    leaves = [
+        {
+            "id": str(l.id), "start_date": l.start_date.isoformat(),
+            "end_date": l.end_date.isoformat(), "reason": l.reason, "status": l.status,
+        }
+        for l in (
+            await db.execute(
+                select(LeaveRequest)
+                .where(
+                    LeaveRequest.workspace_id == ctx.workspace_id,
+                    func.lower(LeaveRequest.user_label) == user_label.lower(),
+                )
+                .order_by(LeaveRequest.start_date.desc())
+                .limit(50)
+            )
+        ).scalars().all()
+    ]
+
+    return {
+        "user_label": user_label,
+        "from": t0.isoformat(),
+        "to": t1.isoformat(),
+        "links": current_links,
+        "plan": current_plan,
+        "previous": previous,
+        "projects": projects_out,
+        "weekly": weekly,
+        "plan_weekly": plan_weekly,
+        "rates": {"global": rates_global, "overrides": rates_override},
+        "leaves": leaves,
+    }
+
+
+async def project_effort(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    project_id: uuid.UUID,
+    days: int = 30,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    user_label: str | None = None,
+    link_type: str | None = None,
+) -> dict:
+    """Project-effort rollup: who worked how much on THIS project, target vs
+    done, quality split per person, link-type distribution and a weekly trend."""
+    ctx.assert_project(project_id)
+    t1 = date_to or datetime.now(timezone.utc)
+    t0 = date_from or (t1 - timedelta(days=max(1, min(days, 3660))))
+
+    p: dict = {"ws": ctx.workspace_id, "pid": project_id, "t0": t0, "t1": t1,
+               "f": t0.date(), "t": t1.date()}
+    user_clause_b = user_clause_a = ""
+    if user_label:
+        user_clause_b = " AND lower(b.assigned_user_label) = lower(:label)"
+        user_clause_a = " AND lower(a.user_label) = lower(:label)"
+        p["label"] = user_label
+    lt_clause = ""
+    if link_type:
+        lt_clause = " AND b.link_type = :lt"
+        p["lt"] = link_type
+
+    users_sql = text(
+        f"""
+        WITH links AS (
+            SELECT lower(coalesce(nullif(b.assigned_user_label, ''), '(unassigned)')) AS u,
+                   min(coalesce(nullif(b.assigned_user_label, ''), '(unassigned)'))   AS label,
+                   count(*) AS links,
+                   count(*) FILTER (WHERE b.index_status = 'indexed')       AS indexed,
+                   count(*) FILTER (WHERE {_EFF} = 'FAIL')                  AS fail,
+                   count(*) FILTER (WHERE {_EFF} = 'PENDING')               AS qa_pending,
+                   count(*) FILTER (WHERE b.is_duplicate IS TRUE)           AS duplicates
+            FROM backlink_records b
+            WHERE b.workspace_id = :ws AND b.project_id = :pid
+              AND b.created_at >= :t0 AND b.created_at < :t1{user_clause_b}{lt_clause}
+            GROUP BY 1
+        ),
+        plan AS (
+            SELECT lower(a.user_label) AS u, min(a.user_label) AS label,
+                   coalesce(sum(a.hours), 0) AS hours,
+                   coalesce(sum(a.expected_links), 0) AS target
+            FROM task_assignments a
+            WHERE a.workspace_id = :ws AND a.project_id = :pid
+              AND a.day >= :f AND a.day <= :t{user_clause_a}
+            GROUP BY 1
+        )
+        SELECT coalesce(links.u, plan.u) AS u,
+               coalesce(links.label, plan.label) AS label,
+               coalesce(links.links, 0) AS links,
+               coalesce(links.indexed, 0) AS indexed,
+               coalesce(links.fail, 0) AS fail,
+               coalesce(links.qa_pending, 0) AS qa_pending,
+               coalesce(links.duplicates, 0) AS duplicates,
+               coalesce(plan.hours, 0) AS hours,
+               coalesce(plan.target, 0) AS target
+        FROM links FULL OUTER JOIN plan USING (u)
+        ORDER BY 3 DESC, 8 DESC
+        """
+    )
+    users_rows = []
+    totals = {"hours": 0.0, "target": 0, "links": 0, "indexed": 0, "fail": 0, "qa_pending": 0, "duplicates": 0}
+    for r in (await db.execute(users_sql, p)).mappings().all():
+        row = {
+            "user_label": r["label"], "links": int(r["links"]), "indexed": int(r["indexed"]),
+            "fail": int(r["fail"]), "qa_pending": int(r["qa_pending"]),
+            "duplicates": int(r["duplicates"]), "hours": float(r["hours"]),
+            "target": int(r["target"]),
+        }
+        row["completion_pct"] = round(100.0 * row["links"] / row["target"], 1) if row["target"] else None
+        users_rows.append(row)
+        totals["hours"] += row["hours"]
+        for k in ("target", "links", "indexed", "fail", "qa_pending", "duplicates"):
+            totals[k] += row[k]
+    totals["hours"] = round(totals["hours"], 1)
+    totals["completion_pct"] = (
+        round(100.0 * totals["links"] / totals["target"], 1) if totals["target"] else None
+    )
+
+    type_sql = text(
+        f"""
+        SELECT coalesce(nullif(b.link_type, ''), '(none)') AS link_type, count(*) AS links
+        FROM backlink_records b
+        WHERE b.workspace_id = :ws AND b.project_id = :pid
+          AND b.created_at >= :t0 AND b.created_at < :t1{user_clause_b}
+        GROUP BY 1 ORDER BY 2 DESC
+        """
+    )
+    by_type = [dict(r) for r in (await db.execute(type_sql, p)).mappings().all()]
+
+    trend_sql = text(
+        f"""
+        WITH actuals AS (
+            SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week, count(*) AS done
+            FROM backlink_records b
+            WHERE b.workspace_id = :ws AND b.project_id = :pid
+              AND b.created_at >= :t0 AND b.created_at < :t1{user_clause_b}{lt_clause}
+            GROUP BY 1
+        ),
+        plan AS (
+            SELECT to_char(date_trunc('week', a.day), 'YYYY-MM-DD') AS week,
+                   coalesce(sum(a.expected_links), 0) AS target
+            FROM task_assignments a
+            WHERE a.workspace_id = :ws AND a.project_id = :pid
+              AND a.day >= :f AND a.day <= :t{user_clause_a}
+            GROUP BY 1
+        )
+        SELECT coalesce(actuals.week, plan.week) AS week,
+               coalesce(actuals.done, 0) AS done,
+               coalesce(plan.target, 0) AS target
+        FROM actuals FULL OUTER JOIN plan USING (week)
+        ORDER BY 1
+        """
+    )
+    weekly = [dict(r) for r in (await db.execute(trend_sql, p)).mappings().all()]
+
+    return {
+        "project_id": str(project_id),
+        "from": t0.isoformat(),
+        "to": t1.isoformat(),
+        "totals": {**totals, "users": len([u for u in users_rows if u["user_label"] != "(unassigned)"])},
+        "users": users_rows,
+        "by_type": by_type,
+        "weekly": weekly,
+    }
 
 
 async def users(
