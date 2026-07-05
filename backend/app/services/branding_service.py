@@ -37,31 +37,25 @@ async def get_branding(db: AsyncSession, workspace_id: uuid.UUID) -> dict:
 async def public_branding(db: AsyncSession) -> dict:
     """Login-screen branding — safe subset only, no auth required.
 
-    Single-tenant install in practice: pick the oldest branding setting, and
-    fall back to the first active workspace's name when none is configured.
-    ``company_domain`` is intentionally omitted (don't advertise the email
-    format of auto-provisioned accounts to anonymous visitors).
+    Single-tenant install in practice: the PRIMARY (oldest active) workspace
+    owns the login screen — read its branding setting and fall back to its
+    name. Never "any branding row": test/demo workspaces registered later must
+    not be able to hijack the public login branding. ``company_domain`` is
+    intentionally omitted (don't advertise the email format of auto-provisioned
+    accounts to anonymous visitors).
     """
-    setting = (
+    primary = (
         await db.execute(
-            select(Setting)
-            .where(Setting.key == BRANDING_KEY)
-            .order_by(Setting.created_at.asc())
+            select(Workspace)
+            .where(Workspace.is_active.is_(True))
+            .order_by(Workspace.created_at.asc())
             .limit(1)
         )
     ).scalar_one_or_none()
-    value = (setting.value or {}) if setting is not None else {}
-    company_name = value.get("company_name") or None
-    if not company_name:
-        company_name = (
-            await db.execute(
-                select(Workspace.name)
-                .where(Workspace.is_active.is_(True))
-                .order_by(Workspace.created_at.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+    if primary is None:
+        return {"company_name": None, "logo_data_uri": None}
+    value = await get_branding(db, primary.id)
     return {
-        "company_name": company_name,
+        "company_name": value.get("company_name") or primary.name,
         "logo_data_uri": value.get("logo_data_uri") or None,
     }

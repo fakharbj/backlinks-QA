@@ -35,7 +35,6 @@ import {
   Swords,
   Trash2,
   Upload,
-  UserCog,
   UserPlus,
   Users,
   XCircle
@@ -368,12 +367,12 @@ export function WorkspaceApp() {
           {tab === "imports" ? (
             <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
-          {tab === "sheets" ? <SheetsDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "sheets" ? <SheetsDesk token={token} projectId={activeProjectId} onNotice={setNotice} /> : null}
           {tab === "batches" ? (
             <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "performance" ? (
-            <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} />
+            <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onPlanWork={() => setTab("tasks")} />
           ) : null}
           {tab === "tasks" ? (
             <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} />
@@ -385,7 +384,6 @@ export function WorkspaceApp() {
             <ReportsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
-          {tab === "employees" ? <EmployeesDesk token={token} onNotice={setNotice} /> : null}
           {tab === "scoring" ? (
             <ScoringDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -408,6 +406,14 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
   const [workspaceName, setWorkspaceName] = useState("");
   const [error, setError] = useState("");
 
+  // Public branding (company name + logo) — no auth required on this endpoint.
+  const branding = useQuery({
+    queryKey: ["branding"],
+    queryFn: () =>
+      api<{ company_name: string | null; logo_data_uri: string | null }>("/auth/branding"),
+    staleTime: 300000
+  });
+
   const submit = useMutation({
     mutationFn: async () => {
       setError("");
@@ -429,12 +435,24 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
       <section className="w-full max-w-[460px] rounded-xl border border-line bg-panel shadow-card p-6 shadow-sm">
         <div className="mb-5 flex items-center justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase text-ocean">LinkSentinel</p>
+            <p className="text-sm font-semibold uppercase text-ocean">Performance by Techsa</p>
             <h1 className="mt-1 text-2xl font-semibold text-ink">
               {mode === "login" ? "Sign in" : "Create workspace"}
             </h1>
+            {branding.data?.company_name ? (
+              <p className="mt-1 text-sm text-muted">{branding.data.company_name}</p>
+            ) : null}
           </div>
-          <ShieldAlert className="h-7 w-7 text-plum" aria-hidden />
+          {branding.data?.logo_data_uri ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={branding.data.logo_data_uri}
+              alt=""
+              className="h-10 w-10 rounded-lg object-contain"
+            />
+          ) : (
+            <ShieldAlert className="h-7 w-7 text-plum" aria-hidden />
+          )}
         </div>
         <form
           className="space-y-3"
@@ -489,6 +507,9 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
             {mode === "login" ? "Create a new workspace" : "Use existing account"}
           </button>
         </form>
+        <p className="mt-4 text-center text-[11px] font-medium tracking-wide text-muted">
+          Powered by <span className="font-semibold text-ink">Techsa</span>
+        </p>
       </section>
     </main>
   );
@@ -502,7 +523,14 @@ type NavGroup = { label: string; items: Array<[Tab, string, NavIcon]> };
 // switches the ENTIRE nav to project-scoped items only — workspace admin
 // (Team, Employees, Sheets config) disappears until you exit the project.
 const WORKSPACE_NAV: NavGroup[] = [
-  { label: "Monitor", items: [["overview", "Overview", Gauge], ["analytics", "Analytics", BarChart3]] },
+  {
+    label: "Monitor",
+    items: [
+      ["overview", "Dashboard", Gauge],
+      ["analytics", "Analytics", BarChart3],
+      ["performance", "Performance", Activity]
+    ]
+  },
   {
     label: "Backlinks",
     items: [
@@ -517,10 +545,8 @@ const WORKSPACE_NAV: NavGroup[] = [
   {
     label: "Workspace",
     items: [
-      ["performance", "Performance", Activity],
       ["tasks", "Tasks & Calendar", CalendarDays],
       ["team", "Team", Users],
-      ["employees", "Employees", UserCog],
       ["scoring", "Scoring", SlidersHorizontal],
       ["settings", "Settings", Settings]
     ]
@@ -538,9 +564,9 @@ const PROJECT_NAV: NavGroup[] = [
       ["competitors", "Competitors", Swords]
     ]
   },
-  { label: "Ingest", items: [["imports", "Imports", Upload], ["batches", "Batches", History]] },
+  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet], ["batches", "Batches", History]] },
   {
-    label: "Insights",
+    label: "Monitor",
     items: [
       ["analytics", "Analytics", BarChart3],
       ["performance", "Performance", Activity],
@@ -567,7 +593,7 @@ const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
   const hidden = new Set<Tab>(
     role === "manager"
       ? ["team", "settings"]
-      : ["team", "settings", "sheets", "employees", "scoring"] // qa
+      : ["team", "settings", "sheets", "scoring"] // qa
   );
   return groups
     .map((g) => ({ ...g, items: g.items.filter(([id]) => !hidden.has(id)) }))
@@ -615,17 +641,33 @@ function ThemeToggle() {
 }
 
 function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => void }) {
+  // Public branding (company name + logo) — set by an admin in Settings.
+  const branding = useQuery({
+    queryKey: ["branding"],
+    queryFn: () =>
+      api<{ company_name: string | null; logo_data_uri: string | null }>("/auth/branding"),
+    staleTime: 300000
+  });
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-panel/70 backdrop-blur-xl">
       <div className="mx-auto flex w-full items-center justify-between px-5 py-1.5">
         <div className="flex items-center gap-2.5">
-          <div className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-ocean to-plum text-white shadow-soft">
-            <Activity className="h-4 w-4" />
-          </div>
+          {branding.data?.logo_data_uri ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={branding.data.logo_data_uri}
+              alt=""
+              className="h-7 w-7 rounded-lg object-contain"
+            />
+          ) : (
+            <div className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-ocean to-plum text-white shadow-soft">
+              <Activity className="h-4 w-4" />
+            </div>
+          )}
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-bold tracking-tight text-ink">LinkSentinel</span>
+            <span className="text-sm font-bold tracking-tight text-ink">Performance</span>
             <span className="hidden text-[10px] font-medium uppercase tracking-wide text-muted sm:inline">
-              Backlink QA operations
+              by Techsa · {branding.data?.company_name || "SEO operations"}
             </span>
           </div>
         </div>
@@ -782,13 +824,17 @@ function ProjectPanel({
         })
       }),
     onSuccess: (project) => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
-      onSelect(project.id);
       onNotice("Project created");
       setName("");
       setClient("");
       setDomain("");
       setShowCreate(false);
+      // Seed the cache so the new project appears instantly, then refetch.
+      queryClient.setQueryData<Project[]>(["projects", token], (old) =>
+        old ? [project, ...old] : [project]
+      );
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      onSelect(project.id);
     },
     onError: (err: Error) => onNotice(err.message)
   });
@@ -803,6 +849,19 @@ function ProjectPanel({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
+
+  // Per-project logos live in the workspace setting "project_logos" ({projectId: dataURI}).
+  const workspaceSettings = useQuery({
+    queryKey: ["workspace-settings", token],
+    enabled: Boolean(token),
+    retry: false,
+    staleTime: 300000,
+    queryFn: () =>
+      api<Array<{ key: string; value: Record<string, unknown> }>>("/settings", { token })
+  });
+  const projectLogos: Record<string, string> =
+    (workspaceSettings.data?.find((s) => s.key === "project_logos")?.value as
+      Record<string, string>) || {};
 
   const active = projects.find((p) => p.id === activeProjectId) || null;
   const shown = projects.filter((p) =>
@@ -829,17 +888,26 @@ function ProjectPanel({
             : "border-line bg-panel hover:border-ocean/40"
         )}
       >
-        <span
-          className={clsx(
-            "grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white dark:text-slate-900",
-            active ? "bg-gradient-to-br from-plum to-ocean" : "bg-gradient-to-br from-ocean to-teal-500"
-          )}
-        >
-          {active ? initials(active.name) : <Globe className="h-4 w-4" />}
-        </span>
+        {active && projectLogos[active.id] ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={projectLogos[active.id]}
+            alt=""
+            className="h-9 w-9 shrink-0 rounded-lg object-cover"
+          />
+        ) : (
+          <span
+            className={clsx(
+              "grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white dark:text-slate-900",
+              active ? "bg-gradient-to-br from-plum to-ocean" : "bg-gradient-to-br from-ocean to-teal-500"
+            )}
+          >
+            {active ? initials(active.name) : <Globe className="h-4 w-4" />}
+          </span>
+        )}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold text-ink">
-            {active ? active.name : "All projects"}
+            {active ? active.name : "Dashboard"}
           </span>
           <span className="block truncate text-[11px] text-muted">
             {active ? (active.client_name || "Project workspace") : "Company view — everything combined"}
@@ -869,7 +937,7 @@ function ProjectPanel({
                 <Globe className="h-4 w-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium text-ink">All projects</span>
+                <span className="block text-sm font-medium text-ink">Dashboard</span>
                 <span className="block text-[11px] text-muted">Company dashboard & totals</span>
               </span>
               {!activeProjectId ? <CheckCircle2 className="h-4 w-4 shrink-0 text-ocean" /> : null}
@@ -883,9 +951,18 @@ function ProjectPanel({
                   activeProjectId === p.id && "bg-plum/10"
                 )}
               >
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white dark:text-slate-900">
-                  {initials(p.name)}
-                </span>
+                {projectLogos[p.id] ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={projectLogos[p.id]}
+                    alt=""
+                    className="h-8 w-8 shrink-0 rounded-lg object-cover"
+                  />
+                ) : (
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white dark:text-slate-900">
+                    {initials(p.name)}
+                  </span>
+                )}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-ink">{p.name}</span>
                   <span className="block truncate text-[11px] text-muted">{p.client_name || "—"}</span>
@@ -903,12 +980,16 @@ function ProjectPanel({
                 className="space-y-2 p-1"
                 onSubmit={(event) => {
                   event.preventDefault();
+                  if (!name.trim() || !domain.trim()) {
+                    onNotice("Project name and target domain are required");
+                    return;
+                  }
                   createProject.mutate();
                 }}
               >
                 <Field label="Name" value={name} onChange={setName} />
                 <Field label="Client" value={client} onChange={setClient} />
-                <Field label="Target domain" value={domain} onChange={setDomain} />
+                <Field label="Target domain (required)" value={domain} onChange={setDomain} />
                 <div className="flex gap-2">
                   <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
                     {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -1606,6 +1687,14 @@ function Backlinks({
     )
       indexCheck.mutate();
   };
+  const checkMetrics = useMutation({
+    mutationFn: () => api<unknown>("/source-domains/fetch-metrics", { token, method: "POST" }),
+    onSuccess: () => {
+      onNotice("Domain metrics check started — DA/PA via Moz, AS via Semrush (Semrush needs its API endpoint configured)");
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
 
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -1645,10 +1734,18 @@ function Backlinks({
             <button
               onClick={runIndexCheck}
               className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
-              title="Check whether source pages are indexed by Google (asks before spending API credits)"
+              title="Check Google indexing for these links (asks before spending API credits)"
             >
               {indexCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
-              Check index
+              Check indexing
+            </button>
+            <button
+              onClick={() => checkMetrics.mutate()}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+              title="Fetch DA/PA (Moz) and AS (Semrush) for the source domains of your links — batch-refreshes the stalest domains first"
+            >
+              {checkMetrics.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+              Check DA · PA · AS
             </button>
             {picked.size ? (
               <button
@@ -1663,10 +1760,10 @@ function Backlinks({
             <button
               onClick={checkPending}
               className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
-              title="Check only links that have never been QA-checked (new imports) — the safe everyday action"
+              title="QA-check links that were never checked (new imports) — the safe everyday action"
             >
               {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Check QA pending
+              Run QA check
             </button>
             <button
               onClick={checkFiltered}
@@ -1834,7 +1931,7 @@ function Backlinks({
               <Th>Index</Th>
               <SortTh label="HTTP" sortKey="http_status" sort={sort} dir={sortDir} onSort={onSortCol} />
               <Th>Rel</Th>
-              <Th><span title="Domain rank / monthly visits (from the metrics provider)">Rank</span></Th>
+              <Th><span title="DA/PA/AS of the source domain, or rank/visits from the metrics provider">Metrics</span></Th>
               <Th>Issue</Th>
               <SortTh label="Link date" sortKey="created_at" sort={sort} dir={sortDir} onSort={onSortCol}
                 help="The sheet's own link-building date when available (hover shows when it was imported). Sorted by import date." />
@@ -1927,7 +2024,16 @@ function Backlinks({
                 <Td>{row.index_status ? <IndexBadge value={row.index_status} /> : <span className="text-xs text-muted">—</span>}</Td>
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
-                <Td><span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span></Td>
+                <Td>
+                  {row.domain_da != null || row.domain_as != null ? (
+                    <span className="flex flex-wrap gap-1">
+                      <MetricTag label="DA" value={row.domain_da} />
+                      <MetricTag label="AS" value={row.domain_as} />
+                    </span>
+                  ) : (
+                    <span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span>
+                  )}
+                </Td>
                 <Td><IssueWord label={row.top_issue_label} count={row.issue_count} /></Td>
                 <Td>
                   <span
@@ -2130,6 +2236,16 @@ function BacklinkDetailDrawer({
                 }
               />
               <FactRow
+                k="Authority"
+                v={
+                  <span className="flex flex-wrap gap-1">
+                    <MetricTag label="DA" value={data.domain_da} title="Domain Authority — Moz, for the whole source domain" />
+                    <MetricTag label="PA" value={data.domain_pa} title="Page/domain authority — Moz" />
+                    <MetricTag label="AS" value={data.domain_as} title="Authority Score — Semrush" />
+                  </span>
+                }
+              />
+              <FactRow
                 k="Source site metrics"
                 v={
                   data.extra?.metrics
@@ -2145,7 +2261,7 @@ function BacklinkDetailDrawer({
               />
               <FactRow
                 k="Google index"
-                v={data.index_status ? data.index_status.replace(/_/g, " ") : "not checked yet"}
+                v={data.index_status ? <IndexBadge value={data.index_status} /> : "not checked yet"}
               />
             </DetailBlock>
 
@@ -2327,7 +2443,7 @@ function DetailBlock({ title, children }: { title: string; children: React.React
   );
 }
 
-function FactRow({ k, v }: { k: string; v: string | null | undefined }) {
+function FactRow({ k, v }: { k: string; v: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 py-1 text-sm">
       <span className="shrink-0 text-muted">{k}</span>
@@ -2830,6 +2946,7 @@ function TasksDesk({
   const [fPriority, setFPriority] = useState("medium");
   const [fNote, setFNote] = useState("");
   const [fTarget, setFTarget] = useState(""); // manual target override (optional)
+  const [fRepeat, setFRepeat] = useState(false); // also save as a standing weekly-template entry
   const linkTypes = useQuery({
     queryKey: ["link-types", token],
     enabled: Boolean(token),
@@ -2861,6 +2978,31 @@ function TasksDesk({
     if (src === "global") return `${lph ?? "?"} links/hr — global rate`;
     return "";
   };
+  // Standing weekly plan: mirror the assignment into the weekly template so
+  // this week's entry also auto-fills the same weekday on future weeks.
+  const saveTemplateEntry = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/workforce/templates/entry", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({
+          user_label: fUser.trim(),
+          weekday: (new Date(`${fDay}T00:00:00`).getDay() + 6) % 7, // 0=Mon..6=Sun
+          project_id: fProject || projectId,
+          hours: Number(fHours) || 0,
+          link_type_names: fTypes ? fTypes.split(",") : [],
+          priority: fPriority || null,
+          note: fNote.trim() || null,
+          expected_links: fTarget.trim() ? Number(fTarget) : null
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Standing weekly plan saved — future weeks will auto-fill.");
+      setFRepeat(false);
+      queryClient.invalidateQueries({ queryKey: ["task-templates"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
   const addAssignment = useMutation({
     mutationFn: () =>
       api<{ id: string; expected_links: number; rate_source: string | null; lph_used: number | null; warnings: string[] }>(
@@ -2883,6 +3025,7 @@ function TasksDesk({
         `Assigned — target ${r.expected_links} links (${rateWording(r.rate_source, r.lph_used)}).`
       );
       (r.warnings || []).forEach((w) => onNotice(`⚠ ${w}`));
+      if (fRepeat) saveTemplateEntry.mutate(); // before the resets — the template reads the form
       setFNote("");
       setFTarget("");
       queryClient.invalidateQueries({ queryKey: ["day-report"] });
@@ -2977,98 +3120,6 @@ function TasksDesk({
           against that day&apos;s plan. Approved leave and non-working days don&apos;t count against anyone.
         </p>
       </div>
-
-      {/* Assign — hidden by default; "+ Add" in the planner opens it prefilled */}
-      {!showAssign ? (
-        <div>
-          <button
-            onClick={() => setShowAssign(true)}
-            className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
-          >
-            <Plus className="h-4 w-4" />
-            Assign work
-          </button>
-        </div>
-      ) : (
-      <section ref={formRef} className="rounded-xl border border-line bg-panel p-4 shadow-card">
-        <div className="flex items-center justify-between">
-          <SectionTitle title="Assign work" flush />
-          <button onClick={() => setShowAssign(false)} className="text-xs font-medium text-muted hover:text-ink hover:underline">
-            Hide
-          </button>
-        </div>
-        <div className="flex flex-wrap items-end gap-2 pt-3">
-          <input type="date" value={fDay} onChange={(e) => setFDay(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
-          <SearchSelect
-            value={fUser}
-            onChange={setFUser}
-            options={(knownLabels.data || []).map((l) => ({ value: l }))}
-            placeholder="Person…"
-            allowCustom
-            width="w-44"
-          />
-          {projectId ? (
-            <span
-              className="flex h-9 items-center rounded-lg border border-ocean/40 bg-ocean/10 px-2.5 text-sm font-medium text-ocean"
-              title="You're inside this project — plans here always belong to it"
-            >
-              {projects.find((p) => p.id === projectId)?.name || "This project"}
-            </span>
-          ) : (
-            <SearchSelect
-              value={fProject}
-              onChange={setFProject}
-              options={projects.map((p) => ({ value: p.id, label: p.name }))}
-              placeholder="Project…"
-              width="w-48"
-            />
-          )}
-          <input type="number" min={0} max={24} step={0.5} value={fHours} onChange={(e) => setFHours(e.target.value)} className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-sm" title="Hours" />
-          <FilterMultiSelect
-            label="Link types"
-            options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
-            selected={fTypes ? fTypes.split(",") : []}
-            onChange={(v) => setFTypes(v.join(","))}
-          />
-          <select
-            value={fPriority}
-            onChange={(e) => setFPriority(e.target.value)}
-            title="Priority for this assignment"
-            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
-          >
-            <option value="high">High priority</option>
-            <option value="medium">Medium priority</option>
-            <option value="low">Low priority</option>
-          </select>
-          <input
-            type="number"
-            min={0}
-            value={fTarget}
-            onChange={(e) => setFTarget(e.target.value)}
-            placeholder="Target (auto)"
-            title="Leave blank to calculate the target from productivity rates (personal rate beats global). Type a number to set it by hand — highest priority."
-            className="h-9 w-28 rounded-lg border border-line bg-panel px-2 text-sm"
-          />
-          <input
-            value={fNote}
-            onChange={(e) => setFNote(e.target.value)}
-            placeholder="Note (e.g. Only niche relevant)…"
-            className="h-9 w-56 rounded-lg border border-line bg-panel px-2 text-sm"
-          />
-          <button
-            onClick={() => addAssignment.mutate()}
-            disabled={addAssignment.isPending || !fUser.trim() || !(fProject || projectId)}
-            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
-          >
-            {addAssignment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Assign
-          </button>
-          <span className="text-xs text-muted">
-            Target priority: manual number → person&apos;s own rate → global rate. Assigning the same person+project+day again updates that plan.
-          </span>
-        </div>
-      </section>
-      )}
 
       {/* Where the time goes — hours & completion by person and by project */}
       {visibleRows.length ? (
@@ -3268,6 +3319,11 @@ function TasksDesk({
                   <span className="block">
                     {r.hours}h · {r.actual_links}/{r.expected_links}
                     {r.excused ? " · excused" : ""}
+                    {r.rate_source === "manual" ? (
+                      <span className="text-[10px] opacity-80"> · manual target</span>
+                    ) : r.lph_used ? (
+                      <span className="text-[10px] opacity-80"> · @{r.lph_used}/h{r.rate_source === "override" ? " (own rate)" : ""}</span>
+                    ) : null}
                   </span>
                   {!r.excused && r.expected_links > 0 ? (
                     <span className="mt-1 block h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
@@ -3497,6 +3553,102 @@ function TasksDesk({
         )}
       </section>
 
+      {/* Assign — hidden by default; "+ Add" in the planner opens it prefilled */}
+      {!showAssign ? (
+        <div>
+          <button
+            onClick={() => setShowAssign(true)}
+            className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+          >
+            <Plus className="h-4 w-4" />
+            Assign work
+          </button>
+        </div>
+      ) : (
+      <section ref={formRef} className="rounded-xl border border-line bg-panel p-4 shadow-card">
+        <div className="flex items-center justify-between">
+          <SectionTitle title="Assign work" flush />
+          <button onClick={() => setShowAssign(false)} className="text-xs font-medium text-muted hover:text-ink hover:underline">
+            Hide
+          </button>
+        </div>
+        <div className="flex flex-wrap items-end gap-2 pt-3">
+          <input type="date" value={fDay} onChange={(e) => setFDay(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <SearchSelect
+            value={fUser}
+            onChange={setFUser}
+            options={(knownLabels.data || []).map((l) => ({ value: l }))}
+            placeholder="Person…"
+            allowCustom
+            width="w-44"
+          />
+          {projectId ? (
+            <span
+              className="flex h-9 items-center rounded-lg border border-ocean/40 bg-ocean/10 px-2.5 text-sm font-medium text-ocean"
+              title="You're inside this project — plans here always belong to it"
+            >
+              {projects.find((p) => p.id === projectId)?.name || "This project"}
+            </span>
+          ) : (
+            <SearchSelect
+              value={fProject}
+              onChange={setFProject}
+              options={projects.map((p) => ({ value: p.id, label: p.name }))}
+              placeholder="Project…"
+              width="w-48"
+            />
+          )}
+          <input type="number" min={0} max={24} step={0.5} value={fHours} onChange={(e) => setFHours(e.target.value)} className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-sm" title="Hours" />
+          <FilterMultiSelect
+            label="Link types"
+            options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
+            selected={fTypes ? fTypes.split(",") : []}
+            onChange={(v) => setFTypes(v.join(","))}
+          />
+          <select
+            value={fPriority}
+            onChange={(e) => setFPriority(e.target.value)}
+            title="Priority for this assignment"
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+          >
+            <option value="high">High priority</option>
+            <option value="medium">Medium priority</option>
+            <option value="low">Low priority</option>
+          </select>
+          <input
+            type="number"
+            min={0}
+            value={fTarget}
+            onChange={(e) => setFTarget(e.target.value)}
+            placeholder="Target (auto)"
+            title="Leave blank to calculate the target from productivity rates (personal rate beats global). Type a number to set it by hand — highest priority."
+            className="h-9 w-28 rounded-lg border border-line bg-panel px-2 text-sm"
+          />
+          <input
+            value={fNote}
+            onChange={(e) => setFNote(e.target.value)}
+            placeholder="Note (e.g. Only niche relevant)…"
+            className="h-9 w-56 rounded-lg border border-line bg-panel px-2 text-sm"
+          />
+          <label className="flex w-full items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={fRepeat} onChange={(e) => setFRepeat(e.target.checked)} className="h-4 w-4 rounded border-line" />
+            Repeat every week on this weekday (standing plan — applies to this week and auto-fills future weeks)
+          </label>
+          <button
+            onClick={() => addAssignment.mutate()}
+            disabled={addAssignment.isPending || !fUser.trim() || !(fProject || projectId)}
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          >
+            {addAssignment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Assign
+          </button>
+          <span className="text-xs text-muted">
+            Target priority: manual number → person&apos;s own rate → global rate. Assigning the same person+project+day again updates that plan.
+          </span>
+        </div>
+      </section>
+      )}
+
       <div className="grid gap-5 lg:grid-cols-2">
         {/* Productivity settings */}
         <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -3585,6 +3737,15 @@ function TasksDesk({
             </div>
           </div>
           <div className="grid grid-cols-7 gap-1 p-3">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((w) => (
+              <div key={w} className="pb-1 text-center text-[10px] font-semibold uppercase tracking-wide text-muted">{w}</div>
+            ))}
+            {(() => {
+              // Google-calendar alignment: pad so the 1st lands under its weekday.
+              const first = calendar.data?.[0]?.day;
+              const offset = first ? (new Date(first + "T00:00:00").getDay() + 6) % 7 : 0;
+              return Array.from({ length: offset }).map((_, i) => <div key={"sp" + i} />);
+            })()}
             {(calendar.data || []).map((d) => (
               <button
                 key={d.day}
@@ -4004,7 +4165,8 @@ function UserDashboard({
   initialProjectId,
   onClose,
   onOpenBacklinks,
-  onNotice
+  onNotice,
+  onPlanWork
 }: {
   token: string | null;
   userLabel: string;
@@ -4012,6 +4174,7 @@ function UserDashboard({
   onClose: () => void;
   onOpenBacklinks: (filters: Record<string, string>) => void;
   onNotice: (text: string) => void;
+  onPlanWork?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [days, setDays] = useState("30");
@@ -4189,6 +4352,37 @@ function UserDashboard({
     onError: (e: Error) => onNotice(e.message)
   });
 
+  // Personal productivity rates — editable right here (mirrors the Tasks desk).
+  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
+  const saveRate = useMutation({
+    mutationFn: (p: { link_type_name: string; links_per_hour: number }) =>
+      api<{ message: string }>("/workforce/productivity", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({ user_label: userLabel, ...p })
+      }),
+    onSuccess: () => {
+      onNotice("Personal rate saved");
+      setRateDrafts({});
+      queryClient.invalidateQueries({ queryKey: ["user-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["productivity"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const removeRate = useMutation({
+    mutationFn: (link_type_name: string) =>
+      api<{ message: string }>(
+        `/workforce/productivity?user_label=${encodeURIComponent(userLabel)}&link_type_name=${encodeURIComponent(link_type_name)}`,
+        { token, method: "DELETE" }
+      ),
+    onSuccess: () => {
+      onNotice("Personal rate removed — the global rate applies again");
+      queryClient.invalidateQueries({ queryKey: ["user-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["productivity"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
   const d = dash.data;
   const pv = d?.previous;
   const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
@@ -4219,6 +4413,15 @@ function UserDashboard({
         ) : (
           <span className="rounded-full bg-field px-2.5 py-1 text-xs font-medium text-muted">All projects</span>
         )}
+        {onPlanWork ? (
+          <button
+            onClick={onPlanWork}
+            title="Open the Tasks desk to plan this person's week"
+            className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            <CalendarDays className="h-4 w-4" /> Plan work
+          </button>
+        ) : null}
         <span className="ml-auto" />
         <SearchSelect
           value={projFilter}
@@ -4377,14 +4580,15 @@ function UserDashboard({
           </section>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            {/* Rates in effect */}
+            {/* Rates in effect — with an inline personal-override editor */}
             <section className="rounded-xl border border-line bg-panel shadow-card">
-              <SectionTitle title="Rates in effect (personal beats global)" />
+              <SectionTitle title="Productivity (links per hour) — personal rate beats global" />
               <div className="divide-y divide-line">
                 {d.rates.global.map((g) => {
                   const ov = d.rates.overrides.find((o) => o.link_type_name.toLowerCase() === g.link_type_name.toLowerCase());
+                  const draft = rateDrafts[g.link_type_name] ?? "";
                   return (
-                    <div key={g.link_type_name} className="flex items-center justify-between px-3 py-2 text-sm">
+                    <div key={g.link_type_name} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
                       <span className="font-medium text-ink">{linkTypeLabel(g.link_type_name)}</span>
                       <span className="flex items-center gap-2">
                         {ov ? (
@@ -4393,10 +4597,35 @@ function UserDashboard({
                               {ov.links_per_hour}/h personal
                             </span>
                             <span className="text-xs text-muted line-through">{g.links_per_hour}/h global</span>
+                            <button
+                              onClick={() => removeRate.mutate(ov.link_type_name)}
+                              disabled={removeRate.isPending}
+                              title="Drop the personal rate — the global rate applies again"
+                              className="text-xs text-muted hover:text-danger hover:underline disabled:opacity-40"
+                            >
+                              Remove
+                            </button>
                           </>
                         ) : (
                           <span className="text-xs text-muted">{g.links_per_hour}/h global</span>
                         )}
+                        <input
+                          type="number"
+                          min={0.1}
+                          step={0.5}
+                          value={draft}
+                          onChange={(e) => setRateDrafts((x) => ({ ...x, [g.link_type_name]: e.target.value }))}
+                          placeholder={ov ? String(ov.links_per_hour) : "own rate"}
+                          title={`Personal ${linkTypeLabel(g.link_type_name)} rate for ${userLabel}`}
+                          className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
+                        />
+                        <button
+                          onClick={() => saveRate.mutate({ link_type_name: g.link_type_name, links_per_hour: Number(draft) })}
+                          disabled={saveRate.isPending || !(Number(draft) > 0)}
+                          className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
+                        >
+                          Save
+                        </button>
                       </span>
                     </div>
                   );
@@ -4798,12 +5027,14 @@ function PerformanceDesk({
   token,
   projectId,
   onOpenBacklinks,
-  onNotice
+  onNotice,
+  onPlanWork
 }: {
   token: string | null;
   projectId: string;
   onOpenBacklinks: (filters: Record<string, string>) => void;
   onNotice: (text: string) => void;
+  onPlanWork?: () => void;
 }) {
   // Full per-person dashboard (admin view) — opened by clicking a name.
   const [dashUser, setDashUser] = useState<string | null>(null);
@@ -4885,6 +5116,7 @@ function PerformanceDesk({
         onClose={() => setDashUser(null)}
         onOpenBacklinks={onOpenBacklinks}
         onNotice={onNotice}
+        onPlanWork={onPlanWork}
       />
     );
   }
@@ -5529,7 +5761,7 @@ function CompetitorDesk({
     queryKey: ["competitor-sheet-links", token, openSheet],
     enabled: Boolean(token) && Boolean(openSheet),
     queryFn: () =>
-      api<Array<{ url: string; source_domain: string | null; anchor: string | null; rel: string | null; link_type: string | null }>>(
+      api<Array<{ url: string; source_domain: string | null; anchor: string | null; rel: string | null; link_type: string | null; da?: number | null; pa?: number | null; semrush_as?: number | null; domain_category?: string | null; decision?: string | null }>>(
         `/competitors/sheets/${openSheet}/backlinks`,
         { token }
       )
@@ -5664,7 +5896,7 @@ function CompetitorDesk({
         </p>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Metric label="Domains" value={s?.domains ?? 0} icon={Globe} tone="ink"
           help="All the websites your competitor has links from (grouped by domain)." />
         <Metric label="New opportunities" value={s?.new_opportunities ?? 0} icon={Star} tone="ocean"
@@ -5673,6 +5905,10 @@ function CompetitorDesk({
           help="Websites where this project already has a link — removed from the opportunity list automatically." />
         <Metric label="Competitor links" value={s?.competitor_links ?? 0} icon={Link2} tone="ink"
           help="Total competitor backlinks you've uploaded for this project." />
+        <Metric label="Avg DA" value={s?.avg_da ?? "—"} icon={Gauge} tone="ink"
+          help="Average Moz Domain Authority of the competitor's source domains (where known)." />
+        <Metric label="Avg AS" value={s?.avg_as ?? "—"} icon={Gauge} tone="ink"
+          help="Average Semrush Authority Score (where known)." />
       </div>
 
       <section className="rounded-xl border border-line bg-panel shadow-card p-4">
@@ -5836,6 +6072,11 @@ function CompetitorDesk({
                               {l.anchor ? <span className="text-muted">“{l.anchor}”</span> : null}
                               {l.rel ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.rel}</span> : null}
                               {l.link_type ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">{l.link_type}</span> : null}
+                              <MetricTag label="DA" value={l.da} />
+                              <MetricTag label="AS" value={l.semrush_as} />
+                              {l.domain_category === "new_opportunity" && l.decision !== "dismissed" ? <span className="rounded bg-ocean/10 px-1.5 py-0.5 font-semibold text-ocean">Opportunity</span> : null}
+                              {l.domain_category === "existing" ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">Already have</span> : null}
+                              {l.decision === "dismissed" ? <span className="rounded bg-field px-1.5 py-0.5 text-muted">Dismissed</span> : null}
                             </div>
                           ))}
                           {!(sheetLinks.data || []).length ? <p className="text-xs text-muted">No links stored for this upload.</p> : null}
@@ -7032,7 +7273,7 @@ function ProjectDomainsPanel({
                 <Td><span className="break-all text-ocean hover:underline">{r.domain_key}</span></Td>
                 <Td>{mode === "used" ? r.project_links : r.global_links}</Td>
                 <Td>{mode === "used" ? (r.indexed ?? 0) : (r.project_count ?? 0)}</Td>
-                <Td>{r.da ?? "-"}</Td>
+                <Td>{r.da != null ? <MetricTag label="DA" value={r.da} /> : "-"}</Td>
               </tr>
             ))}
           </tbody>
@@ -7080,10 +7321,18 @@ function SourceDomainsDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
-  const fetchMetrics = useMutation({
-    mutationFn: () => api<SourceDomain[]>("/source-domains/fetch-metrics", { token, method: "POST" }),
+  const fetchMoz = useMutation({
+    mutationFn: () => api<SourceDomain[]>("/source-domains/fetch-metrics?providers=moz", { token, method: "POST" }),
     onSuccess: () => {
-      onNotice("Domain metrics updated (age is live; DA/Semrush need RapidAPI keys)");
+      onNotice("Moz DA/PA check started for the stalest domains");
+      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const fetchSemrush = useMutation({
+    mutationFn: () => api<SourceDomain[]>("/source-domains/fetch-metrics?providers=semrush", { token, method: "POST" }),
+    onSuccess: () => {
+      onNotice("Semrush AS check started — needs the Semrush API endpoint configured on the server");
       queryClient.invalidateQueries({ queryKey: ["source-domains"] });
     },
     onError: (e: Error) => onNotice(e.message)
@@ -7122,11 +7371,18 @@ function SourceDomainsDesk({
             Recompute
           </button>
           <button
-            onClick={() => fetchMetrics.mutate()}
+            onClick={() => fetchMoz.mutate()}
             className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
           >
-            {fetchMetrics.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
-            Fetch metrics
+            {fetchMoz.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+            Check DA/PA (Moz)
+          </button>
+          <button
+            onClick={() => fetchSemrush.mutate()}
+            className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            {fetchSemrush.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+            Check AS (Semrush)
           </button>
         </div>
       </div>
@@ -7195,8 +7451,8 @@ function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }
           </span>
         </Td>
         <Td>{d.dofollow_pct}%</Td>
-        <Td>{d.da ?? "—"}</Td>
-        <Td>{d.semrush_as ?? "—"}</Td>
+        <Td>{d.da != null ? <MetricTag label="DA" value={d.da} /> : "—"}</Td>
+        <Td>{d.semrush_as != null ? <MetricTag label="AS" value={d.semrush_as} /> : "—"}</Td>
         <Td>{d.semrush_traffic != null ? compactNum(d.semrush_traffic) : "—"}</Td>
         <Td>
           {d.domain_age_days != null ? (
@@ -7950,6 +8206,200 @@ function ScoringDesk({
   );
 }
 
+// Company + per-project branding (admin, Settings desk). Company branding drives
+// the login screen / top bar via the public /auth/branding endpoint; project
+// logos live in the "project_logos" setting and show in the project picker.
+function BrandingCard({
+  token,
+  projectId,
+  onNotice
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [companyName, setCompanyName] = useState("");
+  const [companyDomain, setCompanyDomain] = useState("");
+  const [logoDataUri, setLogoDataUri] = useState("");
+
+  const settings = useQuery({
+    queryKey: ["workspace-settings", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () =>
+      api<Array<{ key: string; value: Record<string, unknown> }>>("/settings", { token })
+  });
+
+  // Prefill the form from the stored "branding" setting once it loads.
+  useEffect(() => {
+    const branding = settings.data?.find((s) => s.key === "branding")?.value as
+      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null }
+      | undefined;
+    if (branding) {
+      setCompanyName(branding.company_name || "");
+      setCompanyDomain(branding.company_domain || "");
+      setLogoDataUri(branding.logo_data_uri || "");
+    }
+  }, [settings.data]);
+
+  const projectLogos =
+    ((settings.data || []).find((s) => s.key === "project_logos")?.value as
+      Record<string, string>) || {};
+  const projectLogo = projectId ? projectLogos[projectId] || "" : "";
+
+  // FileReader → data URI. Logos are stored inline in settings, so keep them small.
+  const readLogo = (file: File | undefined, set: (uri: string) => void) => {
+    if (!file) return;
+    if (file.size > 300 * 1024) {
+      onNotice("Logo too large — keep it under 300 KB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => set(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  };
+
+  const saveBranding = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/settings", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({
+          key: "branding",
+          value: {
+            company_name: companyName.trim() || null,
+            company_domain: companyDomain.trim() || null,
+            logo_data_uri: logoDataUri || null
+          },
+          is_secret: false
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Branding saved");
+      queryClient.invalidateQueries({ queryKey: ["branding"] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-settings"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const saveProjectLogo = useMutation({
+    mutationFn: (uri: string) => {
+      // Merge into the shared {projectId: dataURI} map so other projects keep theirs.
+      const next = { ...projectLogos };
+      if (uri) next[projectId] = uri;
+      else delete next[projectId];
+      return api<{ message: string }>("/settings", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({ key: "project_logos", value: next, is_secret: false })
+      });
+    },
+    onSuccess: () => {
+      onNotice("Project logo saved");
+      queryClient.invalidateQueries({ queryKey: ["workspace-settings"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="Company & branding" />
+      <div className="space-y-3 p-4">
+        <p className="text-xs text-muted">
+          Company name and logo appear on the login screen and top bar. The company domain is
+          used for auto‑created user emails.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Company name" value={companyName} onChange={setCompanyName} />
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">
+              Company domain
+            </span>
+            <input
+              className="h-10 w-full rounded-xl border border-line bg-panel shadow-card px-3 text-sm shadow-sm transition focus:border-ocean focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              placeholder="techsa.com — used for auto-created user emails"
+              value={companyDomain}
+              onChange={(event) => setCompanyDomain(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">
+              Company logo
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              className="block text-sm text-muted"
+              onChange={(event) => readLogo(event.target.files?.[0], setLogoDataUri)}
+            />
+          </label>
+          {logoDataUri ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={logoDataUri}
+              alt=""
+              className="h-10 w-10 rounded-lg border border-line object-contain"
+            />
+          ) : null}
+          <button
+            onClick={() => saveBranding.mutate()}
+            disabled={saveBranding.isPending}
+            className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          >
+            {saveBranding.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4" />
+            )}
+            Save
+          </button>
+        </div>
+        {projectId ? (
+          <div className="space-y-2 border-t border-line pt-3">
+            <p className="text-xs text-muted">
+              <strong className="text-ink">Project logo</strong> — shown in the project picker
+              instead of the initials.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                type="file"
+                accept="image/*"
+                className="block text-sm text-muted"
+                onChange={(event) =>
+                  readLogo(event.target.files?.[0], (uri) => saveProjectLogo.mutate(uri))
+                }
+              />
+              {projectLogo ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={projectLogo}
+                  alt=""
+                  className="h-10 w-10 rounded-lg border border-line object-cover"
+                />
+              ) : null}
+              {projectLogo ? (
+                <button
+                  onClick={() => saveProjectLogo.mutate("")}
+                  disabled={saveProjectLogo.isPending}
+                  className="rounded border border-line bg-panel px-2 py-1 text-xs font-medium text-muted transition hover:bg-field hover:text-danger"
+                >
+                  Remove
+                </button>
+              ) : null}
+              {saveProjectLogo.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted" />
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function SettingsDesk({
   token,
   projectId,
@@ -8050,6 +8500,7 @@ function SettingsDesk({
   const s = settings.data;
   return (
     <section className="space-y-5">
+      <BrandingCard token={token} projectId={projectId} onNotice={onNotice} />
       <LinkTypesCard token={token} onNotice={onNotice} />
       {!projectId ? (
         <div className="rounded-xl border border-line bg-panel shadow-card">
@@ -8678,12 +9129,12 @@ const STATUS_HELP: Record<string, { label?: string; what: string; next: string }
   PENDING: {
     label: "QA pending",
     what: "This link hasn't been QA-checked yet.",
-    next: "Use “Check QA pending” in the Backlinks list to check it — checks don't start on their own."
+    next: "Use “Run QA check” in the Backlinks list to check it — checks don't start on their own."
   },
   indexed: { what: "Google shows this page in its index.", next: "Nothing to do." },
   not_indexed: { what: "Google does not show this page in its index.", next: "Low-value for SEO until indexed — consider requesting indexing or replacing." },
   uncertain: { label: "Index unclear", what: "The index check couldn't give a clear yes/no.", next: "Re-run the index check later." },
-  unchecked: { what: "Index status hasn't been checked yet.", next: "Use “Check index”." },
+  unchecked: { what: "Index status hasn't been checked yet.", next: "Use “Check indexing”." },
   dup_same_project: { label: "Duplicate (same project)", what: "The same page URL appears more than once in this project.", next: "Keep one and remove the extras in the sheet." },
   dup_cross_project: { label: "Used by another project", what: "This page URL is already used by a different project.", next: "Check the Duplicates desk to see where the original lives." },
   dup_cross_user: { label: "Added by another user", what: "This page URL was already added by a different team member.", next: "Coordinate to avoid paying for the same placement twice." },
@@ -9041,9 +9492,11 @@ function Empty({ label }: { label: string }) {
 
 function SheetsDesk({
   token,
+  projectId,
   onNotice
 }: {
   token: string | null;
+  projectId?: string;
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -9125,8 +9578,11 @@ function SheetsDesk({
   });
 
   const cfg = config.data;
+  // Project scope: entering a project narrows the desk to that project's sheets.
+  const visibleSheets = (sheets.data || []).filter((s) => !projectId || s.project_id === projectId);
   return (
     <section className="space-y-4">
+      {!projectId ? (
       <div className="rounded-xl border border-line bg-panel shadow-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -9160,7 +9616,9 @@ function SheetsDesk({
           </div>
         ) : null}
       </div>
+      ) : null}
 
+      {projectId ? <p className="text-xs text-muted">Showing only this project&apos;s sheets.</p> : null}
       <div className="overflow-x-auto rounded-xl border border-line bg-panel shadow-card">
         <table className="min-w-[760px] w-full text-left text-sm">
           <thead className="bg-field text-xs uppercase text-muted">
@@ -9174,7 +9632,7 @@ function SheetsDesk({
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {(sheets.data || []).map((s) => {
+            {visibleSheets.map((s) => {
               const live = runningFor(s.id);
               const newCount = Math.max(0, s.imported_count - s.updated_count);
               return (
@@ -9277,8 +9735,8 @@ function SheetsDesk({
             })}
           </tbody>
         </table>
-        {!sheets.isLoading && !sheets.data?.length ? (
-          <Empty label="No project sheets yet — run a sync from the main sheet" />
+        {!sheets.isLoading && !visibleSheets.length ? (
+          <Empty label={projectId ? "No sheets for this project yet." : "No project sheets yet — run a sync from the main sheet"} />
         ) : null}
       </div>
     </section>
@@ -9816,6 +10274,13 @@ function IndexBadge({ value }: { value: string }) {
   );
 }
 
+// 0-100 authority tag (DA/PA/AS): higher is better — ocean ≥ 60, ember 30-59, danger < 30.
+function MetricTag({ label, value, title }: { label: string; value: number | null | undefined; title?: string }) {
+  if (value == null) return <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-field text-muted" title={title}>{label} —</span>;
+  const tone = value >= 60 ? "bg-ocean/10 text-ocean" : value >= 30 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
+  return <span className={clsx("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tone)} title={title}>{label} {value}</span>;
+}
+
 function Th({ children }: { children: React.ReactNode }) {
   return <th className="whitespace-nowrap px-3 py-2 font-semibold">{children}</th>;
 }
@@ -9999,7 +10464,7 @@ function MemberProjectsCell({
   if (role === "admin")
     return <span className="text-xs text-muted" title="Admins always see every project">All (admin)</span>;
   const ids = scoped.data?.project_ids || [];
-  const emptyLabel = role === "viewer" ? "No projects yet" : "All projects";
+  const emptyLabel = role === "viewer" ? "No projects yet" : "Dashboard";
   return (
     <span title="Which projects this member can see. Empty = a TeamLead/QA sees all; a User (viewer) sees none until you pick their projects.">
       <FilterMultiSelect
@@ -10018,6 +10483,8 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("viewer");
   const [password, setPassword] = useState("");
+  // One desk, two sections: workspace accounts vs sheet-employee mapping.
+  const [teamTab, setTeamTab] = useState<"members" | "employees">("members");
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -10139,6 +10606,22 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
 
   return (
     <div className="space-y-5">
+      <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
+        <button
+          onClick={() => setTeamTab("members")}
+          className={clsx("px-2.5 py-1 transition", teamTab === "members" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+        >
+          Members &amp; roles
+        </button>
+        <button
+          onClick={() => setTeamTab("employees")}
+          title="Sheet employees — codes, name variants and account mapping"
+          className={clsx("px-2.5 py-1 transition", teamTab === "employees" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+        >
+          Employees &amp; mapping
+        </button>
+      </span>
+      {teamTab === "members" ? (<>
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="border-b border-line p-4">
           <h2 className="text-base font-semibold text-ink">Invite a teammate</h2>
@@ -10332,6 +10815,9 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           </div>
         </section>
       ) : null}
+      </>) : (
+        <EmployeesDesk token={token} onNotice={onNotice} />
+      )}
     </div>
   );
 }

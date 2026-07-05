@@ -3,8 +3,8 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "LinkSentinel",
-  description: "Backlink QA monitoring dashboard"
+  title: "Performance by Techsa",
+  description: "SEO performance & backlink QA operations"
 };
 
 // Apply the saved (or system) theme before first paint to avoid a flash.

@@ -261,6 +261,36 @@ only desk: today/week/targets/completion/self-leave), viewer data scoping
 (day-report/leaves/performance/productivity self-only; `/employees` manager+),
 self-only leave requests, deactivation message ("account is inactive").
 
+**Final batch 4 shipped + deployed** (no new migration, 149 tests): product
+renamed **"Performance by Techsa"** (TopBar/login/page metadata; login shows
+the company logo + "Powered by Techsa" footer). Public `GET /auth/branding`
+is **primary-workspace-scoped** (oldest active workspace — test workspaces
+can never hijack the login branding). Settings → **Company & branding** card
+(name/domain/logo ≤300KB data-URI; `company_domain` rebrands sheet
+auto-provisioned emails, with legacy-address reuse so changing it never
+duplicates accounts) + per-project logos (`project_logos` setting, shown in
+the project picker). Nav reorg: Monitor = Dashboard/Analytics/Performance,
+"All projects"→"Dashboard", **Employees merged into Team** (pill tabs),
+project nav gains project-scoped Sheets. Backlinks toolbar: **Run QA check /
+Check indexing / Check DA·PA·AS** (three separate actions); `MetricTag`
+0-100 color tags everywhere (grid Metrics column, drawer Authority row,
+source-domains + competitor desks); Source Domains split buttons **Check
+DA/PA (Moz)** / **Check AS (Semrush)** via `fetch-metrics?providers=`;
+`BacklinkRow` carries `domain_da/domain_pa/domain_as` (bounded per-page
+lookup, keyset path untouched). Competitor: links enriched w/ DA/PA/AS +
+Opportunity/Already have/Dismissed tags; summary `avg_da/avg_as` cards.
+Tasks: **standing weekly plans** (`PUT/DELETE /workforce/templates/entry`
+upserts one person×weekday×project cell and materializes this + next week;
+"Repeat every week" checkbox in the assign form), assign form moved beside
+the planner, month calendar got Mon–Sun headers + first-day offset, chips
+show `@lph/h` rate, user dashboard productivity card w/ inline personal-rate
+editor. Project create: **target domain compulsory** + instant-feedback cache
+seeding. Perf: argon2 moved off the event loop (`asyncio.to_thread` +
+`_DUMMY_HASH`) — concurrent logins no longer stall requests (the reported
+"5s project create"). NOTE: Semrush AS stays "—" until
+`SEMRUSH_RAPIDAPI_ENDPOINT` is set in prod `.env` (Moz DA/PA already live
+via `RAPIDAPI_KEY`).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —

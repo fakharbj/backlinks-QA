@@ -198,6 +198,8 @@ export type CompetitorSummary = {
   existing: number;
   dismissed: number;
   competitor_links: number;
+  avg_da?: number | null;
+  avg_as?: number | null;
 };
 
 export type SourceDomain = {
@@ -354,6 +356,9 @@ export type BacklinkRow = {
   is_duplicate?: boolean;
   duplicate_status?: string | null;
   index_status?: string | null;
+  domain_da?: number | null;
+  domain_pa?: number | null;
+  domain_as?: number | null;
   tags: string[];
   extra?: { metrics?: SiteMetrics } | null;
 };
