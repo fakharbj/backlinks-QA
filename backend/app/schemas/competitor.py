@@ -72,3 +72,5 @@ class CompetitorSummary(BaseModel):
     existing: int = 0
     dismissed: int = 0
     competitor_links: int = 0
+    avg_da: int | None = None       # avg checked DA across domains (null until checked)
+    avg_as: int | None = None       # avg SEMrush Authority Score (from our own catalog)

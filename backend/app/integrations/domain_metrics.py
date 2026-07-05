@@ -127,12 +127,20 @@ async def _fetch_semrush(domain: str, client: httpx.AsyncClient) -> dict:
         return {}
 
 
-async def fetch_all(domain: str, client: httpx.AsyncClient) -> dict:
-    """All available metrics for one domain. Always returns a dict (maybe sparse)."""
+async def fetch_all(
+    domain: str, client: httpx.AsyncClient, *, providers: set[str] | None = None
+) -> dict:
+    """All available metrics for one domain. Always returns a dict (maybe sparse).
+
+    ``providers`` scopes the call: ``None`` = everything, ``{"moz"}`` = age + Moz
+    DA/PA only, ``{"semrush"}`` = Semrush AS/traffic/keywords only.
+    """
     out: dict = {}
-    out.update(await _fetch_age(domain, client))
-    out.update(await _fetch_moz(domain, client))
-    out.update(await _fetch_semrush(domain, client))
+    if providers is None or "moz" in providers:
+        out.update(await _fetch_age(domain, client))
+        out.update(await _fetch_moz(domain, client))
+    if providers is None or "semrush" in providers:
+        out.update(await _fetch_semrush(domain, client))
     if out:
         out["metrics_updated_at"] = datetime.now(timezone.utc)
     return out

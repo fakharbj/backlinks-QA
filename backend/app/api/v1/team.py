@@ -280,6 +280,7 @@ async def reset_member_password(
 ) -> dict:
     """Admin password reset: sets a new temporary password and returns it ONCE
     (hand it to the user; they should change it after logging in)."""
+    import asyncio
     import secrets
 
     from app.core.errors import NotFoundError
@@ -290,7 +291,8 @@ async def reset_member_password(
     if target is None:
         raise NotFoundError("Member not found in this workspace")
     temp = f"Reset-{secrets.token_urlsafe(9)}"
-    target.password_hash = hash_password(temp)
+    # Argon2 is CPU-heavy — run it off the event loop.
+    target.password_hash = await asyncio.to_thread(hash_password, temp)
     await audit_service.record(
         db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
         entity_type="user", entity_id=user_id, summary="Password reset by admin",

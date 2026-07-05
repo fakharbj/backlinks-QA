@@ -77,10 +77,12 @@ async def list_backlinks(
     )
     total = await backlink_service.count_backlinks(db, ctx, filters) if with_total else None
     target_counts = await backlink_service.targets_per_source(db, rows)
+    domain_metrics = await backlink_service.domain_metrics_per_row(db, rows)
     items = []
     for r in rows:
         row = BacklinkRow.model_validate(r)
         row.targets_on_source = target_counts.get(r.id, 1)
+        row.domain_da, row.domain_pa, row.domain_as = domain_metrics.get(r.id, (None, None, None))
         items.append(row)
     return KeysetPage[BacklinkRow](
         items=items,
@@ -104,6 +106,9 @@ async def create_backlink(
 async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> BacklinkDetail:
     bl, issues, latest, history = await backlink_service.get_detail(db, ctx, backlink_id)
     detail = BacklinkDetail.model_validate(bl)
+    detail.domain_da, detail.domain_pa, detail.domain_as = (
+        await backlink_service.domain_metrics_per_row(db, [bl])
+    ).get(bl.id, (None, None, None))
     detail.issues = [
         IssueOut(code=i.code, label=i.label, category=i.category.value, severity=i.severity.value,
                  message=i.message, recommendation=i.recommendation, evidence=i.evidence)

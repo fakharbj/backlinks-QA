@@ -195,6 +195,15 @@ async def _auto_provision_users(db: AsyncSession, source: SheetSource, batch_id)
         return 0
     created = 0
     try:
+        # Auto-provisioned addresses use the company's branded domain when the
+        # owners configured one (Settings → branding), else the built-in default.
+        from app.services.branding_service import get_branding
+
+        branding = await get_branding(db, source.workspace_id)
+        domain = (
+            (branding.get("company_domain") or "").strip().lower().lstrip("@")
+            or "sheet-users.linksentinel.local"
+        )
         labels = (
             await db.execute(
                 text(
@@ -279,17 +288,28 @@ async def _auto_provision_users(db: AsyncSession, source: SheetSource, batch_id)
             # Deterministic per-workspace address (the label is a sheet name, not
             # an email) — reruns find the same account instead of duplicating it.
             slug = re.sub(r"[^a-z0-9]+", ".", lc).strip(".") or "user"
-            email = f"{slug[:40]}.{ws8}@sheet-users.linksentinel.local"
+            email = f"{slug[:40]}.{ws8}@{domain}"
             user = (
                 await db.execute(select(User).where(User.email == email))
             ).scalar_one_or_none()
+            if user is None and domain != "sheet-users.linksentinel.local":
+                # Accounts provisioned before the company domain was set live at
+                # the legacy address — reuse them instead of minting duplicates.
+                legacy_email = f"{slug[:40]}.{ws8}@sheet-users.linksentinel.local"
+                user = (
+                    await db.execute(select(User).where(User.email == legacy_email))
+                ).scalar_one_or_none()
             if user is not None and not user.is_active:
                 continue  # an admin deactivated this auto account — leave it be
             if user is None:
+                # Argon2 is CPU-heavy — run it off the event loop.
+                password_hash = await asyncio.to_thread(
+                    hash_password, secrets.token_urlsafe(24)
+                )
                 user = User(
                     email=email,
                     full_name=label[:200],
-                    password_hash=hash_password(secrets.token_urlsafe(24)),
+                    password_hash=password_hash,
                     is_active=True,
                 )
                 db.add(user)

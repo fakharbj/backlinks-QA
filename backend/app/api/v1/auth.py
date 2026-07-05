@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request, status
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.deps import AuthCtx, DbSession, ReadSession
@@ -18,7 +19,7 @@ from app.schemas.auth import (
     WorkspaceSummary,
 )
 from app.schemas.common import Message
-from app.services import audit_service, auth_service
+from app.services import audit_service, auth_service, branding_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -118,3 +119,16 @@ async def me(ctx: AuthCtx, db: ReadSession) -> MeResponse:
         active_workspace_id=ctx.workspace_id,
         role=ctx.role.value,
     )
+
+
+class BrandingOut(BaseModel):
+    company_name: str | None = None
+    logo_data_uri: str | None = None
+
+
+@router.get("/branding", response_model=BrandingOut)
+async def branding(db: ReadSession) -> BrandingOut:
+    """Login-screen branding (company name + logo). Intentionally public —
+    it renders before anyone can authenticate — and returns only the safe
+    subset (never ``company_domain``)."""
+    return BrandingOut(**await branding_service.public_branding(db))

@@ -8,6 +8,7 @@ deactivate or remove their own account.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from sqlalchemy import func, select
@@ -45,10 +46,12 @@ async def invite_member(
     email = email.strip().lower()
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if user is None:
+        # Argon2 is CPU-heavy — run it off the event loop.
+        password_hash = await asyncio.to_thread(hash_password, password)
         user = User(
             email=email,
             full_name=full_name.strip(),
-            password_hash=hash_password(password),
+            password_hash=password_hash,
             is_active=True,
         )
         db.add(user)

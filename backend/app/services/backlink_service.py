@@ -20,6 +20,7 @@ from app.crawler.normalize import normalize_url, registrable_domain
 from app.models.backlink import BacklinkRecord
 from app.models.crawl import BacklinkHistory, BacklinkIssue, CrawlResult
 from app.models.enums import OverallStatus, RelType
+from app.models.source_domain import SourceDomain
 from app.schemas.backlink import BacklinkCreate, BacklinkFilters, BacklinkUpdate
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -301,6 +302,34 @@ async def targets_per_source(
     )
     counts = {(pid, norm): int(n) for pid, norm, n in result.all()}
     return {r.id: counts.get((r.project_id, r.source_url_normalized), 1) for r in rows}
+
+
+async def domain_metrics_per_row(
+    db: AsyncSession, rows: list[BacklinkRecord]
+) -> dict[uuid.UUID, tuple[int | None, int | None, int | None]]:
+    """For the rows on screen: the source domain's Moz DA/PA + Semrush AS from
+    the stored ``source_domains`` aggregates (unique per workspace+domain, so
+    one bounded IN query per page — no join on the keyset hot path)."""
+    if not rows:
+        return {}
+    domains = {r.source_domain for r in rows if r.source_domain}
+    if not domains:
+        return {}
+    result = await db.execute(
+        select(
+            SourceDomain.workspace_id, SourceDomain.domain_key,
+            SourceDomain.da, SourceDomain.pa, SourceDomain.semrush_as,
+        ).where(
+            SourceDomain.workspace_id.in_({r.workspace_id for r in rows}),
+            SourceDomain.domain_key.in_(domains),
+        )
+    )
+    metrics = {(ws, key): (da, pa, sas) for ws, key, da, pa, sas in result.all()}
+    return {
+        r.id: metrics[(r.workspace_id, r.source_domain)]
+        for r in rows
+        if (r.workspace_id, r.source_domain) in metrics
+    }
 
 
 async def count_backlinks(db: AsyncSession, ctx: AuthContext, filters: BacklinkFilters) -> int:

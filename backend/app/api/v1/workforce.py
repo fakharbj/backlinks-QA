@@ -142,6 +142,60 @@ async def get_template_summary(ctx: AuthCtx, db: ReadSession) -> dict:
     return await workforce_service.template_summary(db, ctx)
 
 
+class TemplateEntryUpsert(BaseModel):
+    user_label: str
+    weekday: int = Field(ge=0, le=6)  # 0=Mon … 6=Sun
+    project_id: uuid.UUID
+    hours: float = Field(ge=0, le=24)
+    link_type_names: list[str] = Field(default_factory=list)
+    priority: str | None = None        # high | medium | low
+    note: str | None = None
+    expected_links: int | None = None  # blank → computed from productivity
+
+
+@router.put("/templates/entry")
+async def upsert_template_entry(
+    payload: TemplateEntryUpsert, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> dict:
+    """Edit ONE standing-plan cell — lands in the current AND next week now."""
+    result = await workforce_service.upsert_template_entry(
+        db, ctx, user_label=payload.user_label, weekday=payload.weekday,
+        project_id=payload.project_id, hours=payload.hours,
+        link_type_names=payload.link_type_names, priority=payload.priority,
+        note=payload.note, expected_links=payload.expected_links,
+    )
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="task_template", entity_id=ctx.workspace_id,
+        summary=f"Template cell saved: {payload.user_label} · day {payload.weekday} · {payload.hours}h",
+    )
+    await db.commit()
+    return result
+
+
+@router.delete("/templates/entry")
+async def delete_template_entry(
+    db: DbSession,
+    user_label: str = Query(...),
+    weekday: int = Query(..., ge=0, le=6),
+    project_id: uuid.UUID = Query(...),
+    remove_assignments: bool = Query(True),
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> dict:
+    result = await workforce_service.delete_template_entry(
+        db, ctx, user_label=user_label, weekday=weekday,
+        project_id=project_id, remove_assignments=remove_assignments,
+    )
+    await audit_service.record(
+        db, action=AuditAction.DELETE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="task_template", entity_id=ctx.workspace_id,
+        summary=f"Template cell removed: {user_label} · day {weekday}",
+    )
+    await db.commit()
+    return result
+
+
 @router.get("/me")
 async def my_work(
     ctx: AuthCtx,

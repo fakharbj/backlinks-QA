@@ -72,6 +72,11 @@ class BacklinkRow(ORMModel):
     # How many different target URLs this same source page links to (within the
     # project) — lets the grid show "2 targets" instead of looking like a dup.
     targets_on_source: int | None = None
+    # Source-domain metrics (Moz DA/PA, Semrush AS) joined from source_domains —
+    # domain-level, refreshed by the Source Domains "check" actions.
+    domain_da: int | None = None
+    domain_pa: int | None = None
+    domain_as: int | None = None
     assigned_user_id: uuid.UUID | None
     assigned_user_label: str | None = None
     employee_code: str | None = None

@@ -431,24 +431,34 @@ async def sheet_backlinks(
     if sheet is None or sheet.workspace_id != ctx.workspace_id:
         raise NotFoundError("Competitor upload not found")
     await _ensure_project(db, ctx, sheet.project_id)
+    sql = text(
+        """
+        SELECT cb.raw_url AS url, cb.source_domain, cb.anchor, cb.rel,
+               cb.link_type_label AS link_type,
+               coalesce(d.da, sd.da) AS da, coalesce(d.pa, sd.pa) AS pa,
+               sd.semrush_as AS semrush_as,
+               d.category AS domain_category,
+               coalesce(dec.status, 'open') AS decision
+        FROM competitor_backlinks cb
+        LEFT JOIN competitor_source_domains d
+          ON d.workspace_id = cb.workspace_id AND d.project_id = cb.project_id
+         AND d.domain_key = cb.source_domain
+        LEFT JOIN source_domains sd
+          ON sd.workspace_id = cb.workspace_id AND sd.domain_key = cb.source_domain
+        LEFT JOIN competitor_domain_decisions dec
+          ON dec.workspace_id = cb.workspace_id AND dec.project_id = cb.project_id
+         AND dec.domain_key = cb.source_domain
+        WHERE cb.competitor_sheet_id = :sid AND cb.workspace_id = :ws
+        ORDER BY cb.source_domain ASC, cb.raw_url ASC
+        LIMIT :lim
+        """
+    )
     rows = (
         await db.execute(
-            select(
-                CompetitorBacklink.raw_url,
-                CompetitorBacklink.source_domain,
-                CompetitorBacklink.anchor,
-                CompetitorBacklink.rel,
-                CompetitorBacklink.link_type_label,
-            )
-            .where(CompetitorBacklink.competitor_sheet_id == sheet_id)
-            .order_by(CompetitorBacklink.source_domain.asc(), CompetitorBacklink.raw_url.asc())
-            .limit(max(1, min(limit, 5000)))
+            sql, {"sid": sheet_id, "ws": ctx.workspace_id, "lim": max(1, min(limit, 5000))}
         )
-    ).all()
-    return [
-        {"url": u, "source_domain": d, "anchor": a, "rel": r, "link_type": lt}
-        for u, d, a, r, lt in rows
-    ]
+    ).mappings().all()
+    return [dict(r) for r in rows]
 
 
 async def domain_backlinks(
@@ -643,11 +653,17 @@ async def summary(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> 
                        ) AS new_opportunities,
                        count(*) FILTER (WHERE d.category = 'existing') AS existing,
                        count(*) FILTER (WHERE coalesce(dec.status, 'open') = 'dismissed') AS dismissed,
-                       coalesce(sum(d.url_count), 0) AS competitor_links
+                       coalesce(sum(d.url_count), 0) AS competitor_links,
+                       round(avg(coalesce(d.da, sd.da))
+                             FILTER (WHERE coalesce(d.da, sd.da) IS NOT NULL))::int AS avg_da,
+                       round(avg(sd.semrush_as)
+                             FILTER (WHERE sd.semrush_as IS NOT NULL))::int AS avg_as
                 FROM competitor_source_domains d
                 LEFT JOIN competitor_domain_decisions dec
                   ON dec.workspace_id = d.workspace_id AND dec.project_id = d.project_id
                  AND dec.domain_key = d.domain_key
+                LEFT JOIN source_domains sd
+                  ON sd.workspace_id = d.workspace_id AND sd.domain_key = d.domain_key
                 WHERE d.workspace_id = :ws AND d.project_id = :pid
                 """
             ),

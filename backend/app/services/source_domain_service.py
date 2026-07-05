@@ -265,13 +265,15 @@ async def detail(db: AsyncSession, ctx: AuthContext, domain_id: uuid.UUID) -> di
 
 
 async def fetch_metrics(
-    db: AsyncSession, ctx: AuthContext, *, force: bool = False, limit: int | None = None
+    db: AsyncSession, ctx: AuthContext, *, force: bool = False, limit: int | None = None,
+    providers: set[str] | None = None,
 ) -> int:
     """Fetch + store third-party metrics for the workspace's source domains.
 
     Processes the highest-traffic stale domains first, capped at
     ``DOMAIN_METRICS_BATCH_LIMIT`` per call (one shared HTTP client). Domain age is
     free (RDAP); Moz/Semrush populate only when their RapidAPI key is configured.
+    ``providers`` scopes the fetch to specific providers (``None`` = all).
     """
     from datetime import datetime, timedelta, timezone
 
@@ -294,7 +296,7 @@ async def fetch_metrics(
     timeout = httpx.Timeout(settings.DOMAIN_METRICS_TIMEOUT_SECONDS)
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
         for sd in domains:
-            metrics = await domain_metrics.fetch_all(sd.domain_key, client)
+            metrics = await domain_metrics.fetch_all(sd.domain_key, client, providers=providers)
             for field, value in metrics.items():
                 setattr(sd, field, value)
     await db.flush()

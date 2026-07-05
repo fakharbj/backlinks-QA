@@ -583,6 +583,113 @@ async def apply_template_to_week(
     return {"applied": applied, "skipped_inactive": skipped, "warnings": all_warnings[:6]}
 
 
+async def upsert_template_entry(
+    db: AsyncSession, ctx: AuthContext, *, user_label: str, weekday: int,
+    project_id: uuid.UUID, hours: float, link_type_names: list[str],
+    priority: str | None = None, note: str | None = None,
+    expected_links: int | None = None,
+) -> dict:
+    """Upsert ONE standing-plan cell (person × weekday × project), then
+    materialize it into the current AND next week immediately — the beat job
+    is next-week-only and fill-gaps-only, so it would never propagate an edit.
+    Past days of the current week are never rewritten (history is immutable)."""
+    from app.models.workforce import TaskWeekTemplate
+
+    ctx.assert_project(project_id)
+    if weekday < 0 or weekday > 6:
+        raise ValidationAppError("Weekday must be between 0 (Monday) and 6 (Sunday).")
+    if hours < 0 or hours > 24:
+        raise ValidationAppError("Hours must be between 0 and 24.")
+    label = user_label.strip()[:200]
+    if not label:
+        raise ValidationAppError("User is required.")
+    if priority and priority not in _PRIORITIES:
+        raise ValidationAppError("Priority must be high, medium or low.")
+    types = [t.strip()[:80] for t in link_type_names if t.strip()][:12]
+
+    stmt = (
+        pg_insert(TaskWeekTemplate)
+        .values(
+            workspace_id=ctx.workspace_id, user_label=label, weekday=weekday,
+            project_id=project_id, hours=hours, link_type_names=types,
+            priority=priority or None, note=(note or "")[:300] or None,
+            created_by=ctx.user.id,
+        )
+        .on_conflict_do_update(
+            constraint="uq_task_template_ws_user_day_proj",
+            set_={
+                "hours": hours, "link_type_names": types,
+                "priority": priority or None,
+                "note": (note or "")[:300] or None, "created_by": ctx.user.id,
+            },
+        )
+    )
+    await db.execute(stmt)
+
+    today = date.today()
+    this_monday = _monday_of(today)
+    materialized: list[str] = []
+    all_warnings: list[str] = []
+    for monday in (this_monday, this_monday + timedelta(days=7)):
+        day = monday + timedelta(days=weekday)
+        if day < today:
+            continue  # already-passed day of the current week — leave it alone
+        _, warnings = await upsert_assignment(
+            db, ctx, project_id=project_id, user_label=label, day=day,
+            hours=hours, link_type_names=types, expected_links=expected_links,
+            priority=priority, note=note,
+        )
+        all_warnings.extend(warnings)
+        materialized.append(day.isoformat())
+    return {"materialized_days": materialized, "warnings": all_warnings[:6]}
+
+
+async def delete_template_entry(
+    db: AsyncSession, ctx: AuthContext, *, user_label: str, weekday: int,
+    project_id: uuid.UUID, remove_assignments: bool = True,
+) -> dict:
+    """Remove ONE standing-plan cell and (optionally) the assignments it
+    materialized for the current and next week — future days only, past days
+    are immutable history."""
+    from sqlalchemy import delete as sa_delete
+
+    from app.models.workforce import TaskWeekTemplate
+
+    ctx.assert_project(project_id)
+    if weekday < 0 or weekday > 6:
+        raise ValidationAppError("Weekday must be between 0 (Monday) and 6 (Sunday).")
+    label = user_label.strip()[:200]
+    result = await db.execute(
+        sa_delete(TaskWeekTemplate).where(
+            TaskWeekTemplate.workspace_id == ctx.workspace_id,
+            TaskWeekTemplate.user_label == label,
+            TaskWeekTemplate.weekday == weekday,
+            TaskWeekTemplate.project_id == project_id,
+        )
+    )
+    removed = 0
+    if remove_assignments:
+        today = date.today()
+        this_monday = _monday_of(today)
+        days = [
+            m + timedelta(days=weekday)
+            for m in (this_monday, this_monday + timedelta(days=7))
+        ]
+        days = [d for d in days if d >= today]  # never touch past days
+        if days:
+            res = await db.execute(
+                sa_delete(TaskAssignment).where(
+                    TaskAssignment.workspace_id == ctx.workspace_id,
+                    TaskAssignment.project_id == project_id,
+                    TaskAssignment.user_label == label,
+                    TaskAssignment.day.in_(days),
+                )
+            )
+            removed = res.rowcount or 0
+    await db.flush()
+    return {"deleted": result.rowcount or 0, "assignments_removed": removed}
+
+
 async def auto_apply_templates(db: AsyncSession) -> dict:
     """Beat job: materialize NEXT week's plans from every workspace's weekly
     template. Fill-gaps only (ON CONFLICT DO NOTHING) — a manually adjusted

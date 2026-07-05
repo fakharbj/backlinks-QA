@@ -7,6 +7,7 @@ and logout (Redis denylist + DB revocation).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -31,6 +32,8 @@ from app.models.user import RefreshToken, User, Workspace, WorkspaceMember
 from app.schemas.auth import TokenPair
 from app.services import audit_service
 
+_DUMMY_HASH = hash_password("dummy-password-placeholder")  # constant-time login for unknown emails
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -45,7 +48,9 @@ async def register(
     if existing is not None:
         raise ConflictError("An account with this email already exists")
 
-    user = User(email=email.lower(), full_name=full_name, password_hash=hash_password(password))
+    # Argon2 is CPU-heavy (~100ms+) — run it off the event loop.
+    password_hash = await asyncio.to_thread(hash_password, password)
+    user = User(email=email.lower(), full_name=full_name, password_hash=password_hash)
     workspace = Workspace(name=workspace_name, slug=unique_slug(workspace_name))
     db.add_all([user, workspace])
     await db.flush()
@@ -66,13 +71,13 @@ async def authenticate(db: AsyncSession, *, email: str, password: str) -> User:
 
     if user is None:
         # Constant-ish work to reduce user-enumeration timing signal.
-        verify_password(password, hash_password("dummy-password-placeholder"))
+        await asyncio.to_thread(verify_password, password, _DUMMY_HASH)
         raise AuthenticationError("Invalid email or password")
 
     if user.locked_until and user.locked_until > _now():
         raise AuthenticationError("Account temporarily locked due to failed logins")
 
-    if not verify_password(password, user.password_hash):
+    if not await asyncio.to_thread(verify_password, password, user.password_hash):
         user.failed_login_attempts += 1
         if user.failed_login_attempts >= settings.LOGIN_MAX_FAILED_ATTEMPTS:
             user.locked_until = _now() + timedelta(minutes=settings.LOGIN_LOCKOUT_MINUTES)
@@ -92,7 +97,7 @@ async def authenticate(db: AsyncSession, *, email: str, password: str) -> User:
     user.locked_until = None
     user.last_login_at = _now()
     if password_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(password)
+        user.password_hash = await asyncio.to_thread(hash_password, password)
     return user
 
 
