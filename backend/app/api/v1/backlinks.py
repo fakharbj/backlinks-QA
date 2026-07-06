@@ -53,6 +53,11 @@ async def list_backlinks(
     link_type: str | None = None,
     duplicate_status: str | None = None,
     index_status: str | None = None,
+    # KPI drill-down filters (open Backlinks from an analytics/dashboard box).
+    http_status: str | None = None,
+    broken: bool | None = None,
+    spam_min: int | None = Query(default=None, ge=0, le=100),
+    orphaned: bool | None = None,
     search: str | None = None,
     target: str | None = None,
     # ── Date-range filters (one pair per date type; inclusive end, see service) ──
@@ -91,6 +96,7 @@ async def list_backlinks(
         campaign_id=campaign_id, tag=tag, source_domain=source_domain,
         assigned_user_id=assigned_user_id, assigned_user_label=assigned_user_label,
         link_type=link_type, duplicate_status=duplicate_status, index_status=index_status,
+        http_status=http_status, broken=broken, spam_min=spam_min, orphaned=orphaned,
         search=search, target=target,
         placement_from=placement_from, placement_to=placement_to,
         discovered_from=discovered_from, discovered_to=discovered_to,

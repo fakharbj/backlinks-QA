@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.deps import AuthContext
 from app.schemas.dashboard import (
     AssignedUserStat,
@@ -115,6 +116,7 @@ async def build_dashboard(
     domains = await _top_domains(db, ctx, project_id)
     vendors = await _top_vendors(db, ctx, project_id)
     recent = await _recent_changes(db, ctx, project_id)
+    kpi = await _kpi_counts(db, ctx, project_id)
 
     # Company view: entity totals strip (owners: "no of projects, competitors…").
     extra: dict = {}
@@ -152,10 +154,50 @@ async def build_dashboard(
         )
 
     return DashboardResponse(
-        totals=totals, issues=issues, lost=lost,
+        totals=totals, issues=issues, lost=lost, kpi=kpi,
         top_failing_domains=domains, top_vendors_by_failure=vendors, recent_changes=recent,
         **extra,
     )
+
+
+async def _kpi_counts(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID | None
+) -> dict:
+    """Headline KPI boxes for the Overview — one aggregate pass, project-scoped +
+    RBAC-scoped (``allowed_project_ids``) exactly like the status totals.
+
+    HTTP buckets + qualified/non-qualified (effective status) come from the
+    backlink table; ``spam`` and ``orphaned`` need the per-domain aggregate, so we
+    LEFT JOIN ``source_domains sd`` (unique per workspace+domain_key → no fan-out).
+    ``orphaned`` = a link whose source domain has no source_domains aggregate row.
+    """
+    where, params = _scope_clause(ctx, project_id, prefix="b")
+    eff = _effective("b")
+    params["spam_threshold"] = settings.ANALYTICS_SPAM_THRESHOLD
+    sql, _ = _bind(
+        f"""
+        SELECT
+            count(*) FILTER (WHERE b.http_status = 200)  AS http_200,
+            count(*) FILTER (WHERE b.http_status = 301)  AS http_301,
+            count(*) FILTER (WHERE b.http_status = 302)  AS http_302,
+            count(*) FILTER (WHERE b.http_status = 404)  AS http_404,
+            count(*) FILTER (WHERE b.http_status >= 400) AS broken,
+            count(*) FILTER (WHERE b.index_status = 'indexed')     AS indexed,
+            count(*) FILTER (WHERE b.index_status = 'not_indexed') AS not_indexed,
+            count(*) FILTER (WHERE {eff} = 'PASS')       AS qualified,
+            count(*) FILTER (WHERE {eff} = 'FAIL')       AS non_qualified,
+            count(*) FILTER (WHERE b.is_duplicate IS TRUE)          AS duplicate,
+            count(*) FILTER (WHERE sd.spam_score >= :spam_threshold) AS spam,
+            count(*) FILTER (WHERE sd.id IS NULL)        AS orphaned
+        FROM backlink_records b
+        LEFT JOIN source_domains sd
+          ON sd.workspace_id = b.workspace_id AND sd.domain_key = b.source_domain
+        WHERE {where}
+        """,
+        params,
+    )
+    row = (await db.execute(sql, params)).mappings().first() or {}
+    return {k: int(v or 0) for k, v in row.items()}
 
 
 async def _link_type_breakdown(db, ctx, project_id) -> list[LinkTypeBreakdown]:

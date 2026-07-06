@@ -188,6 +188,11 @@ class BacklinkFilters(BaseModel):
     link_type: str | None = None
     duplicate_status: str | None = None  # "duplicate" (any) | a specific status
     index_status: str | None = None      # indexed | not_indexed | uncertain | unchecked
+    # ── KPI drill-down filters (open Backlinks from an analytics/dashboard box) ──
+    http_status: str | None = None       # exact status or comma-list ("200,301")
+    broken: bool | None = None           # any 4xx/5xx (http_status >= 400)
+    spam_min: int | None = Field(default=None, ge=0, le=100)  # source domain spam >= N
+    orphaned: bool | None = None         # source domain has no source_domains row
     search: str | None = None
     # Target-based lookup: matches the target URL or expected target (substring),
     # so "find every backlink pointing at /pricing" works.

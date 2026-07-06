@@ -192,6 +192,11 @@ class Settings(BaseSettings):
     SCORE_AGE_OLD_DAYS: int = 1825    # domain age >= this (5y) → "old"
     SCORE_AGE_MEDIUM_DAYS: int = 365  # domain age >= this (1y) → "medium" (else "new")
 
+    # ── Analytics KPI thresholds ──────────────────────────────────────────────
+    # A source domain whose Moz Spam Score is >= this is counted as "spam" in the
+    # Analytics/Dashboard KPI boxes (source_domains.spam_score, 0–100 scale).
+    ANALYTICS_SPAM_THRESHOLD: int = 30
+
     # ── Access control (Phase 9) ─────────────────────────────────────────────
     # Open self-signup. False (default) = once the first workspace exists, only
     # admins create accounts (Team desk); the very first registration always

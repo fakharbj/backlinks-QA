@@ -1197,6 +1197,49 @@ function Overview({
           help="Average quality score (0–100) across these links. Hover any score in the Backlinks list to see how it's calculated." />
       </div>
 
+      {/* KPI stat boxes — HTTP / index / quality / spam / duplicate / orphaned.
+          Each drills into the Backlinks list via the matching filter. */}
+      {stats?.kpi && Object.keys(stats.kpi).length ? (
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-12">
+          <StatBox label="200 OK" value={Number(stats.kpi.http_200 || 0)} tone="ocean"
+            help="Source pages returning HTTP 200. Click to see them."
+            onClick={() => onOpenBacklinks({ http_status: "200" })} />
+          <StatBox label="301" value={Number(stats.kpi.http_301 || 0)} tone="ember"
+            help="Permanent redirects (301). Click to see them."
+            onClick={() => onOpenBacklinks({ http_status: "301" })} />
+          <StatBox label="302" value={Number(stats.kpi.http_302 || 0)} tone="ember"
+            help="Temporary redirects (302). Click to see them."
+            onClick={() => onOpenBacklinks({ http_status: "302" })} />
+          <StatBox label="404" value={Number(stats.kpi.http_404 || 0)} tone="danger"
+            help="Source page not found (404). Click to see them."
+            onClick={() => onOpenBacklinks({ http_status: "404" })} />
+          <StatBox label="Broken" value={Number(stats.kpi.broken || 0)} tone="danger"
+            help="Any 4xx/5xx source page. Click to see them."
+            onClick={() => onOpenBacklinks({ broken: "1" })} />
+          <StatBox label="Indexed" value={Number(stats.kpi.indexed || 0)} tone="ocean"
+            help="Pages Google shows in its index. Click to see them."
+            onClick={() => onOpenBacklinks({ index_status: "indexed" })} />
+          <StatBox label="Not indexed" value={Number(stats.kpi.not_indexed || 0)} tone="danger"
+            help="Pages Google does not show. Click to see them."
+            onClick={() => onOpenBacklinks({ index_status: "not_indexed" })} />
+          <StatBox label="Qualified" value={Number(stats.kpi.qualified || 0)} tone="ocean"
+            help="Links that passed every check. Click to see them."
+            onClick={() => onOpenBacklinks({ status: "PASS" })} />
+          <StatBox label="Not qualified" value={Number(stats.kpi.non_qualified || 0)} tone="danger"
+            help="Links with a serious problem. Click to see them."
+            onClick={() => onOpenBacklinks({ status: "FAIL" })} />
+          <StatBox label="Spam" value={Number(stats.kpi.spam || 0)} tone="danger"
+            help="Links on a high-spam source domain. Click to see them."
+            onClick={() => onOpenBacklinks({ spam_min: String(ANALYTICS_SPAM_THRESHOLD) })} />
+          <StatBox label="Duplicate" value={Number(stats.kpi.duplicate || 0)} tone="ember"
+            help="Links pointing at an already-used page. Click to see them."
+            onClick={() => onOpenBacklinks({ duplicate_status: "duplicate" })} />
+          <StatBox label="Orphaned" value={Number(stats.kpi.orphaned || 0)} tone="plum"
+            help="Links whose source domain has no catalog/metrics row. Click to see them."
+            onClick={() => onOpenBacklinks({ orphaned: "1" })} />
+        </div>
+      ) : null}
+
       {/* Timeframe activity + previous-period comparison */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-3">
@@ -1482,6 +1525,12 @@ function Backlinks({
   const [userF, setUserF] = useState(() => fParam("user"));
   const [domainF, setDomainF] = useState(() => fParam("source_domain"));
   const [issueLabel, setIssueLabel] = useState(() => fParam("issue_label"));
+  // KPI drill-through filters (from Analytics/Overview stat boxes): exact HTTP
+  // status (comma list), broken (4xx/5xx), min source-domain spam, orphaned.
+  const [httpStatusF, setHttpStatusF] = useState(() => fParam("http_status"));
+  const [brokenF, setBrokenF] = useState(() => fParam("broken") === "1");
+  const [spamMinF, setSpamMinF] = useState(() => fParam("spam_min"));
+  const [orphanedF, setOrphanedF] = useState(() => fParam("orphaned") === "1");
   const [sort, setSort] = useState("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState(() => fParam("search"));
@@ -1576,9 +1625,13 @@ function Backlinks({
     setTargetF("");
     setDateFrom("");
     setDateTo("");
+    setHttpStatusF("");
+    setBrokenF(false);
+    setSpamMinF("");
+    setOrphanedF(false);
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo]
-    .filter(Boolean).length;
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, spamMinF]
+    .filter(Boolean).length + (brokenF ? 1 : 0) + (orphanedF ? 1 : 0);
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
   const toks = (v: string) => (v ? v.split(",") : []);
@@ -1597,7 +1650,10 @@ function Backlinks({
     ["Link missing", issueLabel === "LINK_MISSING", () => setIssueLabel(issueLabel === "LINK_MISSING" ? "" : "LINK_MISSING")],
     ["Nofollow", toks(rel).includes("nofollow"), () => toggleTok(rel, setRel, "nofollow")],
     ["Not indexed", toks(indexFilter).includes("not_indexed"), () => toggleTok(indexFilter, setIndexFilter, "not_indexed")],
-    ["Duplicates", toks(dupFilter).includes("duplicate"), () => toggleTok(dupFilter, setDupFilter, "duplicate")]
+    ["Duplicates", toks(dupFilter).includes("duplicate"), () => toggleTok(dupFilter, setDupFilter, "duplicate")],
+    ["Broken (4xx/5xx)", brokenF, () => setBrokenF((b) => !b)],
+    ["Spam", Boolean(spamMinF), () => setSpamMinF((s) => (s ? "" : String(ANALYTICS_SPAM_THRESHOLD)))],
+    ["Orphaned", orphanedF, () => setOrphanedF((o) => !o)]
   ];
 
   const query = useMemo(() => {
@@ -1613,12 +1669,16 @@ function Backlinks({
     if (issueLabel) params.set("issue_label", issueLabel);
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (targetF) params.set("target", targetF);
+    if (httpStatusF) params.set("http_status", httpStatusF);
+    if (brokenF) params.set("broken", "true");
+    if (spamMinF) params.set("spam_min", spamMinF);
+    if (orphanedF) params.set("orphaned", "true");
     if (axis.from && dateFrom) params.set(axis.from, dateFrom);
     if (axis.to && dateTo) params.set(axis.to, dateTo);
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, brokenF, spamMinF, orphanedF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -1662,6 +1722,10 @@ function Backlinks({
     issue_label: issueLabel || null,
     search: debouncedSearch || null,
     target: targetF || null,
+    http_status: httpStatusF || null,
+    broken: brokenF ? true : null,
+    spam_min: spamMinF ? Number(spamMinF) : null,
+    orphaned: orphanedF ? true : null,
     ...(axis.from && dateFrom ? { [axis.from]: dateFrom } : {}),
     ...(axis.to && dateTo ? { [axis.to]: dateTo } : {})
   });
@@ -11237,6 +11301,51 @@ function Metric({
   );
 }
 
+// Compact clickable KPI stat box — a dense tile for the HTTP/index/quality/spam
+// grids on Analytics + Overview. Tone drives the accent (danger for 404/broken/
+// spam, ocean for 200/indexed/qualified, ember for redirects/duplicate).
+function StatBox({
+  label,
+  value,
+  tone,
+  onClick,
+  help
+}: {
+  label: string;
+  value: number;
+  tone: "ink" | "ocean" | "ember" | "danger" | "plum";
+  onClick?: () => void;
+  help?: string;
+}) {
+  const accent = {
+    ink: "text-ink",
+    ocean: "text-ocean",
+    ember: "text-ember",
+    danger: "text-danger",
+    plum: "text-plum"
+  }[tone];
+  const ring = {
+    ink: "hover:border-line",
+    ocean: "hover:border-ocean/50",
+    ember: "hover:border-ember/50",
+    danger: "hover:border-danger/50",
+    plum: "hover:border-plum/50"
+  }[tone];
+  return (
+    <div
+      onClick={onClick}
+      title={help || (onClick ? "Click to filter to these links" : undefined)}
+      className={clsx(
+        "rounded-lg border border-line bg-panel px-3 py-2.5 text-center shadow-card transition",
+        onClick ? clsx("cursor-pointer hover:shadow-soft", ring) : help && "cursor-help"
+      )}
+    >
+      <div className={clsx("text-2xl font-bold leading-none tracking-tight", accent)}>{value}</div>
+      <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</div>
+    </div>
+  );
+}
+
 function Issue({
   label,
   value,
@@ -12427,6 +12536,8 @@ const GROUP_OPTIONS: Array<[string, string]> = [
   ["project", "Project"],
   ["link_type", "Link type"],
   ["status", "QA status"],
+  ["http_status", "HTTP status"],
+  ["score_band", "Score band"],
   ["index_status", "Index status"],
   ["duplicate_status", "Duplicate status"],
   ["rel", "Rel"],
@@ -12475,6 +12586,31 @@ const ANALYTICS_DATE_AXES: Array<{ key: string; label: string; from: string; to:
   { key: "index", label: "Index check", from: "index_from", to: "index_to" }
 ];
 
+// Spam KPI threshold — mirrors backend settings.ANALYTICS_SPAM_THRESHOLD (30):
+// the `spam` summary bucket + the analytics `spam` filter count a link as spammy
+// when its source domain's spam score is at or above this value.
+const ANALYTICS_SPAM_THRESHOLD = 30;
+
+// Score-band select options for the analytics filter (mirrors _SCORE_BAND_SQL /
+// GradeBand.from_score: perfect=100 · good=80–99 · warning=60–79 · risky=30–59 ·
+// failed=0–29).
+const SCORE_BAND_OPTIONS: Array<[string, string]> = [
+  ["perfect", "Perfect (100)"],
+  ["good", "Good (80–99)"],
+  ["warning", "Warning (60–79)"],
+  ["risky", "Risky (30–59)"],
+  ["failed", "Failed (0–29)"]
+];
+
+// Exact HTTP-status options for the analytics multiselect (comma-list → http_status).
+const HTTP_STATUS_OPTIONS: Array<[string, string]> = [
+  ["200", "200 OK"],
+  ["301", "301 Moved"],
+  ["302", "302 Found"],
+  ["404", "404 Not found"],
+  ["500", "500 Server error"]
+];
+
 function pct(n: number, total: number) {
   if (!total) return "0%";
   return `${Math.round((n / total) * 100)}%`;
@@ -12512,14 +12648,22 @@ function AnalyticsDesk({
   const [dateAxis, setDateAxis] = useState("checked");
 
   // The actual backlink rows behind the analytics numbers — same filter whitelist
-  // the cards use, so "Matching links" always agrees with the pivots above.
+  // the cards use, so "Matching links" always agrees with the pivots above. The
+  // /backlinks endpoint accepts these keys directly; analytics-only keys that map
+  // to a different /backlinks name (spam→spam_min, nofollow→rel) are translated.
   const backlinkParams = () => {
     const map: Record<string, string> = {};
-    ["status", "index_status", "duplicate_status", "rel", "link_type", "source_domain", "assigned_user_label", "project_id"].forEach(
-      (k) => {
-        if (filters[k]) map[k] = filters[k];
-      }
-    );
+    [
+      "status", "index_status", "duplicate_status", "rel", "link_type",
+      "source_domain", "assigned_user_label", "project_id",
+      "http_status", "broken", "orphaned"
+    ].forEach((k) => {
+      if (filters[k]) map[k] = filters[k];
+    });
+    // analytics `spam` holds a threshold value; /backlinks reads it as `spam_min`.
+    if (filters.spam) map.spam_min = filters.spam;
+    // analytics `nofollow` is a truthy toggle; /backlinks filters via rel.
+    if (filters.nofollow && !map.rel) map.rel = "nofollow";
     return map;
   };
 
@@ -12611,6 +12755,11 @@ function AnalyticsDesk({
       else delete next[key];
       return next;
     });
+  // Apply a KPI stat-box's filter(s) and refocus the pivots (close any drill).
+  const kpiFilter = (patch: Record<string, string>) => {
+    setFilters((f) => ({ ...f, ...patch }));
+    setDrillKey(null);
+  };
 
   return (
     <section className="space-y-4">
@@ -12690,6 +12839,67 @@ function AnalyticsDesk({
             );
           })()}
         </div>
+
+        {/* Advanced filters — exact HTTP status, score band, authority mins, quick toggles */}
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+          <FilterMultiSelect
+            label="HTTP status"
+            options={HTTP_STATUS_OPTIONS.map(([value, label]) => ({ value, label }))}
+            selected={filters.http_status ? filters.http_status.split(",") : []}
+            onChange={(vals) => setFilter("http_status", vals.join(","))}
+          />
+          <select
+            value={filters.score_band || ""}
+            onChange={(e) => setFilter("score_band", e.target.value)}
+            title="Filter by quality grade band"
+            className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+          >
+            <option value="">Score band…</option>
+            {SCORE_BAND_OPTIONS.map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+          {(["da_min", "pa_min", "as_min"] as const).map((k) => (
+            <input
+              key={k}
+              type="number"
+              min={0}
+              max={100}
+              inputMode="numeric"
+              value={filters[k] || ""}
+              onChange={(e) => setFilter(k, e.target.value)}
+              placeholder={{ da_min: "DA ≥", pa_min: "PA ≥", as_min: "AS ≥" }[k]}
+              title={{ da_min: "Min domain authority (Moz DA)", pa_min: "Min page authority (Moz PA)", as_min: "Min authority score (Semrush AS)" }[k]}
+              className="h-9 w-20 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+            />
+          ))}
+          {(
+            [
+              ["spam", String(ANALYTICS_SPAM_THRESHOLD), "Spam", `Source domain spam score ≥ ${ANALYTICS_SPAM_THRESHOLD}`],
+              ["orphaned", "1", "Orphaned", "Source domain has no catalog/metrics row"],
+              ["link_missing", "1", "Link missing", "The backlink is no longer on the page"],
+              ["nofollow", "1", "Nofollow", "Links marked rel=nofollow"]
+            ] as Array<[string, string, string, string]>
+          ).map(([key, on, label, title]) => {
+            const active = Boolean(filters[key]);
+            return (
+              <button
+                key={key}
+                onClick={() => setFilter(key, active ? "" : on)}
+                title={title}
+                className={clsx(
+                  "h-9 rounded-full border px-3 text-xs font-medium transition",
+                  active
+                    ? "border-ocean bg-ocean/10 text-ocean"
+                    : "border-line bg-panel text-muted hover:bg-field"
+                )}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted">Views</span>
           {views.map((v) => (
@@ -12719,6 +12929,47 @@ function AnalyticsDesk({
             Save view
           </button>
         </div>
+      </div>
+
+      {/* KPI stat boxes — dense clickable tiles. Clicking sets the matching
+          analytics filter AND clears any open drill so the pivots refocus. */}
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-12">
+        <StatBox label="200 OK" value={Number(s.http_200 || 0)} tone="ocean"
+          help="Links whose source page returned HTTP 200 (loads fine). Click to filter."
+          onClick={() => kpiFilter({ http_status: "200" })} />
+        <StatBox label="301" value={Number(s.http_301 || 0)} tone="ember"
+          help="Permanent redirects (301) on the source page. Click to filter."
+          onClick={() => kpiFilter({ http_status: "301" })} />
+        <StatBox label="302" value={Number(s.http_302 || 0)} tone="ember"
+          help="Temporary redirects (302) on the source page. Click to filter."
+          onClick={() => kpiFilter({ http_status: "302" })} />
+        <StatBox label="404" value={Number(s.http_404 || 0)} tone="danger"
+          help="Source page not found (404). Click to filter."
+          onClick={() => kpiFilter({ http_status: "404" })} />
+        <StatBox label="Broken" value={Number(s.broken || 0)} tone="danger"
+          help="Any 4xx/5xx source page (dead or erroring). Click to filter."
+          onClick={() => kpiFilter({ broken: "1" })} />
+        <StatBox label="Indexed" value={Number(s.indexed || 0)} tone="ocean"
+          help="Pages Google shows in its index. Click to filter."
+          onClick={() => kpiFilter({ index_status: "indexed" })} />
+        <StatBox label="Not indexed" value={Number(s.not_indexed || 0)} tone="danger"
+          help="Pages Google does not show. Click to filter."
+          onClick={() => kpiFilter({ index_status: "not_indexed" })} />
+        <StatBox label="Qualified" value={Number(s.qualified ?? s.pass ?? 0)} tone="ocean"
+          help="Links that passed every check. Click to filter."
+          onClick={() => kpiFilter({ status: "PASS" })} />
+        <StatBox label="Not qualified" value={Number(s.non_qualified ?? s.fail ?? 0)} tone="danger"
+          help="Links with a serious problem. Click to filter."
+          onClick={() => kpiFilter({ status: "FAIL" })} />
+        <StatBox label="Spam" value={Number(s.spam || 0)} tone="danger"
+          help={`Links on a source domain with spam score ≥ ${ANALYTICS_SPAM_THRESHOLD}. Click to filter.`}
+          onClick={() => kpiFilter({ spam: String(ANALYTICS_SPAM_THRESHOLD) })} />
+        <StatBox label="Duplicate" value={Number(s.duplicates || 0)} tone="ember"
+          help="Links pointing at a page another record already uses. Click to filter."
+          onClick={() => kpiFilter({ duplicate_status: "duplicate" })} />
+        <StatBox label="Orphaned" value={Number(s.orphaned || 0)} tone="plum"
+          help="Links whose source domain has no catalog/metrics row. Click to filter."
+          onClick={() => kpiFilter({ orphaned: "1" })} />
       </div>
 
       {/* Summary cards — number first, share-of-total as its own line, click = filter */}
@@ -12904,9 +13155,11 @@ function AnalyticsDesk({
               onClick={() => {
                 const f: Record<string, string> = {};
                 if (filters.assigned_user_label) f.user = filters.assigned_user_label;
-                ["status", "index_status", "duplicate_status", "rel", "link_type", "source_domain"].forEach((k) => {
+                ["status", "index_status", "duplicate_status", "rel", "link_type", "source_domain", "http_status", "broken", "orphaned"].forEach((k) => {
                   if (filters[k]) f[k] = filters[k];
                 });
+                if (filters.spam) f.spam_min = filters.spam;
+                if (filters.nofollow && !f.rel) f.rel = "nofollow";
                 onOpenBacklinks(f);
               }}
               className="rounded-lg border border-line bg-field px-3 py-1.5 text-xs font-medium text-ink hover:bg-field/70"

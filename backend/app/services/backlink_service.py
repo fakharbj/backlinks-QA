@@ -133,6 +133,29 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
                 conds.append(BacklinkRecord.index_status == part)
         if conds:
             stmt = stmt.where(or_(*conds) if len(conds) > 1 else conds[0])
+    if f.http_status:
+        # Exact status or comma-list ("200,301"); non-numeric parts are ignored.
+        codes = [int(p) for p in _csv(f.http_status) if p.isdigit()]
+        if codes:
+            stmt = stmt.where(BacklinkRecord.http_status.in_(codes))
+    if f.broken:
+        stmt = stmt.where(BacklinkRecord.http_status >= 400)
+    # spam_min / orphaned resolve against the source_domains aggregate row.
+    # source_domains is unique per (workspace_id, domain_key) so the LEFT JOIN
+    # never fans out the backlink rows (keyset/sort stay intact). Join once.
+    if f.spam_min is not None or f.orphaned:
+        stmt = stmt.outerjoin(
+            SourceDomain,
+            and_(
+                SourceDomain.workspace_id == BacklinkRecord.workspace_id,
+                SourceDomain.domain_key == BacklinkRecord.source_domain,
+            ),
+        )
+        if f.spam_min is not None:
+            stmt = stmt.where(SourceDomain.spam_score >= f.spam_min)
+        if f.orphaned:
+            # orphaned = the source domain has no source_domains aggregate row.
+            stmt = stmt.where(SourceDomain.id.is_(None))
     if f.source_domain:
         clause = _multi_clause(BacklinkRecord.source_domain, f.source_domain, lower=True)
         if clause is not None:

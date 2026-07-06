@@ -23,9 +23,21 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.deps import AuthContext
 
 _EFF = "coalesce(b.override_status, b.status)"
+
+# LEFT JOIN to the stored per-domain aggregates so KPI buckets (spam / orphaned /
+# DA·PA·AS thresholds) resolve without a second scan. ``source_domains`` is unique
+# per (workspace_id, domain_key) so this join never fans out the backlink rows.
+# Injected ONCE into the summary/facets/groups FROM (there is no other ``sd`` alias
+# in this module, so no alias collision). ``sd.id IS NULL`` ⇒ the link's source
+# domain has no aggregate row (an "orphaned" link — see the ``orphaned`` metric).
+_BASE_JOIN = (
+    "LEFT JOIN source_domains sd "
+    "ON sd.workspace_id = b.workspace_id AND sd.domain_key = b.source_domain"
+)
 
 # ── Whitelisted filters: key → (sql fragment, param-builder) ──────────────────────
 # Each builder returns (clause, params) given the raw value; None → skip.
@@ -75,6 +87,42 @@ def _http_class(v):
         return None
     lo, hi = ranges[v]
     return (f"b.http_status >= {lo} AND b.http_status < {hi}", {})
+
+
+def _truthy(v) -> bool:
+    """Interpret a query-string flag (true/1/yes) or a real bool as truthy."""
+    return str(v).strip().lower() in ("1", "true", "yes", "on") if not isinstance(v, bool) else v
+
+
+def _int_or_none(v):
+    """Parse an int from a query value; return None for anything unparseable so a
+    filter builder SKIPS instead of raising (mirrors the date builders)."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+# Score-band boundaries — MUST mirror qa/enums.py GradeBand.from_score:
+#   perfect = 100 · good = 80–99 · warning = 60–79 · risky = 30–59 · failed = 0–29.
+# Whitelisted CASE/range fragments (no user SQL); NULL score → matches nothing.
+_SCORE_BAND_SQL = {
+    "perfect": "b.score >= 100",
+    "good": "b.score >= 80 AND b.score < 100",
+    "warning": "b.score >= 60 AND b.score < 80",
+    "risky": "b.score >= 30 AND b.score < 60",
+    "failed": "b.score >= 0 AND b.score < 30",
+}
+
+
+def _score_band(v):
+    """Single value or comma-list of grade bands → OR of the whitelisted ranges."""
+    parts = [p.strip().lower() for p in str(v).split(",") if p.strip()]
+    frags = [_SCORE_BAND_SQL[p] for p in parts if p in _SCORE_BAND_SQL]
+    if not frags:
+        return None
+    clause = frags[0] if len(frags) == 1 else "(" + " OR ".join(f"({f})" for f in frags) + ")"
+    return (clause, {})
 
 
 def _index_status(v):
@@ -134,6 +182,22 @@ _FILTERS: dict[str, Callable] = {
     "index_status": _index_status,
     "duplicate_status": _duplicate_status,
     "http_class": _http_class,
+    # Exact HTTP status (single or comma-list, e.g. "200,301"). ``::text`` on the
+    # column keeps it consistent with the multi-select IN-list builder.
+    "http_status": _eq_multi("b.http_status::text", "http_status"),
+    # Any 4xx/5xx = broken (only applies when truthy; falsy → filter skipped).
+    "broken": lambda v: ("b.http_status >= 400", {}) if _truthy(v) else None,
+    # Grade band mapped to score ranges (see GradeBand.from_score).
+    "score_band": _score_band,
+    # ── source_domains-backed filters (need _BASE_JOIN in the FROM) ────────────
+    "spam": lambda v: (("sd.spam_score >= :spam_min", {"spam_min": _int_or_none(v)}) if _int_or_none(v) is not None else None),
+    "da_min": lambda v: (("sd.da >= :da_min", {"da_min": _int_or_none(v)}) if _int_or_none(v) is not None else None),
+    "pa_min": lambda v: (("sd.pa >= :pa_min", {"pa_min": _int_or_none(v)}) if _int_or_none(v) is not None else None),
+    "as_min": lambda v: (("sd.semrush_as >= :as_min", {"as_min": _int_or_none(v)}) if _int_or_none(v) is not None else None),
+    # Orphaned = the source domain has no source_domains aggregate row.
+    "orphaned": lambda v: ("sd.id IS NULL", {}) if _truthy(v) else None,
+    "link_missing": lambda v: ("b.link_found IS FALSE", {}) if _truthy(v) else None,
+    "nofollow": lambda v: ("b.current_rel = 'nofollow'", {}) if _truthy(v) else None,
     "score_min": lambda v: ("b.score >= :score_min", {"score_min": int(v)}),
     "score_max": lambda v: ("b.score <= :score_max", {"score_max": int(v)}),
     "link_type_id": lambda v: ("b.link_type_id = :link_type_id", {"link_type_id": v}),
@@ -178,6 +242,19 @@ _GROUPS: dict[str, tuple[str, str, str]] = {
     "link_type": ("coalesce(nullif(b.link_type, ''), '(none)')", "''", ""),
     "rel": ("coalesce(b.current_rel::text, '(unknown)')", "''", ""),
     "status": (f"{_EFF}::text", "''", ""),
+    "http_status": ("coalesce(b.http_status::text, '(none)')", "''", ""),
+    # Grade band bucket — same boundaries as GradeBand.from_score / _score_band.
+    "score_band": (
+        "CASE "
+        "WHEN b.score IS NULL THEN '(none)' "
+        "WHEN b.score >= 100 THEN 'perfect' "
+        "WHEN b.score >= 80 THEN 'good' "
+        "WHEN b.score >= 60 THEN 'warning' "
+        "WHEN b.score >= 30 THEN 'risky' "
+        "ELSE 'failed' END",
+        "''",
+        "",
+    ),
     "index_status": ("coalesce(b.index_status, 'unchecked')", "''", ""),
     "duplicate_status": ("coalesce(b.duplicate_status, 'unique')", "''", ""),
     "indexability": ("coalesce(b.indexability::text, 'unknown')", "''", ""),
@@ -212,7 +289,18 @@ _METRICS = f"""
     count(*) FILTER (WHERE b.current_rel = 'nofollow')        AS nofollow,
     count(*) FILTER (WHERE b.current_rel = 'dofollow')        AS dofollow,
     count(*) FILTER (WHERE b.is_duplicate IS TRUE)            AS duplicates,
-    count(*) FILTER (WHERE b.link_found IS FALSE)             AS link_missing
+    count(*) FILTER (WHERE b.link_found IS FALSE)             AS link_missing,
+    -- HTTP-status KPI buckets (single aggregate pass, no extra scan).
+    count(*) FILTER (WHERE b.http_status = 200)               AS http_200,
+    count(*) FILTER (WHERE b.http_status = 301)               AS http_301,
+    count(*) FILTER (WHERE b.http_status = 302)               AS http_302,
+    count(*) FILTER (WHERE b.http_status = 404)               AS http_404,
+    count(*) FILTER (WHERE b.http_status >= 400)              AS broken,
+    count(*) FILTER (WHERE b.http_status >= 300 AND b.http_status < 400) AS redirects,
+    -- Source-domain-backed buckets (need _BASE_JOIN's ``sd`` alias in the FROM).
+    count(*) FILTER (WHERE sd.spam_score >= :spam_threshold)  AS spam,
+    -- orphaned = a link whose source domain has no source_domains aggregate row.
+    count(*) FILTER (WHERE sd.id IS NULL)                     AS orphaned
 """
 
 
@@ -254,9 +342,17 @@ def _bind(sql: str, params: dict):
 
 async def summary(db: AsyncSession, ctx: AuthContext, filters: dict) -> dict:
     where, params = _build_where(ctx, filters)
-    sql = _bind(f"SELECT {_METRICS} FROM backlink_records b WHERE {where}", params)
+    params["spam_threshold"] = settings.ANALYTICS_SPAM_THRESHOLD
+    sql = _bind(f"SELECT {_METRICS} FROM backlink_records b {_BASE_JOIN} WHERE {where}", params)
     row = (await db.execute(sql, params)).mappings().first() or {}
-    return {k: (float(v) if k == "avg_score" and v is not None else v) for k, v in row.items()}
+    out = {k: (float(v) if k == "avg_score" and v is not None else v) for k, v in row.items()}
+    # Plain-English aliases the UI reads directly (PASS→qualified, FAIL→non_qualified).
+    out["qualified"] = out.get("pass")
+    out["non_qualified"] = out.get("fail")
+    # Singular alias mirroring the dashboard KPI key (``duplicate``); the raw metric
+    # column stays ``duplicates`` for backward-compat.
+    out["duplicate"] = out.get("duplicates")
+    return out
 
 
 async def facets(
@@ -271,9 +367,11 @@ async def facets(
         # Connected facet: apply all filters EXCEPT this dimension's own filter.
         own = _DIM_TO_FILTER.get(dim, dim)
         where, params = _build_where(ctx, filters, exclude=own)
+        # _BASE_JOIN first so ``sd.*`` filters (spam/da_min/orphaned…) resolve; the
+        # per-dimension ``join`` uses distinct aliases (p/ven/srv) → no sd collision.
         sql = _bind(
             f"SELECT {key_expr} AS value, {label_expr} AS label, count(*) AS n "
-            f"FROM backlink_records b {join} WHERE {where} "
+            f"FROM backlink_records b {_BASE_JOIN} {join} WHERE {where} "
             f"GROUP BY {key_expr} ORDER BY n DESC LIMIT 50",
             params,
         )
@@ -294,10 +392,13 @@ async def groups(
     key_expr, label_expr, join = spec
     where, params = _build_where(ctx, filters)
     params["lim"] = limit
+    params["spam_threshold"] = settings.ANALYTICS_SPAM_THRESHOLD
+    # _BASE_JOIN first (sd alias for the KPI buckets + sd.* filters); per-dim join
+    # uses distinct aliases → no sd collision.
     sql = _bind(
         f"""
         SELECT {key_expr} AS key, {label_expr} AS label, {_METRICS}
-        FROM backlink_records b {join}
+        FROM backlink_records b {_BASE_JOIN} {join}
         WHERE {where}
         GROUP BY {key_expr}
         ORDER BY total DESC
@@ -315,6 +416,7 @@ _DIM_TO_FILTER = {
     "link_type": "link_type", "rel": "rel", "status": "status", "index_status": "index_status",
     "duplicate_status": "duplicate_status", "indexability": "indexability", "vendor": "vendor_id",
     "source_domain": "source_domain", "scoring_version": "scoring_rule_version_id",
+    "http_status": "http_status", "score_band": "score_band",
 }
 
 
@@ -342,7 +444,7 @@ async def records(
         SELECT b.id::text AS id, b.source_page_url, b.target_url,
                {_EFF}::text AS status, b.score, b.link_found,
                b.current_rel::text AS current_rel, b.link_type, b.source_domain
-        FROM backlink_records b
+        FROM backlink_records b {_BASE_JOIN}
         WHERE {where} AND {key_expr} = :gkey
         ORDER BY b.score ASC NULLS LAST
         LIMIT :lim

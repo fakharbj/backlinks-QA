@@ -427,6 +427,23 @@ export type Dashboard = {
   }>;
   // Company-view entity totals (empty for a project dashboard).
   counts?: Record<string, number>;
+  // Headline KPI boxes (HTTP buckets / index / qualified / spam / duplicate /
+  // orphaned) — one aggregate pass, project + RBAC scoped. All optional numbers.
+  kpi?: {
+    http_200?: number;
+    http_301?: number;
+    http_302?: number;
+    http_404?: number;
+    broken?: number;
+    indexed?: number;
+    not_indexed?: number;
+    qualified?: number;
+    non_qualified?: number;
+    duplicate?: number;
+    spam?: number;
+    orphaned?: number;
+    [key: string]: number | undefined;
+  };
   // Project-dashboard-only sections (empty for the company view).
   is_project: boolean;
   link_type_breakdown: Array<{
@@ -513,8 +530,43 @@ export type AssignmentEvent = {
   changed_at: string;
 };
 
+// Headline KPI/summary counts for the analytics filtered set. All optional numbers
+// so older/partial backend responses stay type-safe; the index signature keeps the
+// existing `s[...]` access pattern working for keys not spelled out here.
+export type AnalyticsSummary = {
+  total?: number;
+  avg_score?: number | null;
+  pass?: number;
+  warning?: number;
+  fail?: number;
+  unknown?: number;
+  review?: number;
+  pending?: number;
+  indexed?: number;
+  not_indexed?: number;
+  index_unchecked?: number;
+  nofollow?: number;
+  dofollow?: number;
+  duplicates?: number;
+  link_missing?: number;
+  // HTTP-status KPI buckets.
+  http_200?: number;
+  http_301?: number;
+  http_302?: number;
+  http_404?: number;
+  broken?: number;
+  redirects?: number;
+  // Source-domain-backed buckets.
+  spam?: number;
+  orphaned?: number;
+  // Plain-English aliases (PASS→qualified, FAIL→non_qualified).
+  qualified?: number;
+  non_qualified?: number;
+  [key: string]: number | null | undefined;
+};
+
 export type AnalyticsResponse = {
-  summary: Record<string, number>;
+  summary: AnalyticsSummary;
   facets: Record<string, Array<{ value: string; label?: string; count: number }>>;
   groups: Array<Record<string, number | string>>;
   dimensions: string[];

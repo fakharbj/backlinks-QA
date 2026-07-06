@@ -108,6 +108,9 @@ class DashboardResponse(BaseModel):
     top_failing_domains: list[DomainFailure]
     top_vendors_by_failure: list[VendorFailure]
     recent_changes: list[RecentChange]
+    # Headline KPI boxes (http_200/301/302/404/broken, indexed/not_indexed,
+    # qualified/non_qualified, spam, duplicate, orphaned) — one aggregate, scoped.
+    kpi: dict = Field(default_factory=dict)
     # Company-view entity totals (projects, source domains, competitors, users,
     # batches, open duplicates, indexed links). Empty for a project dashboard.
     counts: dict = Field(default_factory=dict)
