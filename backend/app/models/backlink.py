@@ -90,6 +90,11 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_duplicate", "workspace_id", "duplicate_status"),
         Index("ix_backlink_records_index_status", "workspace_id", "index_status"),
         Index("ix_backlink_records_index_due", "index_checked_at"),
+        # Lifecycle date ranges (0031) — sargable filters for the grid/exports.
+        Index("ix_backlink_records_discovered", "discovered_at"),
+        Index("ix_backlink_records_qa_completed", "qa_completed_at"),
+        Index("ix_backlink_records_placement", "placement_date"),
+        Index("ix_backlink_records_sheet_created", "sheet_created_date"),
         CheckConstraint("score >= 0 AND score <= 100", name="score_range"),
     )
 
@@ -207,6 +212,16 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     overridden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Lifecycle timestamps (0031) ──────────────────────────────────────────
+    # Discovery: when the link first entered our DB (import/sync insert only).
+    discovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # First QA: the first crawl/QA verdict timestamp.
+    first_qa_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # QA completion: when QA reached a terminal (non-PENDING) verdict.
+    qa_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Assignment: the latest assignment change for this link.
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Free-form extension bag (e.g. third-party metric enrichment later).
     extra: Mapped[dict] = mapped_column(JSONB, default=dict)

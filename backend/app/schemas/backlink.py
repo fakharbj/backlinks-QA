@@ -64,9 +64,18 @@ class BacklinkRow(ORMModel):
     issue_count: int
     top_issue_label: str | None
     created_at: datetime | None = None
+    updated_at: datetime | None = None
     # The sheet's own "created/entry date" column — the real link-building date.
     # ``created_at`` is only when the row reached OUR database (import time).
     sheet_created_date: date | None = None
+    # The link's real placement/go-live date (contract input).
+    placement_date: date | None = None
+    # Lifecycle timestamps (0031).
+    discovered_at: datetime | None = None
+    first_qa_at: datetime | None = None
+    qa_completed_at: datetime | None = None
+    assigned_at: datetime | None = None
+    index_checked_at: datetime | None = None
     last_checked_at: datetime | None
     next_check_at: datetime | None
     # How many different target URLs this same source page links to (within the
@@ -181,6 +190,23 @@ class BacklinkFilters(BaseModel):
     # Target-based lookup: matches the target URL or expected target (substring),
     # so "find every backlink pointing at /pricing" works.
     target: str | None = None
+    # ── Date-range filters (inclusive end via analytics_service._date_clause) ──
+    placement_from: date | None = None      # placement_date
+    placement_to: date | None = None
+    discovered_from: date | None = None     # discovered_at
+    discovered_to: date | None = None
+    qa_from: date | None = None             # first_qa_at
+    qa_to: date | None = None
+    completed_from: date | None = None      # qa_completed_at
+    completed_to: date | None = None
+    imported_from: date | None = None       # created_at (reached our DB)
+    imported_to: date | None = None
+    sheet_from: date | None = None          # sheet_created_date
+    sheet_to: date | None = None
+    assigned_from: date | None = None       # assigned_at
+    assigned_to: date | None = None
+    updated_from: date | None = None        # updated_at
+    updated_to: date | None = None
 
 
 class AssignmentEventOut(BaseModel):
@@ -215,5 +241,6 @@ class RecheckResponse(BaseModel):
 
 
 SortField = Literal[
-    "score", "last_checked_at", "created_at", "source_domain", "link_type", "http_status"
+    "score", "last_checked_at", "created_at", "source_domain", "link_type", "http_status",
+    "placement_date", "discovered_at", "qa_completed_at", "assigned_at", "updated_at",
 ]

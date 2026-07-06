@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query, status
 
@@ -54,9 +55,29 @@ async def list_backlinks(
     index_status: str | None = None,
     search: str | None = None,
     target: str | None = None,
+    # ── Date-range filters (one pair per date type; inclusive end, see service) ──
+    placement_from: date | None = None,
+    placement_to: date | None = None,
+    discovered_from: date | None = None,
+    discovered_to: date | None = None,
+    qa_from: date | None = None,
+    qa_to: date | None = None,
+    completed_from: date | None = None,
+    completed_to: date | None = None,
+    imported_from: date | None = None,
+    imported_to: date | None = None,
+    sheet_from: date | None = None,
+    sheet_to: date | None = None,
+    assigned_from: date | None = None,
+    assigned_to: date | None = None,
+    updated_from: date | None = None,
+    updated_to: date | None = None,
     sort: str = Query(
         default="score",
-        pattern="^(score|last_checked_at|created_at|source_domain|link_type|http_status)$",
+        pattern=(
+            "^(score|last_checked_at|created_at|source_domain|link_type|http_status"
+            "|placement_date|discovered_at|qa_completed_at|assigned_at|updated_at)$"
+        ),
     ),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=50, ge=1, le=200),
@@ -71,6 +92,14 @@ async def list_backlinks(
         assigned_user_id=assigned_user_id, assigned_user_label=assigned_user_label,
         link_type=link_type, duplicate_status=duplicate_status, index_status=index_status,
         search=search, target=target,
+        placement_from=placement_from, placement_to=placement_to,
+        discovered_from=discovered_from, discovered_to=discovered_to,
+        qa_from=qa_from, qa_to=qa_to,
+        completed_from=completed_from, completed_to=completed_to,
+        imported_from=imported_from, imported_to=imported_to,
+        sheet_from=sheet_from, sheet_to=sheet_to,
+        assigned_from=assigned_from, assigned_to=assigned_to,
+        updated_from=updated_from, updated_to=updated_to,
     )
     rows, next_cursor, has_more = await backlink_service.list_backlinks(
         db, ctx, filters, sort=sort, direction=direction, limit=limit, cursor=cursor
@@ -99,6 +128,9 @@ async def create_backlink(
 ) -> BacklinkRow:
     bl = await backlink_service.create_backlink(db, ctx, payload)
     await db.commit()
+    # Reload so server-default/onupdate columns (created_at/updated_at, …) are
+    # populated before serialization — avoids a lazy load during model_validate.
+    await db.refresh(bl)
     return BacklinkRow.model_validate(bl)
 
 
@@ -177,6 +209,7 @@ async def update_backlink(
         entity_type="backlink", entity_id=backlink_id, summary="Edited backlink",
     )
     await db.commit()
+    await db.refresh(bl)  # reload updated_at (onupdate) + any expired cols
     return BacklinkRow.model_validate(bl)
 
 
@@ -192,6 +225,7 @@ async def override_backlink(
         summary=f"Manual override → {payload.status.value}", after={"note": payload.note},
     )
     await db.commit()
+    await db.refresh(bl)  # reload updated_at (onupdate) + any expired cols
     return BacklinkRow.model_validate(bl)
 
 

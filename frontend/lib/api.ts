@@ -418,7 +418,14 @@ export type BacklinkRow = {
   issue_count: number;
   top_issue_label: string | null;
   created_at?: string | null;
+  updated_at?: string | null; // last modified in our DB
   sheet_created_date?: string | null; // the sheet's own link-building date
+  placement_date?: string | null; // when the link was placed live
+  discovered_at?: string | null; // first time we saw/crawled it
+  first_qa_at?: string | null; // first QA check
+  qa_completed_at?: string | null; // QA reached a terminal verdict
+  assigned_at?: string | null; // assigned to a user
+  index_checked_at?: string | null; // last index check
   last_checked_at: string | null;
   next_check_at: string | null;
   targets_on_source?: number | null; // distinct targets this source page links to

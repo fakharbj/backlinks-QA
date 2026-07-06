@@ -155,6 +155,13 @@ def _update_record(
     backlink.latest_crawl_result_id = result.id
     backlink.scoring_rule_version_id = qa.scoring_rule_version_id
     backlink.last_checked_at = result.crawled_at
+    # First QA verdict timestamp — set once, never overwrite.
+    if backlink.first_qa_at is None:
+        backlink.first_qa_at = result.crawled_at
+    # QA completion — set once when the verdict reaches a terminal (non-PENDING)
+    # state; keep the earliest completion timestamp.
+    if qa.status is not OverallStatus.PENDING and backlink.qa_completed_at is None:
+        backlink.qa_completed_at = result.crawled_at
 
     if qa.status in (OverallStatus.FAIL, OverallStatus.UNKNOWN):
         backlink.consecutive_failures += 1

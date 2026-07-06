@@ -8,7 +8,7 @@ scoping are injected into every query.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,23 @@ from app.models.source_domain import SourceDomain
 from app.schemas.backlink import BacklinkCreate, BacklinkFilters, BacklinkUpdate
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+# Date-range filter keys → column. ``placement``/``sheet`` are Date columns
+# (inclusive both ends via >= from / <= to); the rest are TIMESTAMPTZ (>= from /
+# < to+1day so the end date is inclusive of the whole day). Bounds are built as
+# real Python date/datetime objects — never text casts (asyncpg rejects strings).
+_DATE_COLS = {
+    "placement": BacklinkRecord.placement_date,
+    "discovered": BacklinkRecord.discovered_at,
+    "qa": BacklinkRecord.last_checked_at,
+    "completed": BacklinkRecord.qa_completed_at,
+    "imported": BacklinkRecord.created_at,
+    "sheet": BacklinkRecord.sheet_created_date,
+    "assigned": BacklinkRecord.assigned_at,
+    "updated": BacklinkRecord.updated_at,
+}
+# Date-typed columns use an inclusive <= upper bound; TIMESTAMPTZ use < to+1day.
+_DATE_TYPE_KEYS = {"placement", "sheet"}
 
 
 def _scope(stmt: Select, ctx: AuthContext) -> Select:
@@ -148,6 +165,20 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
                 )
             )
         )
+    for key, col in _DATE_COLS.items():
+        d_from = getattr(f, f"{key}_from", None)
+        d_to = getattr(f, f"{key}_to", None)
+        is_date_col = key in _DATE_TYPE_KEYS
+        if d_from is not None:
+            lo = d_from if is_date_col else datetime.combine(d_from, time.min, tzinfo=timezone.utc)
+            stmt = stmt.where(col >= lo)
+        if d_to is not None:
+            if is_date_col:
+                stmt = stmt.where(col <= d_to)  # Date column: inclusive end date
+            else:
+                # TIMESTAMPTZ: < start of the next day → inclusive of the whole end day.
+                hi = datetime.combine(d_to + timedelta(days=1), time.min, tzinfo=timezone.utc)
+                stmt = stmt.where(col < hi)
     return stmt
 
 
@@ -196,9 +227,24 @@ async def delete_backlink(db: AsyncSession, ctx: AuthContext, backlink_id: uuid.
     return source_url
 
 
+# Nullable datetime sort keys → column; NULLs coalesce to _EPOCH so keyset
+# ordering + cursor comparison stay total. ``placement_date`` is a Date column
+# (coalesced to _EPOCH's date); the rest are TIMESTAMPTZ.
+_DATETIME_SORTS = {
+    "last_checked_at": BacklinkRecord.last_checked_at,
+    "discovered_at": BacklinkRecord.discovered_at,
+    "qa_completed_at": BacklinkRecord.qa_completed_at,
+    "assigned_at": BacklinkRecord.assigned_at,
+    "updated_at": BacklinkRecord.updated_at,
+}
+_EPOCH_DATE = _EPOCH.date()
+
+
 def _sort_column(sort: str):
-    if sort == "last_checked_at":
-        return func.coalesce(BacklinkRecord.last_checked_at, _EPOCH)
+    if sort in _DATETIME_SORTS:
+        return func.coalesce(_DATETIME_SORTS[sort], _EPOCH)
+    if sort == "placement_date":
+        return func.coalesce(BacklinkRecord.placement_date, _EPOCH_DATE)
     if sort == "created_at":
         return BacklinkRecord.created_at
     if sort == "source_domain":
@@ -211,8 +257,10 @@ def _sort_column(sort: str):
 
 
 def _parse_cursor_value(sort: str, raw: str):
-    if sort in ("last_checked_at", "created_at"):
+    if sort in _DATETIME_SORTS or sort == "created_at":
         return datetime.fromisoformat(raw)
+    if sort == "placement_date":
+        return date.fromisoformat(raw)
     if sort in ("source_domain", "link_type"):
         return raw
     return int(raw)
@@ -221,8 +269,10 @@ def _parse_cursor_value(sort: str, raw: str):
 def _cursor_sort_value(sort: str, last: BacklinkRecord) -> object:
     if sort == "score":
         return last.score if last.score is not None else -1
-    if sort == "last_checked_at":
-        return (last.last_checked_at or _EPOCH).isoformat()
+    if sort in _DATETIME_SORTS:
+        return (getattr(last, sort) or _EPOCH).isoformat()
+    if sort == "placement_date":
+        return (last.placement_date or _EPOCH_DATE).isoformat()
     if sort == "created_at":
         return last.created_at.isoformat()
     if sort == "source_domain":
@@ -473,6 +523,8 @@ async def create_backlink(
         source_domain=src.registrable_domain,
         target_domain=tgt.registrable_domain,
         status=OverallStatus.PENDING,
+        # Discovery = when the link first entered our DB; every insert path sets it.
+        discovered_at=datetime.now(timezone.utc),
         next_check_at=datetime.now(timezone.utc),
     )
     db.add(bl)

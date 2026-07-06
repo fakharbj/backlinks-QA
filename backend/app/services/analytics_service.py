@@ -154,6 +154,20 @@ _FILTERS: dict[str, Callable] = {
     "created_to": lambda v: _date_clause("b.created_at <", "created_to", v, next_day=True),
     "sheet_from": lambda v: _date_clause("b.sheet_created_date >=", "sheet_from", v),
     "sheet_to": lambda v: _date_clause("b.sheet_created_date <=", "sheet_to", v),
+    # placement_date is a Date column → inclusive <= end (no next_day).
+    "placement_from": lambda v: _date_clause("b.placement_date >=", "placement_from", v),
+    "placement_to": lambda v: _date_clause("b.placement_date <=", "placement_to", v),
+    # The rest are TIMESTAMPTZ → < to+1day so the end day is fully included.
+    "discovered_from": lambda v: _date_clause("b.discovered_at >=", "discovered_from", v),
+    "discovered_to": lambda v: _date_clause("b.discovered_at <", "discovered_to", v, next_day=True),
+    "completed_from": lambda v: _date_clause("b.qa_completed_at >=", "completed_from", v),
+    "completed_to": lambda v: _date_clause("b.qa_completed_at <", "completed_to", v, next_day=True),
+    "assigned_from": lambda v: _date_clause("b.assigned_at >=", "assigned_from", v),
+    "assigned_to": lambda v: _date_clause("b.assigned_at <", "assigned_to", v, next_day=True),
+    "updated_from": lambda v: _date_clause("b.updated_at >=", "updated_from", v),
+    "updated_to": lambda v: _date_clause("b.updated_at <", "updated_to", v, next_day=True),
+    "index_from": lambda v: _date_clause("b.index_checked_at >=", "index_from", v),
+    "index_to": lambda v: _date_clause("b.index_checked_at <", "index_to", v, next_day=True),
 }
 
 # ── Whitelisted group/facet dimensions: key → (key_expr, label_expr, extra_join) ──
@@ -174,6 +188,12 @@ _GROUPS: dict[str, tuple[str, str, str]] = {
         "max(srv.scope || ' v' || srv.version)",
         "LEFT JOIN scoring_rule_versions srv ON srv.id = b.scoring_rule_version_id",
     ),
+    # Month buckets (YYYY-MM) — whitelisted to_char expressions, no interpolation.
+    "placement_month": ("to_char(b.placement_date, 'YYYY-MM')", "''", ""),
+    "discovered_month": ("to_char(b.discovered_at, 'YYYY-MM')", "''", ""),
+    "qa_month": ("to_char(b.last_checked_at, 'YYYY-MM')", "''", ""),
+    "completed_month": ("to_char(b.qa_completed_at, 'YYYY-MM')", "''", ""),
+    "imported_month": ("to_char(b.created_at, 'YYYY-MM')", "''", ""),
 }
 
 # Metric expressions reused by summary + groups.

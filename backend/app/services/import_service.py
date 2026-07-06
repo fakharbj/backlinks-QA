@@ -308,6 +308,7 @@ async def _process_row(
                     old_user_label=old_label, new_user_label=new_label, source="sheet",
                 )
             )
+            existing.assigned_at = datetime.now(timezone.utc)
         row.status = ImportRowStatus.IMPORTED
         row.backlink_id = existing.id
         imp.imported_rows += 1
@@ -326,12 +327,18 @@ async def _process_row(
         target_domain=tgt.registrable_domain,
         canonical_url_id=canonical_id,
         status=OverallStatus.PENDING,
+        # Discovery = insert time. Set ONLY on create (never on the re-sync
+        # update branch above) so it records when the link first entered our DB.
+        discovered_at=datetime.now(timezone.utc),
         # QA/stat checks are MANUAL by default: new links wait as "QA pending"
         # until someone starts a check (AUTO_QA_ON_IMPORT turns the old
         # check-immediately behavior back on).
         next_check_at=(datetime.now(timezone.utc) if settings.AUTO_QA_ON_IMPORT else None),
     )
     _apply_input_fields(backlink, data, imp, row, user_map, vendor_id, campaign_id)
+    # First assignment on insert: record when the link got an owner.
+    if backlink.assigned_user_label:
+        backlink.assigned_at = datetime.now(timezone.utc)
     backlink.link_type_id = await link_type_service.resolve_or_create(
         db, imp.workspace_id, backlink.link_type, link_type_cache
     )

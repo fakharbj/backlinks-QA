@@ -1483,6 +1483,11 @@ function Backlinks({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Row selection for scoped "check these exact links" actions.
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // Which date type the "Link date" column shows / sorts on, plus its range filter.
+  const [dateAxis, setDateAxis] = useState("placement");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const axis = BACKLINK_DATE_AXES.find((a) => a.key === dateAxis) || BACKLINK_DATE_AXES[0];
 
   useEffect(() => {
     // Consume the f_* params so they don't stick around in the address bar.
@@ -1561,8 +1566,10 @@ function Backlinks({
     setSearch("");
     setTargetInput("");
     setTargetF("");
+    setDateFrom("");
+    setDateTo("");
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF]
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo]
     .filter(Boolean).length;
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
@@ -1598,10 +1605,12 @@ function Backlinks({
     if (issueLabel) params.set("issue_label", issueLabel);
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (targetF) params.set("target", targetF);
+    if (axis.from && dateFrom) params.set(axis.from, dateFrom);
+    if (axis.to && dateTo) params.set(axis.to, dateTo);
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, sort, sortDir]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -1644,7 +1653,9 @@ function Backlinks({
     source_domain: domainF || null,
     issue_label: issueLabel || null,
     search: debouncedSearch || null,
-    target: targetF || null
+    target: targetF || null,
+    ...(axis.from && dateFrom ? { [axis.from]: dateFrom } : {}),
+    ...(axis.to && dateTo ? { [axis.to]: dateTo } : {})
   });
 
   const [staleDays, setStaleDays] = useState("30");
@@ -1755,11 +1766,19 @@ function Backlinks({
                   const page = await api<Page<BacklinkRow>>(`/backlinks?${p2.toString()}`, { token });
                   downloadCsv(
                     "backlinks.csv",
-                    ["Source URL", "Target URL", "Status", "Score", "Type", "User", "Index", "HTTP", "Rel", "Duplicate", "Link date", "Imported", "Checked"],
+                    [
+                      "Source URL", "Target URL", "Status", "Score", "Type", "User", "Index", "HTTP", "Rel", "Duplicate",
+                      "Placement", "Discovery", "Import", "Sheet", "QA checked", "First QA", "Completion", "Assignment", "Update"
+                    ],
                     page.items.map((r) => [
                       r.source_page_url, r.target_url, r.override_status || r.status, r.score,
                       r.link_type, r.assigned_user_label, r.index_status, r.http_status,
-                      r.current_rel, r.duplicate_status, r.sheet_created_date || "", r.created_at, r.last_checked_at
+                      r.current_rel, r.duplicate_status,
+                      formatDay(r.placement_date ?? null), formatDate(r.discovered_at ?? null),
+                      formatDate(r.created_at ?? null), formatDay(r.sheet_created_date ?? null),
+                      formatDate(r.last_checked_at), formatDate(r.first_qa_at ?? null),
+                      formatDate(r.qa_completed_at ?? null), formatDate(r.assigned_at ?? null),
+                      formatDate(r.updated_at ?? null)
                     ])
                   );
                   onNotice(`Exported ${page.items.length} links (current filters).`);
@@ -1939,6 +1958,34 @@ function Backlinks({
             selected={toks(domainF)}
             onChange={(v) => setDomainF(v.join(","))}
           />
+          {/* Date-type axis + range: picks which date the grid shows/sorts and filters. */}
+          <label className="flex items-center gap-1 rounded-xl border border-line bg-panel shadow-card px-2 text-xs text-muted">
+            <select
+              value={dateAxis}
+              onChange={(e) => setDateAxis(e.target.value)}
+              title="Which date type the Link date column shows, sorts, and filters on"
+              className="h-9 rounded-lg bg-transparent px-1 text-sm text-ink focus:outline-none"
+            >
+              {BACKLINK_DATE_AXES.map((a) => (
+                <option key={a.key} value={a.key}>{a.label}</option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              title={`${axis.label} from`}
+              className="h-9 rounded-lg border border-line bg-panel px-1.5 text-sm text-ink"
+            />
+            –
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              title={`${axis.label} to`}
+              className="h-9 rounded-lg border border-line bg-panel px-1.5 text-sm text-ink"
+            />
+          </label>
         </div>
       </div>
       <div className="max-h-[70vh] overflow-auto scrollbar-thin">
@@ -1970,8 +2017,12 @@ function Backlinks({
               <Th>Rel</Th>
               <Th><span title="DA/PA/AS of the source domain, or rank/visits from the metrics provider">Metrics</span></Th>
               <Th>Issue</Th>
-              <SortTh label="Link date" sortKey="created_at" sort={sort} dir={sortDir} onSort={onSortCol}
-                help="The sheet's own link-building date when available (hover shows when it was imported). Sorted by import date." />
+              {axis.sort ? (
+                <SortTh label={axis.label} sortKey={axis.sort} sort={sort} dir={sortDir} onSort={onSortCol}
+                  help={`Showing each link's ${axis.label} date (change the date type in the toolbar). Hover a cell for its other dates.`} />
+              ) : (
+                <Th><span title={`Showing each link's ${axis.label} date — this date type isn't sortable`}>{axis.label}</span></Th>
+              )}
               <SortTh label="Checked" sortKey="last_checked_at" sort={sort} dir={sortDir} onSort={onSortCol} />
             </tr>
           </thead>
@@ -2075,9 +2126,9 @@ function Backlinks({
                 <Td>
                   <span
                     className="whitespace-nowrap text-xs text-muted"
-                    title={`Imported ${formatDate(row.created_at ?? null)}${row.sheet_created_date ? " · Link date from the sheet" : " · No sheet date — showing import date"}`}
+                    title={dateAxisTooltip(row)}
                   >
-                    {formatDay(row.sheet_created_date ?? row.created_at ?? null)}
+                    {formatDay((row[axis.field] as string | null | undefined) ?? null)}
                   </span>
                 </Td>
                 <Td><span className="whitespace-nowrap">{formatDate(row.last_checked_at)}</span></Td>
@@ -2300,6 +2351,20 @@ function BacklinkDetailDrawer({
                 k="Google index"
                 v={data.index_status ? <IndexBadge value={data.index_status} /> : "not checked yet"}
               />
+            </DetailBlock>
+
+            <DetailBlock title="Dates">
+              {BACKLINK_DATE_FIELDS.map((d) => {
+                const v = (data[d.field] as string | null | undefined) ?? null;
+                return (
+                  <FactRow
+                    key={d.field as string}
+                    k={d.label}
+                    v={v ? (d.time ? formatDate(v) : formatDay(v)) : "—"}
+                  />
+                );
+              })}
+              <FactRow k="Next check due" v={data.next_check_at ? formatDate(data.next_check_at) : "—"} />
             </DetailBlock>
 
             {duplicates.data && duplicates.data.length > 0 ? (
@@ -11251,7 +11316,47 @@ const GROUP_OPTIONS: Array<[string, string]> = [
   ["rel", "Rel"],
   ["vendor", "Vendor"],
   ["source_domain", "Source domain"],
-  ["scoring_version", "Scoring version"]
+  ["scoring_version", "Scoring version"],
+  // Month buckets (YYYY-MM) — pivot links by any date type.
+  ["placement_month", "Month · placed"],
+  ["discovered_month", "Month · discovered"],
+  ["qa_month", "Month · QA checked"],
+  ["completed_month", "Month · completed"],
+  ["imported_month", "Month · imported"]
+];
+
+// Backlinks-grid date-type axes: which BacklinkRow field the "Link date" column
+// shows, its keyset sort key (null = not server-sortable), and the /backlinks
+// filter _from/_to query params for the range picker.
+const BACKLINK_DATE_AXES: Array<{
+  key: string;
+  label: string;
+  field: keyof BacklinkRow;
+  sort: string | null;
+  from: string | null;
+  to: string | null;
+}> = [
+  { key: "placement", label: "Placement", field: "placement_date", sort: "placement_date", from: "placement_from", to: "placement_to" },
+  { key: "discovered", label: "Discovery", field: "discovered_at", sort: "discovered_at", from: "discovered_from", to: "discovered_to" },
+  { key: "qa", label: "QA checked", field: "last_checked_at", sort: "last_checked_at", from: "qa_from", to: "qa_to" },
+  { key: "completed", label: "Completion", field: "qa_completed_at", sort: "qa_completed_at", from: "completed_from", to: "completed_to" },
+  { key: "imported", label: "Import", field: "created_at", sort: "created_at", from: "imported_from", to: "imported_to" },
+  { key: "sheet", label: "Sheet", field: "sheet_created_date", sort: null, from: "sheet_from", to: "sheet_to" },
+  { key: "assigned", label: "Assignment", field: "assigned_at", sort: "assigned_at", from: "assigned_from", to: "assigned_to" },
+  { key: "updated", label: "Update", field: "updated_at", sort: "updated_at", from: "updated_from", to: "updated_to" }
+];
+
+// Analytics date-type axes → the matching analytics filter _from/_to keys.
+const ANALYTICS_DATE_AXES: Array<{ key: string; label: string; from: string; to: string }> = [
+  { key: "checked", label: "QA checked", from: "checked_from", to: "checked_to" },
+  { key: "placement", label: "Placement", from: "placement_from", to: "placement_to" },
+  { key: "discovered", label: "Discovery", from: "discovered_from", to: "discovered_to" },
+  { key: "completed", label: "Completion", from: "completed_from", to: "completed_to" },
+  { key: "imported", label: "Import", from: "created_from", to: "created_to" },
+  { key: "sheet", label: "Sheet", from: "sheet_from", to: "sheet_to" },
+  { key: "assigned", label: "Assignment", from: "assigned_from", to: "assigned_to" },
+  { key: "updated", label: "Update", from: "updated_from", to: "updated_to" },
+  { key: "index", label: "Index check", from: "index_from", to: "index_to" }
 ];
 
 function pct(n: number, total: number) {
@@ -11287,6 +11392,8 @@ function AnalyticsDesk({
   const [viewName, setViewName] = useState("");
   const [linksLimit, setLinksLimit] = useState(50);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // Which date type the from/to range in the filter bar applies to.
+  const [dateAxis, setDateAxis] = useState("checked");
 
   // The actual backlink rows behind the analytics numbers — same filter whitelist
   // the cards use, so "Matching links" always agrees with the pivots above.
@@ -11421,22 +11528,51 @@ function AnalyticsDesk({
               );
             }
           )}
-          <label className="flex items-center gap-1 text-xs text-muted">
-            Checked
-            <input
-              type="date"
-              value={filters.checked_from || ""}
-              onChange={(e) => setFilter("checked_from", e.target.value)}
-              className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
-            />
-            –
-            <input
-              type="date"
-              value={filters.checked_to || ""}
-              onChange={(e) => setFilter("checked_to", e.target.value)}
-              className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
-            />
-          </label>
+          {(() => {
+            const axis = ANALYTICS_DATE_AXES.find((a) => a.key === dateAxis) || ANALYTICS_DATE_AXES[0];
+            return (
+              <label className="flex items-center gap-1 text-xs text-muted">
+                <select
+                  value={dateAxis}
+                  onChange={(e) => {
+                    // Switching the date type moves the current range onto the new keys.
+                    const prev = ANALYTICS_DATE_AXES.find((a) => a.key === dateAxis) || ANALYTICS_DATE_AXES[0];
+                    const next = ANALYTICS_DATE_AXES.find((a) => a.key === e.target.value) || ANALYTICS_DATE_AXES[0];
+                    setFilters((f) => {
+                      const nf = { ...f };
+                      const from = nf[prev.from];
+                      const to = nf[prev.to];
+                      delete nf[prev.from];
+                      delete nf[prev.to];
+                      if (from) nf[next.from] = from;
+                      if (to) nf[next.to] = to;
+                      return nf;
+                    });
+                    setDateAxis(e.target.value);
+                  }}
+                  title="Which date type the range below filters on"
+                  className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+                >
+                  {ANALYTICS_DATE_AXES.map((a) => (
+                    <option key={a.key} value={a.key}>{a.label}</option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  value={filters[axis.from] || ""}
+                  onChange={(e) => setFilter(axis.from, e.target.value)}
+                  className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+                />
+                –
+                <input
+                  type="date"
+                  value={filters[axis.to] || ""}
+                  onChange={(e) => setFilter(axis.to, e.target.value)}
+                  className="h-9 rounded-xl border border-line bg-panel shadow-card px-2 text-sm text-ink"
+                />
+              </label>
+            );
+          })()}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted">Views</span>
@@ -11840,6 +11976,30 @@ function formatDate(value: string | null) {
 function formatDay(value: string | null) {
   if (!value) return "-";
   return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value));
+}
+
+// Every date a backlink carries, in a sensible reading order. Reused by the grid
+// cell tooltip, the CSV export, and the detail drawer so labels never drift.
+// ``time`` = show time-of-day (formatDate) vs date only (formatDay).
+const BACKLINK_DATE_FIELDS: Array<{ label: string; field: keyof BacklinkRow; time: boolean }> = [
+  { label: "Placement", field: "placement_date", time: false },
+  { label: "Discovery", field: "discovered_at", time: true },
+  { label: "Import", field: "created_at", time: true },
+  { label: "Sheet", field: "sheet_created_date", time: false },
+  { label: "First QA", field: "first_qa_at", time: true },
+  { label: "QA checked", field: "last_checked_at", time: true },
+  { label: "Completion", field: "qa_completed_at", time: true },
+  { label: "Index checked", field: "index_checked_at", time: true },
+  { label: "Assignment", field: "assigned_at", time: true },
+  { label: "Last modified", field: "updated_at", time: true }
+];
+
+// Multi-line tooltip listing every date type for a backlink row.
+function dateAxisTooltip(row: BacklinkRow): string {
+  return BACKLINK_DATE_FIELDS.map((d) => {
+    const v = (row[d.field] as string | null | undefined) ?? null;
+    return `${d.label}: ${v ? (d.time ? formatDate(v) : formatDay(v)) : "—"}`;
+  }).join("\n");
 }
 
 // Sheet link types read like "Article Submission" — show the short human name
