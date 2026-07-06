@@ -66,6 +66,14 @@ _SYNONYMS: dict[str, str] = {
     "source url": "source_page_url", "source": "source_page_url", "source page": "source_page_url",
     "source page url": "source_page_url", "page url": "source_page_url", "url": "source_page_url",
     "placement url": "source_page_url", "live url": "source_page_url",
+    # Link-building sheets often name the source (the page hosting the backlink)
+    # "Live Link" / "Live Backlink URL" / "Backlink URL" — treat all as the source.
+    "live link": "source_page_url", "live links": "source_page_url",
+    "live backlink url": "source_page_url", "live backlink": "source_page_url",
+    "backlink url": "source_page_url", "backlink": "source_page_url",
+    "backlinks": "source_page_url", "link url": "source_page_url", "link": "source_page_url",
+    "published url": "source_page_url", "published link": "source_page_url",
+    "article url": "source_page_url", "post url": "source_page_url",
     "target url": "target_url", "target": "target_url", "destination": "target_url",
     "destination url": "target_url", "link target": "target_url", "linked url": "target_url",
     "expected target": "expected_target_url", "expected target url": "expected_target_url",
@@ -80,6 +88,8 @@ _SYNONYMS: dict[str, str] = {
     "user": "assigned_user_label", "assigned": "assigned_user_label",
     "assigned user": "assigned_user_label", "assigned to": "assigned_user_label",
     "employee": "assigned_user_label", "team member": "assigned_user_label",
+    "resource": "assigned_user_label", "resource name": "assigned_user_label",
+    "created by": "assigned_user_label", "done by": "assigned_user_label",
     "employee code": "employee_code", "emp code": "employee_code",
     "employee id": "employee_code", "emp id": "employee_code", "staff code": "employee_code",
     "sheet date": "sheet_created_date", "created date": "sheet_created_date",
