@@ -37,8 +37,18 @@ def upgrade() -> None:
     for stmt in ddl.create_enum_sql():
         op.execute(stmt)
 
+    # 1b) Sequences referenced by a column's server-default must exist BEFORE
+    # create_all renders that default. ``batches.seq`` defaults to
+    # ``nextval('batches_seq_seq')`` (the sequence itself is (re)created by 0029
+    # for incrementally-migrated databases); create it up-front so a from-scratch
+    # build works too.
+    op.execute("CREATE SEQUENCE IF NOT EXISTS batches_seq_seq")
+
     # 2) All tables + indexes from the ORM metadata (types already exist).
     Base.metadata.create_all(bind=bind, checkfirst=True)
+
+    # Tie the sequence's lifecycle to the column now that the table exists.
+    op.execute("ALTER SEQUENCE batches_seq_seq OWNED BY batches.seq")
 
     # 3) Partition management function + default/rolling monthly partitions.
     op.execute(ddl.PARTITION_FUNCTION_SQL)
