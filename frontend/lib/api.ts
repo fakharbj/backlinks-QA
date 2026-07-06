@@ -141,6 +141,7 @@ export type RescoreResult = {
 
 export type Batch = {
   id: string;
+  seq: number;
   kind: string;
   status: string;
   label: string | null;
@@ -152,6 +153,65 @@ export type Batch = {
   error: string | null;
   started_at: string;
   finished_at: string | null;
+  // Review batches only: items still awaiting a decision.
+  review_pending?: number | null;
+};
+
+// One staged row of a review batch (link or domain) — QA verdicts / metrics
+// live in payload only until the item is approved.
+export type BatchItemQA = {
+  status?: string | null;
+  score?: number | null;
+  link_found?: boolean | null;
+  rendered?: boolean | null;
+  http_status?: number | null;
+  final_url?: string | null;
+  anchor?: string | null;
+  rel?: string | null;
+  matched_href?: string | null;
+  is_followable?: boolean | null;
+  indexability?: string | null;
+  robots_status?: string | null;
+  canonical_status?: string | null;
+  top_issue?: string | null;
+  issues?: Array<{ code?: string | null; label?: string | null; severity?: string | null; message?: string | null }>;
+  word_count?: number | null;
+};
+
+export type BatchItemMetrics = {
+  da?: number | null;
+  pa?: number | null;
+  spam_score?: number | null;
+  semrush_as?: number | null;
+  semrush_traffic?: number | null;
+  semrush_keywords?: number | null;
+  domain_age_days?: number | null;
+  domain_created_on?: string | null;
+  metrics_updated_at?: string | null;
+};
+
+export type BatchItem = {
+  id: string;
+  kind: string;
+  label: string;
+  presence: string;
+  state: string;
+  error: string | null;
+  payload: {
+    mapped?: Record<string, string>;
+    source_domain?: string;
+    row?: number;
+    qa?: BatchItemQA;
+    metrics?: BatchItemMetrics;
+  };
+  checked_at: string | null;
+  approved_at: string | null;
+  created_at: string | null;
+};
+
+export type BatchItemsPage = {
+  items: BatchItem[];
+  counts: { total: number; by_state: Record<string, number>; by_presence: Record<string, number> };
 };
 
 export type BatchLog = {

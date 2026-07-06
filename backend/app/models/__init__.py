@@ -3,7 +3,7 @@
 from app.models.alerts import AlertRule, Notification  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.backlink import BacklinkRecord  # noqa: F401
-from app.models.batch import Batch, BatchLog  # noqa: F401
+from app.models.batch import Batch, BatchItem, BatchLog  # noqa: F401
 from app.models.canonical_url import CanonicalUrl  # noqa: F401
 from app.models.competitor import (  # noqa: F401
     CompetitorBacklink,

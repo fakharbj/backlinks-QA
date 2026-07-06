@@ -1,23 +1,32 @@
-"""Batch history endpoints (Phase 9) — the operations layer over every run."""
+"""Batch history endpoints (Phase 9) — the operations layer over every run.
+
+0029 adds the review layer: batches of kind ``link_review``/``domain_import``
+carry ``batch_items`` (staged links/domains) with their own item endpoints —
+list/filter, run checks, approve into production, reject. See
+``services.batch_review_service`` for the semantics.
+"""
 
 from __future__ import annotations
 
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.errors import NotFoundError
 from app.core.rbac import Permission
-from app.models.batch import Batch, BatchLog
-from app.services import batch_service
+from app.models.batch import Batch, BatchItem, BatchLog
+from app.models.enums import AuditAction
+from app.services import audit_service, batch_review_service, batch_service
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
 
 class BatchOut(BaseModel):
     id: uuid.UUID
+    seq: int
     kind: str
     status: str
     label: str | None
@@ -29,6 +38,9 @@ class BatchOut(BaseModel):
     error: str | None
     started_at: str
     finished_at: str | None
+    # Review batches only: items still awaiting a decision (pending/checking/
+    # checked/failed). None for plain operation batches.
+    review_pending: int | None = None
 
 
 class BatchLogOut(BaseModel):
@@ -39,14 +51,43 @@ class BatchLogOut(BaseModel):
     created_at: str
 
 
-def _out(b: Batch) -> BatchOut:
+class ItemSelection(BaseModel):
+    """Target items either explicitly (``item_ids``) or by the same filters the
+    items list uses (state/presence/search) — 'approve everything I filtered'."""
+
+    item_ids: list[uuid.UUID] | None = Field(default=None, max_length=20000)
+    state: str | None = None      # comma list: pending,checked,failed
+    presence: str | None = None   # comma list: new,existing,duplicate
+    q: str | None = Field(default=None, max_length=300)
+
+
+class CheckRequest(ItemSelection):
+    providers: str | None = None  # domain batches: "moz", "semrush" or "moz,semrush"
+
+
+def _out(b: Batch, review_pending: int | None = None) -> BatchOut:
     return BatchOut(
-        id=b.id, kind=b.kind, status=b.status, label=b.label, project_id=b.project_id,
-        started_by=b.started_by, totals=b.totals or {}, counters=b.counters or {},
-        meta=b.meta or {}, error=b.error,
+        id=b.id, seq=b.seq, kind=b.kind, status=b.status, label=b.label,
+        project_id=b.project_id, started_by=b.started_by, totals=b.totals or {},
+        counters=b.counters or {}, meta=b.meta or {}, error=b.error,
         started_at=b.started_at.isoformat(),
         finished_at=b.finished_at.isoformat() if b.finished_at else None,
+        review_pending=review_pending,
     )
+
+
+async def _pending_by_batch(db, batch_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+    if not batch_ids:
+        return {}
+    rows = await db.execute(
+        select(BatchItem.batch_id, func.count())
+        .where(
+            BatchItem.batch_id.in_(batch_ids),
+            BatchItem.state.in_(batch_review_service._OPEN_STATES),
+        )
+        .group_by(BatchItem.batch_id)
+    )
+    return {bid: n for bid, n in rows.all()}
 
 
 @router.get("", response_model=list[BatchOut])
@@ -63,7 +104,12 @@ async def list_batches(
     rows = await batch_service.list_batches(
         db, ctx.workspace_id, kind=kind, status=status, project_id=project_id, limit=limit
     )
-    return [_out(b) for b in rows]
+    review_ids = [b.id for b in rows if b.kind in batch_review_service.REVIEW_KINDS]
+    pending = await _pending_by_batch(db, review_ids)
+    return [
+        _out(b, pending.get(b.id, 0) if b.kind in batch_review_service.REVIEW_KINDS else None)
+        for b in rows
+    ]
 
 
 @router.get("/{batch_id}", response_model=BatchOut)
@@ -71,7 +117,10 @@ async def get_batch(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Batch
     b = await db.get(Batch, batch_id)
     if b is None or b.workspace_id != ctx.workspace_id:
         raise NotFoundError("Batch not found")
-    return _out(b)
+    pending = None
+    if b.kind in batch_review_service.REVIEW_KINDS:
+        pending = (await _pending_by_batch(db, [b.id])).get(b.id, 0)
+    return _out(b, pending)
 
 
 @router.delete("/{batch_id}")
@@ -79,16 +128,18 @@ async def delete_batch(
     batch_id: uuid.UUID, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
 ) -> dict:
-    """Remove one run from history (admin housekeeping; its logs go with it)."""
+    """Remove one run from history (admin housekeeping; logs + staged items go
+    with it — approved data stays where it was imported)."""
     from sqlalchemy import delete as sa_delete
 
     b = await db.get(Batch, batch_id)
     if b is None or b.workspace_id != ctx.workspace_id:
         raise NotFoundError("Batch not found")
+    await db.execute(sa_delete(BatchItem).where(BatchItem.batch_id == batch_id))
     await db.execute(sa_delete(BatchLog).where(BatchLog.batch_id == batch_id))
     await db.delete(b)
     await db.commit()
-    return {"message": "Run removed from history"}
+    return {"message": f"Batch #B-{b.seq} removed from history"}
 
 
 @router.get("/{batch_id}/logs", response_model=list[BatchLogOut])
@@ -104,3 +155,98 @@ async def get_batch_logs(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> 
         )
         for r in logs
     ]
+
+
+# ── Review items (0029) ──────────────────────────────────────────────────────
+
+
+@router.get("/{batch_id}/items")
+async def list_batch_items(
+    batch_id: uuid.UUID,
+    ctx: AuthCtx,
+    db: ReadSession,
+    state: str | None = Query(None, max_length=120),
+    presence: str | None = Query(None, max_length=120),
+    q: str | None = Query(None, max_length=300),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """The staged rows of a review batch with live counts — filters mirror the
+    UI chips (comma lists) plus substring search over the URL/domain."""
+    return await batch_review_service.list_items(
+        db, ctx, batch_id, state=state, presence=presence, q=q, limit=limit, offset=offset
+    )
+
+
+@router.post("/{batch_id}/items/check")
+async def check_batch_items(
+    batch_id: uuid.UUID,
+    payload: CheckRequest,
+    db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.RUN_CRAWLS)),
+) -> dict:
+    """Run the batch's check on selected/filtered items.
+
+    Links: full isolated QA (real crawl on the worker; verdicts stay in the
+    batch). Domains: DA/PA/Spam/AS/age fetched inline, capped per call.
+    """
+    b = await batch_review_service.load_batch(db, ctx, batch_id, review_only=True)
+    if b.kind == "link_review":
+        ids = await batch_review_service.begin_link_check(
+            db, ctx, batch_id, item_ids=payload.item_ids,
+            state=payload.state, presence=payload.presence, q=payload.q,
+        )
+        await db.commit()
+        if ids:
+            from app.workers.dispatch import enqueue_staged_check
+
+            enqueue_staged_check(batch_id, ids)
+        return {"queued": len(ids), "mode": "qa"}
+    providers = {
+        p.strip() for p in (payload.providers or "").split(",") if p.strip() in ("moz", "semrush")
+    } or None
+    result = await batch_review_service.check_domain_items(
+        db, ctx, batch_id, item_ids=payload.item_ids, providers=providers,
+        state=payload.state, presence=payload.presence, q=payload.q,
+    )
+    await db.commit()
+    return {**result, "mode": "metrics"}
+
+
+@router.post("/{batch_id}/items/approve")
+async def approve_batch_items(
+    batch_id: uuid.UUID,
+    payload: ItemSelection,
+    db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> dict:
+    """Approve staged items into production (links → normal import pipeline,
+    domains → source-domain catalog). Only pending/checked items qualify."""
+    result = await batch_review_service.approve_items(
+        db, ctx, batch_id, item_ids=payload.item_ids,
+        state=payload.state, presence=payload.presence, q=payload.q,
+    )
+    await audit_service.record(
+        db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="batch", entity_id=batch_id,
+        summary=f"Approved {result.get('approved', 0)} staged items",
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/{batch_id}/items/reject")
+async def reject_batch_items(
+    batch_id: uuid.UUID,
+    payload: ItemSelection,
+    db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> dict:
+    """Reject staged items — they stay visible in the batch for the audit
+    trail but can never be imported."""
+    result = await batch_review_service.reject_items(
+        db, ctx, batch_id, item_ids=payload.item_ids,
+        state=payload.state, presence=payload.presence, q=payload.q,
+    )
+    await db.commit()
+    return result

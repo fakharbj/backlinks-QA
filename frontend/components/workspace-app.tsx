@@ -58,6 +58,8 @@ import {
   BacklinkDetail,
   BacklinkRow,
   Batch,
+  BatchItem,
+  BatchItemsPage,
   BatchLog,
   ImportRowError,
   CompetitorDomain,
@@ -85,7 +87,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "batches" | "alerts" | "reports" | "performance" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -143,6 +145,15 @@ export function WorkspaceApp() {
     });
     window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
     setTab("backlinks");
+  };
+
+  // Same pattern for batches: "Open review batch" from Imports/Import Domains
+  // jumps straight into that batch's details.
+  const openBatch = (batchId: string) => {
+    const q = new URLSearchParams(window.location.search);
+    q.set("f_batch", batchId);
+    window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+    setTab("batches");
   };
 
   const setActiveProjectId = (next: string) => {
@@ -359,15 +370,19 @@ export function WorkspaceApp() {
               projectId={activeProjectId}
               onNotice={setNotice}
               onOpenBacklinks={openBacklinks}
+              onImportDomains={() => setTab("domain-import")}
             />
           ) : null}
           {tab === "competitors" ? (
             <CompetitorDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "imports" ? (
-            <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+            <ImportDesk token={token} projectId={activeProjectId} onNotice={setNotice} onOpenBatch={openBatch} />
           ) : null}
           {tab === "sheets" ? <SheetsDesk token={token} projectId={activeProjectId} onNotice={setNotice} /> : null}
+          {tab === "domain-import" ? (
+            <DomainImportDesk token={token} onNotice={setNotice} onOpenBatch={openBatch} />
+          ) : null}
           {tab === "batches" ? (
             <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -540,7 +555,15 @@ const WORKSPACE_NAV: NavGroup[] = [
       ["competitors", "Competitors", Swords]
     ]
   },
-  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet], ["batches", "Batches", History]] },
+  {
+    label: "Ingest",
+    items: [
+      ["imports", "Imports", Upload],
+      ["sheets", "Sheets", Sheet],
+      ["domain-import", "Import Domains", Globe],
+      ["batches", "Batches", History]
+    ]
+  },
   { label: "Output", items: [["alerts", "Alerts", Bell], ["reports", "Reports", FileSpreadsheet]] },
   {
     label: "Workspace",
@@ -2452,29 +2475,55 @@ function FactRow({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
+// What /imports/paste and /imports/file return since 0029: a review batch.
+type StagedImportResult = {
+  batch_id: string;
+  seq: number;
+  total: number;
+  new: number;
+  existing: number;
+  duplicate: number;
+  invalid: number;
+  message: string;
+};
+
 function ImportDesk({
   token,
   projectId,
-  onNotice
+  onNotice,
+  onOpenBatch
 }: {
   token: string | null;
   projectId: string;
   onNotice: (text: string) => void;
+  onOpenBatch: (batchId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [text, setText] = useState(samplePaste);
+  const [staged, setStaged] = useState<StagedImportResult | null>(null);
+  const afterStage = (data: StagedImportResult) => {
+    setStaged(data);
+    onNotice(data.message);
+    queryClient.invalidateQueries({ queryKey: ["batches"] });
+  };
   const submit = useMutation({
     mutationFn: () =>
-      api<{ id: string }>("/imports/paste", {
+      api<StagedImportResult>("/imports/paste", {
         token,
         method: "POST",
         body: JSON.stringify({ project_id: projectId, text })
       }),
-    onSuccess: (data) => {
-      onNotice(`Import queued: ${data.id}`);
-      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    onSuccess: afterStage,
+    onError: (err: Error) => onNotice(err.message)
+  });
+  const uploadFile = useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData();
+      fd.append("project_id", projectId);
+      fd.append("file", file);
+      return api<StagedImportResult>("/imports/file", { token, method: "POST", body: fd });
     },
+    onSuccess: afterStage,
     onError: (err: Error) => onNotice(err.message)
   });
 
@@ -2487,22 +2536,78 @@ function ImportDesk({
   }
 
   return (
-    <section className="rounded-xl border border-line bg-panel shadow-card">
-      <SectionTitle title="Paste Import" />
-      <div className="space-y-3 p-4">
-        <textarea
-          className="min-h-[260px] w-full rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ocean/20"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-        />
-        <button
-          onClick={() => submit.mutate()}
-          className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
-        >
-          {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-          Queue import
-        </button>
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Imports</h2>
+        <p className="text-sm text-muted">
+          Paste links or upload a CSV/XLSX. Everything lands in a <span className="font-semibold text-ink">review batch</span> first —
+          QA-test the links in isolation and approve the ones you keep. Nothing touches this project until you approve.
+        </p>
       </div>
+
+      {staged ? (
+        <div className="rounded-xl border border-ocean/40 bg-ocean/5 p-4 shadow-card">
+          <p className="text-sm font-semibold text-ink">
+            Review batch <span className="text-ocean">#B-{staged.seq}</span> created — {staged.total} links staged
+          </p>
+          <p className="mt-1 text-sm text-muted">
+            {staged.new} new · {staged.existing} already in this project · {staged.duplicate} repeated in the paste
+            {staged.invalid ? ` · ${staged.invalid} invalid` : ""}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={() => onOpenBatch(staged.batch_id)}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+            >
+              <Play className="h-4 w-4" /> Open review batch
+            </button>
+            <button
+              onClick={() => setStaged(null)}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              Import another list
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Paste links" />
+          <div className="space-y-3 p-4">
+            <textarea
+              className="min-h-[260px] w-full rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => submit.mutate()}
+                disabled={submit.isPending}
+                className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+              >
+                {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Stage for review
+              </button>
+              <label className="flex h-10 cursor-pointer items-center gap-2 rounded-md border border-line px-4 text-sm font-medium text-ink transition hover:bg-field">
+                {uploadFile.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+                Upload CSV / XLSX
+                <input
+                  type="file"
+                  accept=".csv,.xlsx"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadFile.mutate(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <span className="text-xs text-muted">
+                First line = headers (auto-mapped). Existing links are flagged, never duplicated.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -5379,18 +5484,64 @@ function PerformanceDesk({
 }
 
 const BATCH_KIND_LABEL: Record<string, string> = {
-  import: "Import",
+  import: "Links import",
+  link_review: "Links import — review",
+  domain_import: "Domain import — review",
   sheet_sync: "Sheet sync",
-  writeback: "Write-back",
-  crawl: "Check",
-  recheck: "Recheck",
+  writeback: "Sheet write-back",
+  crawl: "Crawl",
+  recheck: "QA check",
   index_check: "Index check",
   duplicate_scan: "Duplicate scan",
   rescore: "Re-score",
   competitor_import: "Competitor upload",
-  competitor_check: "Competitor metrics check",
+  competitor_check: "Competitor metrics",
   report: "Report"
 };
+
+// Batch lifecycle wording — "review" batches hold staged items awaiting a
+// human decision; everything else is a plain processing run.
+const BATCH_STATUS: Record<string, { label: string; cls: string }> = {
+  review: { label: "Needs review", cls: "bg-plum/10 text-plum border-plum/30" },
+  running: { label: "Running", cls: "bg-ocean/10 text-ocean border-ocean/30" },
+  pending: { label: "Queued", cls: "bg-field text-muted border-line" },
+  completed: { label: "Completed", cls: "bg-ocean/10 text-ocean border-ocean/30" },
+  partial: { label: "Partly failed", cls: "bg-ember/10 text-ember border-ember/30" },
+  failed: { label: "Failed", cls: "bg-danger/10 text-danger border-danger/30" }
+};
+
+function BatchStatusChip({ value }: { value: string }) {
+  const meta = BATCH_STATUS[value] || { label: value, cls: "bg-field text-muted border-line" };
+  return (
+    <span className={clsx("inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold", meta.cls)}>
+      {meta.label}
+    </span>
+  );
+}
+
+const ITEM_PRESENCE: Record<string, { label: string; cls: string; help: string }> = {
+  new: { label: "New", cls: "bg-ocean/10 text-ocean", help: "Not in your data yet — approving adds it." },
+  existing: { label: "Already there", cls: "bg-plum/10 text-plum", help: "Already in the main data — approving refreshes the existing row instead of duplicating it." },
+  duplicate: { label: "Repeated", cls: "bg-ember/10 text-ember", help: "The same link appears more than once inside this import." }
+};
+
+const ITEM_STATE: Record<string, { label: string; cls: string }> = {
+  pending: { label: "Awaiting review", cls: "bg-field text-muted" },
+  checking: { label: "Checking…", cls: "bg-ocean/10 text-ocean animate-pulse" },
+  checked: { label: "Checked", cls: "bg-ocean/10 text-ocean" },
+  failed: { label: "Failed", cls: "bg-danger/10 text-danger" },
+  approved: { label: "Approved", cls: "bg-ocean/15 text-ocean" },
+  rejected: { label: "Rejected", cls: "bg-field text-muted line-through" }
+};
+
+function ItemBadge({ map, value, title }: { map: Record<string, { label: string; cls: string }>; value: string; title?: string }) {
+  const meta = map[value] || { label: value, cls: "bg-field text-muted" };
+  return (
+    <span title={title} className={clsx("inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", meta.cls)}>
+      {meta.label}
+    </span>
+  );
+}
 
 function BatchProgress({ totals }: { totals: Record<string, number> }) {
   const total = Number(totals.total || 0);
@@ -5408,6 +5559,634 @@ function BatchProgress({ totals }: { totals: Record<string, number> }) {
   );
 }
 
+// ── The Batch Details page: header, live counts, actions, staged items, logs ─
+function BatchDetails({
+  token,
+  batchId,
+  onNotice,
+  onBack,
+  onOpenBacklinks
+}: {
+  token: string | null;
+  batchId: string;
+  onNotice: (text: string) => void;
+  onBack: () => void;
+  onOpenBacklinks?: (filters: Record<string, string>) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [stateF, setStateF] = useState<string[]>([]);
+  const [presenceF, setPresenceF] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const [limit, setLimit] = useState(200);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [errorImportId, setErrorImportId] = useState<string | null>(null);
+
+  const batch = useQuery({
+    queryKey: ["batch", token, batchId],
+    enabled: Boolean(token),
+    queryFn: () => api<Batch>(`/batches/${batchId}`, { token }),
+    refetchInterval: (q) =>
+      q.state.data && (q.state.data.status === "running" || q.state.data.status === "pending") ? 2500 : false
+  });
+  const b = batch.data;
+  const isReview = b?.kind === "link_review" || b?.kind === "domain_import";
+  const isLinks = b?.kind === "link_review";
+
+  const itemsQ = useQuery({
+    queryKey: ["batch-items", token, batchId, stateF.join(","), presenceF.join(","), search, limit],
+    enabled: Boolean(token) && Boolean(isReview),
+    queryFn: () => {
+      const p = new URLSearchParams({ limit: String(limit) });
+      if (stateF.length) p.set("state", stateF.join(","));
+      if (presenceF.length) p.set("presence", presenceF.join(","));
+      if (search.trim()) p.set("q", search.trim());
+      return api<BatchItemsPage>(`/batches/${batchId}/items?${p.toString()}`, { token });
+    },
+    refetchInterval: (q) =>
+      b?.status === "running" || (q.state.data?.items || []).some((it) => it.state === "checking") ? 2500 : false
+  });
+  const logs = useQuery({
+    queryKey: ["batch-logs", token, batchId],
+    enabled: Boolean(token),
+    queryFn: () => api<BatchLog[]>(`/batches/${batchId}/logs`, { token }),
+    refetchInterval: b?.status === "running" ? 4000 : false
+  });
+  const rowErrors = useQuery({
+    queryKey: ["import-errors", token, errorImportId],
+    enabled: Boolean(token) && Boolean(errorImportId),
+    queryFn: () =>
+      api<{ total_errors: number; rows: ImportRowError[] }>(`/imports/${errorImportId}/errors.json`, { token })
+  });
+
+  const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["batch", token, batchId] });
+    queryClient.invalidateQueries({ queryKey: ["batch-items"] });
+    queryClient.invalidateQueries({ queryKey: ["batch-logs"] });
+    queryClient.invalidateQueries({ queryKey: ["batches"] });
+  };
+
+  // Actions target the ticked rows, or everything matching the filters when
+  // nothing is ticked ("act on what I'm looking at").
+  const selection = (): Record<string, unknown> =>
+    picked.size
+      ? { item_ids: Array.from(picked) }
+      : {
+          state: stateF.length ? stateF.join(",") : undefined,
+          presence: presenceF.length ? presenceF.join(",") : undefined,
+          q: search.trim() || undefined
+        };
+
+  const runCheck = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<{ queued?: number; checked?: number; remaining?: number; mode: string }>(
+        `/batches/${batchId}/items/check`,
+        { token, method: "POST", body: JSON.stringify(body) }
+      ),
+    onSuccess: (r) => {
+      onNotice(
+        r.mode === "qa"
+          ? `QA check started for ${r.queued} links — verdicts appear below as they finish`
+          : `Checked ${r.checked} domains${r.remaining ? ` — ${r.remaining} still waiting, run it again` : ""}`
+      );
+      setPicked(new Set());
+      refreshAll();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const approve = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<{ approved: number; new_rows?: number; updated_rows?: number; error_rows?: number; domains_added?: number; message?: string }>(
+        `/batches/${batchId}/items/approve`,
+        { token, method: "POST", body: JSON.stringify(body) }
+      ),
+    onSuccess: (r) => {
+      if (r.message && !r.approved) onNotice(r.message);
+      else if (isLinks)
+        onNotice(
+          `Approved ${r.approved} links — ${r.new_rows || 0} added, ${r.updated_rows || 0} refreshed` +
+            ((r.error_rows || 0) ? `, ${r.error_rows} errors (see the logs)` : "")
+        );
+      else onNotice(`Approved ${r.domains_added || r.approved} domains into the Source Domains catalog`);
+      setPicked(new Set());
+      refreshAll();
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const reject = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<{ rejected: number }>(`/batches/${batchId}/items/reject`, { token, method: "POST", body: JSON.stringify(body) }),
+    onSuccess: (r) => {
+      onNotice(`Rejected ${r.rejected} items — they stay listed here but will never be imported`);
+      setPicked(new Set());
+      refreshAll();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const deleteBatch = useMutation({
+    mutationFn: () => api<{ message: string }>(`/batches/${batchId}`, { token, method: "DELETE" }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+      onBack();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const items = itemsQ.data?.items || [];
+  const counts = itemsQ.data?.counts;
+  const byState = counts?.by_state || {};
+  const byPresence = counts?.by_presence || {};
+  const openCount =
+    (byState.pending || 0) + (byState.checking || 0) + (byState.checked || 0) + (byState.failed || 0);
+  const approvable = (byState.pending || 0) + (byState.checked || 0);
+  const scopeNote = picked.size
+    ? `${picked.size} selected`
+    : stateF.length || presenceF.length || search.trim()
+      ? "everything matching the filters"
+      : "every open item";
+
+  const toggleAllVisible = () => {
+    const visible = items.filter((it) => ["pending", "checked", "failed"].includes(it.state)).map((it) => it.id);
+    const all = visible.length > 0 && visible.every((id) => picked.has(id));
+    setPicked(all ? new Set() : new Set(visible));
+  };
+
+  const chip = (
+    active: boolean,
+    label: string,
+    count: number | undefined,
+    onClick: () => void,
+    tone?: string
+  ) => (
+    <button
+      key={label}
+      onClick={onClick}
+      className={clsx(
+        "flex h-7 items-center gap-1 rounded-full border px-2.5 text-[11px] font-semibold transition",
+        active ? "border-ocean/50 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:bg-field",
+        tone
+      )}
+    >
+      {label}
+      {count != null ? <span className={clsx("rounded-full px-1", active ? "bg-ocean/15" : "bg-field")}>{count}</span> : null}
+    </button>
+  );
+
+  const resultCell = (it: BatchItem) => {
+    if (it.error) return <span className="break-all text-xs text-danger">{it.error}</span>;
+    if (it.kind === "link") {
+      const qa = it.payload.qa;
+      if (!qa) return <span className="text-xs text-muted">Not checked yet</span>;
+      return (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <Status value={qa.status || ""} compact />
+          {qa.score != null ? <span className="text-xs font-semibold text-ink">{qa.score}</span> : null}
+          {qa.link_found === false ? <span className="text-[10px] font-semibold text-danger">link missing</span> : null}
+          {qa.http_status ? <span className="text-[10px] text-muted">HTTP {qa.http_status}</span> : null}
+          {qa.rendered ? (
+            <span className="rounded bg-plum/10 px-1 py-0.5 text-[10px] font-semibold text-plum" title="JavaScript page — checked in a real browser">
+              JS
+            </span>
+          ) : null}
+          {qa.top_issue ? <span className="max-w-[180px] truncate text-[10px] text-muted">{qa.top_issue.replaceAll("_", " ")}</span> : null}
+        </span>
+      );
+    }
+    const m = it.payload.metrics;
+    if (!m) return <span className="text-xs text-muted">Not checked yet</span>;
+    return (
+      <span className="flex flex-wrap items-center gap-1">
+        <MetricTag label="DA" value={m.da} title="Domain Authority — Moz" />
+        <MetricTag label="PA" value={m.pa} title="Page Authority — Moz" />
+        <MetricTag label="AS" value={m.semrush_as} title="Authority Score — Semrush" />
+        {m.spam_score != null ? (
+          <span
+            className={clsx(
+              "inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
+              m.spam_score <= 3 ? "bg-ocean/10 text-ocean" : m.spam_score <= 7 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
+            )}
+            title="Moz spam score — lower is better"
+          >
+            Spam {m.spam_score}
+          </span>
+        ) : null}
+        {m.domain_age_days != null ? (
+          <span className="text-[10px] text-muted" title="Domain age (registration date via RDAP)">
+            {m.domain_age_days >= 365 ? `${Math.round(m.domain_age_days / 365)}y` : `${m.domain_age_days}d`} old
+          </span>
+        ) : null}
+      </span>
+    );
+  };
+
+  const detailRow = (it: BatchItem) => {
+    const mapped = it.payload.mapped || {};
+    const qa = it.payload.qa;
+    const m = it.payload.metrics;
+    const fact = (k: string, v: React.ReactNode) =>
+      v == null || v === "" ? null : (
+        <div key={k} className="min-w-[160px]">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">{k}</p>
+          <p className="break-all text-xs text-ink">{v}</p>
+        </div>
+      );
+    return (
+      <div className="space-y-3 p-3">
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
+          {it.kind === "link" ? (
+            <>
+              {fact("Source page", (
+                <a href={it.label} target="_blank" rel="noreferrer" className="text-ocean hover:underline">{it.label}</a>
+              ))}
+              {fact("Target", mapped.target_url)}
+              {fact("Link type", mapped.link_type)}
+              {fact("Person", mapped.assigned_user_label)}
+              {fact("Expected anchor", mapped.expected_anchor_text)}
+              {fact("Source domain", it.payload.source_domain)}
+              {fact("Sheet row", it.payload.row != null ? `#${it.payload.row}` : null)}
+            </>
+          ) : (
+            <>
+              {fact("Domain", (
+                <a href={`https://${it.label}`} target="_blank" rel="noreferrer" className="text-ocean hover:underline">{it.label}</a>
+              ))}
+              {fact("Traffic (Semrush)", m?.semrush_traffic != null ? m.semrush_traffic.toLocaleString() : null)}
+              {fact("Keywords", m?.semrush_keywords != null ? m.semrush_keywords.toLocaleString() : null)}
+              {fact("Registered", m?.domain_created_on ? formatDay(m.domain_created_on) : null)}
+              {fact("Metrics checked", m?.metrics_updated_at ? formatDate(m.metrics_updated_at) : null)}
+            </>
+          )}
+          {fact("Staged", it.created_at ? formatDate(it.created_at) : null)}
+          {fact("Checked", it.checked_at ? formatDate(it.checked_at) : null)}
+          {fact(it.state === "rejected" ? "Rejected" : "Approved", it.approved_at ? formatDate(it.approved_at) : null)}
+        </div>
+        {qa ? (
+          <div className="rounded-lg border border-line bg-panel p-2.5">
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted">Isolated QA result (stored in this batch only)</p>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              {fact("Verdict", <Status value={qa.status || ""} compact />)}
+              {fact("Score", qa.score)}
+              {fact("Link found", qa.link_found == null ? null : qa.link_found ? "Yes" : "No")}
+              {fact("Anchor", qa.anchor)}
+              {fact("Rel", qa.rel)}
+              {fact("Matched href", qa.matched_href)}
+              {fact("Final URL", qa.final_url)}
+              {fact("Robots", qa.robots_status)}
+              {fact("Canonical", qa.canonical_status)}
+              {fact("Indexability", qa.indexability)}
+              {fact("Words on page", qa.word_count)}
+            </div>
+            {(qa.issues || []).length ? (
+              <div className="mt-2 space-y-0.5">
+                {(qa.issues || []).map((iss, i) => (
+                  <p key={i} className="text-xs">
+                    <span className={clsx("font-semibold", iss.severity === "critical" || iss.severity === "high" ? "text-danger" : "text-ember")}>
+                      {(iss.label || iss.code || "issue").replaceAll("_", " ")}:
+                    </span>{" "}
+                    <span className="text-muted">{iss.message}</span>
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  if (!b) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
+        {batch.isLoading ? <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted" /> : <p className="text-sm text-muted">Batch not found.</p>}
+        <button onClick={onBack} className="mt-3 text-sm font-medium text-ocean hover:underline">← All batches</button>
+      </section>
+    );
+  }
+
+  const dur = b.finished_at
+    ? `${Math.max(1, Math.round((new Date(b.finished_at).getTime() - new Date(b.started_at).getTime()) / 1000))}s`
+    : "running…";
+
+  return (
+    <section className="space-y-4">
+      {/* Header */}
+      <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <button onClick={onBack} className="whitespace-nowrap text-sm font-medium text-ocean hover:underline">
+              ← All batches
+            </button>
+            <span className="text-line">/</span>
+            <h2 className="text-base font-semibold text-ink">
+              Batch #B-{b.seq} — {BATCH_KIND_LABEL[b.kind] || b.kind}
+            </h2>
+            <BatchStatusChip value={b.status} />
+            {isReview && openCount > 0 ? (
+              <span className="rounded-full bg-plum/10 px-2 py-0.5 text-[11px] font-semibold text-plum">
+                {openCount} awaiting decision
+              </span>
+            ) : null}
+          </div>
+          {b.status !== "running" ? (
+            <button
+              onClick={() => {
+                if (window.confirm(`Remove batch #B-${b.seq} and its history? Approved data stays where it was imported. (Admin only)`))
+                  deleteBatch.mutate();
+              }}
+              className="flex items-center gap-1.5 text-xs font-medium text-danger hover:underline"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Remove from history
+            </button>
+          ) : null}
+        </div>
+        <p className="mt-1 truncate text-sm text-muted" title={b.label || ""}>{b.label || "—"}</p>
+        <p className="mt-1 text-xs text-muted">
+          Started {formatDate(b.started_at)} · {b.finished_at ? `finished ${formatDate(b.finished_at)} · took ${dur}` : dur}
+          {b.meta?.current_step ? <span className="text-ocean"> · {String(b.meta.current_step)}</span> : null}
+        </p>
+        {b.error ? (
+          <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-sm text-danger">
+            Stopped because: {b.error}
+          </div>
+        ) : null}
+        {isReview ? (
+          <p className="mt-2 rounded-lg bg-field/70 p-2 text-xs text-muted">
+            {isLinks
+              ? "This is a review batch: the links below are staged in isolation — QA-test them here, then approve the ones you want. Nothing touches the project until you approve."
+              : "This is a review batch: the domains below are staged in isolation — check their metrics here, then approve the ones worth keeping. The Source Domains catalog is untouched until you approve."}
+          </p>
+        ) : null}
+      </div>
+
+      {/* Review summary cards (clickable = set the matching filter) */}
+      {isReview && counts ? (
+        <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
+          <Metric label="Items" value={counts.total} icon={Layers} tone="ink" onClick={() => { setStateF([]); setPresenceF([]); }} help="Everything staged in this batch. Click to clear filters." />
+          <Metric label="New" value={byPresence.new || 0} icon={Star} tone="ocean" onClick={() => { setPresenceF(["new"]); }} help="Not in your data yet — the interesting rows. Click to filter." />
+          <Metric label="Already there" value={byPresence.existing || 0} icon={CheckCircle2} tone="plum" onClick={() => { setPresenceF(["existing"]); }} help="Already in the main data — approving refreshes them. Click to filter." />
+          <Metric label="Repeated" value={byPresence.duplicate || 0} icon={Layers} tone="ember" onClick={() => { setPresenceF(["duplicate"]); }} help="Repeated inside this import. Click to filter." />
+          <Metric label="Checked" value={byState.checked || 0} icon={Gauge} tone="ocean" onClick={() => { setStateF(["checked"]); }} help={isLinks ? "QA-tested in isolation. Click to filter." : "Metrics fetched. Click to filter."} />
+          <Metric label="Failed" value={byState.failed || 0} icon={XCircle} tone="danger" onClick={() => { setStateF(["failed"]); }} help="Invalid rows or checks that crashed — re-run or reject them. Click to filter." />
+          <Metric label="Approved" value={byState.approved || 0} icon={CheckCircle2} tone="ocean" onClick={() => { setStateF(["approved"]); }} help="Imported into the main data. Click to filter." />
+          <Metric label="Rejected" value={byState.rejected || 0} icon={XCircle} tone="ink" onClick={() => { setStateF(["rejected"]); }} help="Kept for the audit trail, never imported. Click to filter." />
+        </div>
+      ) : null}
+
+      {/* Actions */}
+      {isReview ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-panel p-3 shadow-card">
+          {isLinks ? (
+            <button
+              onClick={() => {
+                if (window.confirm(`Run the isolated QA check on ${scopeNote}? Real crawls run on the worker; results stay inside this batch.`))
+                  runCheck.mutate({ ...selection() });
+              }}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              title="Crawl + QA-test the staged links in isolation — same engine as the main QA, but verdicts stay in this batch"
+            >
+              {runCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run QA check
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => runCheck.mutate({ ...selection() })}
+                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+                title="Fetch DA/PA/Spam (Moz), AS/traffic (Semrush) and domain age for the staged domains — results stay in this batch"
+              >
+                {runCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
+                Check all metrics
+              </button>
+              <button
+                onClick={() => runCheck.mutate({ ...selection(), providers: "moz" })}
+                className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+                title="Moz only: DA / PA / Spam score (+ domain age)"
+              >
+                <Gauge className="h-4 w-4" /> DA/PA (Moz)
+              </button>
+              <button
+                onClick={() => runCheck.mutate({ ...selection(), providers: "semrush" })}
+                className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+                title="Semrush only: Authority Score, traffic, keywords (needs the Semrush API endpoint configured)"
+              >
+                <Gauge className="h-4 w-4" /> AS (Semrush)
+              </button>
+            </>
+          )}
+          <span className="mx-1 h-6 w-px bg-line" />
+          <button
+            onClick={() => {
+              if (!picked.size && !window.confirm(`Approve ${scopeNote} (${picked.size || approvable} items)? Links/domains enter the main data.`)) return;
+              approve.mutate(selection());
+            }}
+            disabled={approve.isPending || (!picked.size && !approvable)}
+            className="flex h-9 items-center gap-2 rounded-lg border border-ocean/40 bg-ocean/10 px-3 text-sm font-semibold text-ocean transition hover:bg-ocean/20 disabled:opacity-50"
+            title="Approve into the main data — only pending/checked items qualify"
+          >
+            {approve.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+            Approve {picked.size ? `selected (${picked.size})` : "all filtered"}
+          </button>
+          <button
+            onClick={() => {
+              if (window.confirm(`Reject ${scopeNote}? Rejected items stay in the batch history but are never imported.`))
+                reject.mutate(selection());
+            }}
+            disabled={reject.isPending || (!picked.size && !openCount)}
+            className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field disabled:opacity-50"
+          >
+            <XCircle className="h-4 w-4" />
+            Reject {picked.size ? `selected (${picked.size})` : "all filtered"}
+          </button>
+          {(byState.failed || 0) > 0 ? (
+            <button
+              onClick={() => runCheck.mutate({ state: "failed" })}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+              title="Retry only the items whose check failed"
+            >
+              <RefreshCw className="h-4 w-4" /> Re-run failed ({byState.failed})
+            </button>
+          ) : null}
+          <span className="ml-auto text-xs text-muted">Actions apply to: <span className="font-semibold text-ink">{scopeNote}</span></span>
+        </div>
+      ) : null}
+
+      {/* Items */}
+      {isReview ? (
+        <div className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex flex-wrap items-center gap-2 border-b border-line p-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {chip(!stateF.length, "All states", counts?.total, () => setStateF([]))}
+              {Object.entries(ITEM_STATE).map(([v, meta]) =>
+                chip(
+                  stateF.includes(v),
+                  meta.label,
+                  byState[v] || 0,
+                  () => setStateF((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]))
+                )
+              )}
+            </div>
+            <span className="h-6 w-px bg-line" />
+            <div className="flex flex-wrap items-center gap-1.5">
+              {Object.entries(ITEM_PRESENCE).map(([v, meta]) =>
+                chip(
+                  presenceF.includes(v),
+                  meta.label,
+                  byPresence[v] || 0,
+                  () => setPresenceF((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]))
+                )
+              )}
+            </div>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={isLinks ? "Search URL…" : "Search domain…"}
+              className="ml-auto h-8 w-56 rounded-lg border border-line bg-panel px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-field text-xs uppercase text-muted">
+                <tr>
+                  <Th>
+                    <input
+                      type="checkbox"
+                      checked={items.length > 0 && items.filter((it) => ["pending", "checked", "failed"].includes(it.state)).every((it) => picked.has(it.id)) && picked.size > 0}
+                      onChange={toggleAllVisible}
+                      className="h-3.5 w-3.5 rounded border-line"
+                      title="Select every open row on this page"
+                    />
+                  </Th>
+                  <Th>{isLinks ? "Link" : "Domain"}</Th>
+                  <Th>Presence</Th>
+                  <Th>State</Th>
+                  <Th>{isLinks ? "QA result" : "Metrics"}</Th>
+                  <Th>Checked</Th>
+                  <Th> </Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {items.map((it) => {
+                  const open = expanded === it.id;
+                  const selectable = ["pending", "checked", "failed"].includes(it.state);
+                  return (
+                    <Fragment key={it.id}>
+                      <tr className={clsx("hover:bg-field/60", open && "bg-ocean/5")}>
+                        <Td>
+                          <input
+                            type="checkbox"
+                            disabled={!selectable}
+                            checked={picked.has(it.id)}
+                            onChange={() =>
+                              setPicked((cur) => {
+                                const next = new Set(cur);
+                                if (next.has(it.id)) next.delete(it.id);
+                                else next.add(it.id);
+                                return next;
+                              })
+                            }
+                            className="h-3.5 w-3.5 rounded border-line disabled:opacity-30"
+                          />
+                        </Td>
+                        <Td>
+                          <div className="max-w-[380px] truncate font-medium text-ink" title={it.label}>{it.label}</div>
+                          {isLinks ? (
+                            <div className="max-w-[380px] truncate text-xs text-muted" title={it.payload.mapped?.target_url || ""}>
+                              → {it.payload.mapped?.target_url || "no target"}
+                              {it.payload.source_domain ? ` · ${it.payload.source_domain}` : ""}
+                            </div>
+                          ) : null}
+                        </Td>
+                        <Td><ItemBadge map={ITEM_PRESENCE} value={it.presence} title={ITEM_PRESENCE[it.presence]?.help} /></Td>
+                        <Td><ItemBadge map={ITEM_STATE} value={it.state} /></Td>
+                        <Td>{resultCell(it)}</Td>
+                        <Td><span className="whitespace-nowrap text-xs text-muted">{it.checked_at ? formatDate(it.checked_at) : "—"}</span></Td>
+                        <Td>
+                          <button onClick={() => setExpanded(open ? null : it.id)} className="text-xs font-medium text-ocean hover:underline">
+                            {open ? "Hide" : "Details"}
+                          </button>
+                        </Td>
+                      </tr>
+                      {open ? (
+                        <tr>
+                          <td colSpan={7} className="bg-field/40">{detailRow(it)}</td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+            {itemsQ.isLoading ? (
+              <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+            ) : null}
+            {!itemsQ.isLoading && !items.length ? <Empty label="No items match these filters." /> : null}
+            {counts && items.length < (stateF.length || presenceF.length || search.trim() ? items.length + 1 : counts.total) && items.length >= limit ? (
+              <div className="border-t border-line p-2 text-center">
+                <button onClick={() => setLimit((l) => l + 200)} className="text-sm font-medium text-ocean hover:underline">
+                  Load more
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Logs */}
+      <div className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="Run log" />
+        <div className="space-y-1 p-3">
+          {(logs.data || []).map((l, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs">
+              <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-ocean")} />
+              <span className="whitespace-nowrap text-muted">{formatDate(l.created_at)}</span>
+              <span className="flex-1 text-ink">{l.message}</span>
+              {l.data && (l.data as Record<string, unknown>).import_id ? (
+                <button
+                  onClick={() => setErrorImportId(String((l.data as Record<string, unknown>).import_id))}
+                  className="shrink-0 font-medium text-ocean hover:underline"
+                >
+                  View row errors
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {logs.isLoading ? <div className="text-xs text-muted">Loading logs…</div> : null}
+          {!logs.isLoading && !(logs.data || []).length ? <div className="text-xs text-muted">No log entries for this run.</div> : null}
+          {errorImportId ? (
+            <div className="mt-3 rounded-lg border border-line bg-panel p-2">
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-xs font-semibold text-ink">
+                  Row errors {rowErrors.data ? `(${rowErrors.data.total_errors})` : ""}
+                </span>
+                <button onClick={() => setErrorImportId(null)} className="text-xs text-ocean hover:underline">Close</button>
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {(rowErrors.data?.rows || []).map((r) => (
+                  <div key={r.row_number} className="border-b border-line py-1.5 text-xs last:border-0">
+                    <span className="font-semibold text-ink">Row {r.row_number}:</span>{" "}
+                    <span className="text-danger">{r.error}</span>
+                    <div className="mt-0.5 break-all text-muted">
+                      {Object.entries(r.raw || {}).filter(([, v]) => v).slice(0, 6).map(([k, v]) => `${k}: ${v}`).join(" · ")}
+                    </div>
+                  </div>
+                ))}
+                {rowErrors.isLoading ? <div className="text-xs text-muted">Loading…</div> : null}
+                {!rowErrors.isLoading && !(rowErrors.data?.rows || []).length ? (
+                  <div className="text-xs text-muted">No row errors recorded.</div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function BatchesDesk({
   token,
   projectId,
@@ -5420,7 +6199,18 @@ function BatchesDesk({
   const [kind, setKind] = useState("");
   const [statusF, setStatusF] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
-  const [errorImportId, setErrorImportId] = useState<string | null>(null);
+
+  // Deep link: "Open review batch" from Imports / Import Domains lands here
+  // with ?f_batch=<id> (mirrors the Backlinks f_* pattern).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const target = q.get("f_batch");
+    if (target) {
+      setOpenId(target);
+      q.delete("f_batch");
+      window.history.replaceState(null, "", `${window.location.pathname}${q.toString() ? `?${q.toString()}` : ""}`);
+    }
+  }, []);
 
   const qs = () => {
     const p = new URLSearchParams();
@@ -5432,44 +6222,24 @@ function BatchesDesk({
   };
   const batches = useQuery({
     queryKey: ["batches", token, kind, statusF, projectId],
-    enabled: Boolean(token),
+    enabled: Boolean(token) && !openId,
     queryFn: () => api<Batch[]>(`/batches${qs()}`, { token }),
     // Live progress: poll while anything is running.
     refetchInterval: (q) =>
       (q.state.data || []).some((b) => b.status === "running" || b.status === "pending") ? 3000 : false
   });
-  const logs = useQuery({
-    queryKey: ["batch-logs", token, openId],
-    enabled: Boolean(token) && Boolean(openId),
-    queryFn: () => api<BatchLog[]>(`/batches/${openId}/logs`, { token })
-  });
-  const rowErrors = useQuery({
-    queryKey: ["import-errors", token, errorImportId],
-    enabled: Boolean(token) && Boolean(errorImportId),
-    queryFn: () =>
-      api<{ total_errors: number; rows: ImportRowError[] }>(
-        `/imports/${errorImportId}/errors.json`,
-        { token }
-      )
-  });
-  const queryClient = useQueryClient();
-  const deleteBatch = useMutation({
-    mutationFn: (id: string) => api<{ message: string }>(`/batches/${id}`, { token, method: "DELETE" }),
-    onSuccess: (r) => {
-      onNotice(r.message);
-      setOpenId(null);
-      queryClient.invalidateQueries({ queryKey: ["batches"] });
-    },
-    onError: (e: Error) => onNotice(e.message)
-  });
+
+  if (openId) {
+    return <BatchDetails token={token} batchId={openId} onNotice={onNotice} onBack={() => setOpenId(null)} />;
+  }
 
   return (
     <section className="space-y-4">
       <div>
         <h2 className="text-base font-semibold text-ink">Batches</h2>
         <p className="text-sm text-muted">
-          Every run in one place — imports, sheet syncs, checks, duplicate scans, re-scores and
-          reports — with live progress, counters and logs.
+          Every run in one place — imports awaiting review, sheet syncs, QA checks, duplicate scans,
+          re-scores and reports — with live progress, counters and logs. Open a batch for the full detail.
         </p>
       </div>
 
@@ -5482,8 +6252,8 @@ function BatchesDesk({
         </select>
         <select value={statusF} onChange={(e) => setStatusF(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
           <option value="">All statuses</option>
-          {["running", "completed", "partial", "failed", "pending"].map((s) => (
-            <option key={s} value={s}>{s}</option>
+          {Object.entries(BATCH_STATUS).map(([v, meta]) => (
+            <option key={v} value={v}>{meta.label}</option>
           ))}
         </select>
         <ExportButton
@@ -5491,10 +6261,10 @@ function BatchesDesk({
           onClick={() =>
             downloadCsv(
               "batches.csv",
-              ["Kind", "Label", "Status", "Total", "OK", "Failed", "Skipped", "Counters", "Started", "Finished", "Error"],
+              ["Batch", "Kind", "Label", "Status", "Total", "Done", "OK", "Failed", "Counters", "Started", "Finished", "Error"],
               (batches.data || []).map((b) => [
-                BATCH_KIND_LABEL[b.kind] || b.kind, b.label, b.status,
-                b.totals?.total, b.totals?.ok, b.totals?.failed, b.totals?.skipped,
+                `B-${b.seq}`, BATCH_KIND_LABEL[b.kind] || b.kind, b.label, b.status,
+                b.totals?.total, b.totals?.done, b.totals?.ok, b.totals?.failed,
                 Object.entries(b.counters || {}).map(([k, v]) => `${k}=${v}`).join("; "),
                 b.started_at, b.finished_at, b.error
               ])
@@ -5547,12 +6317,11 @@ function BatchesDesk({
           <table className="w-full text-left text-sm">
             <thead className="bg-field text-xs uppercase text-muted">
               <tr>
-                <Th>What ran</Th><Th>Status</Th><Th>Progress</Th><Th>Counters</Th><Th>Started</Th><Th>Duration</Th>
+                <Th>Batch</Th><Th>What ran</Th><Th>Status</Th><Th>Progress</Th><Th>Counters</Th><Th>Started</Th><Th>Duration</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {(batches.data || []).map((b) => {
-                const open = openId === b.id;
                 const dur =
                   b.finished_at
                     ? `${Math.max(1, Math.round((new Date(b.finished_at).getTime() - new Date(b.started_at).getTime()) / 1000))}s`
@@ -5561,116 +6330,36 @@ function BatchesDesk({
                   .filter(([, v]) => Number(v) > 0)
                   .map(([k, v]) => `${k.replaceAll("_", " ")}: ${v}`);
                 return (
-                  <Fragment key={b.id}>
-                    <tr
-                      onClick={() => {
-                        setOpenId(open ? null : b.id);
-                        setErrorImportId(null);
-                      }}
-                      className={clsx("cursor-pointer hover:bg-field/60", open && "bg-ocean/5")}
-                    >
-                      <Td>
-                        <div className="font-medium text-ink">{BATCH_KIND_LABEL[b.kind] || b.kind}</div>
-                        <div className="max-w-[320px] truncate text-xs text-muted">{b.label || "—"}</div>
-                      </Td>
-                      <Td><Status value={b.status} /></Td>
-                      <Td><BatchProgress totals={b.totals || {}} /></Td>
-                      <Td>
-                        <span className="text-xs text-muted">
-                          {counterBits.length ? counterBits.join(" · ") : "—"}
-                        </span>
-                      </Td>
-                      <Td><span className="whitespace-nowrap">{formatDate(b.started_at)}</span></Td>
-                      <Td>{dur}</Td>
-                    </tr>
-                    {open ? (
-                      <tr>
-                        <td colSpan={6} className="bg-field/40 p-4">
-                          {b.error ? (
-                            <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-sm text-danger">
-                              Stopped because: {b.error}
-                            </div>
-                          ) : null}
-                          {b.meta?.current_step ? (
-                            <div className="mb-2 text-xs text-muted">Current step: {String(b.meta.current_step)}</div>
-                          ) : null}
-                          {b.status !== "running" ? (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (window.confirm("Remove this run and its logs from history? (Admin only)")) {
-                                  deleteBatch.mutate(b.id);
-                                }
-                              }}
-                              className="mb-2 flex items-center gap-1.5 text-xs font-medium text-danger hover:underline"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" /> Remove from history
-                            </button>
-                          ) : null}
-                          <div className="space-y-1">
-                            {(logs.data || []).map((l, i) => (
-                              <div key={i} className="flex items-start gap-2 text-xs">
-                                <span
-                                  className={clsx(
-                                    "mt-1 h-1.5 w-1.5 shrink-0 rounded-full",
-                                    l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-ocean"
-                                  )}
-                                />
-                                <span className="text-muted">{formatDate(l.created_at)}</span>
-                                <span className="flex-1 text-ink">{l.message}</span>
-                                {l.data && (l.data as Record<string, unknown>).import_id ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setErrorImportId(String((l.data as Record<string, unknown>).import_id));
-                                    }}
-                                    className="shrink-0 font-medium text-ocean hover:underline"
-                                  >
-                                    View row errors
-                                  </button>
-                                ) : null}
-                              </div>
-                            ))}
-                            {logs.isLoading ? <div className="text-xs text-muted">Loading logs…</div> : null}
-                            {!logs.isLoading && !(logs.data || []).length ? (
-                              <div className="text-xs text-muted">No log entries for this run.</div>
-                            ) : null}
-                          </div>
-                          {errorImportId ? (
-                            <div className="mt-3 rounded-lg border border-line bg-panel p-2">
-                              <div className="mb-1.5 flex items-center justify-between">
-                                <span className="text-xs font-semibold text-ink">
-                                  Row errors {rowErrors.data ? `(${rowErrors.data.total_errors})` : ""}
-                                </span>
-                                <button onClick={() => setErrorImportId(null)} className="text-xs text-ocean hover:underline">
-                                  Close
-                                </button>
-                              </div>
-                              <div className="max-h-64 overflow-y-auto">
-                                {(rowErrors.data?.rows || []).map((r) => (
-                                  <div key={r.row_number} className="border-b border-line py-1.5 text-xs last:border-0">
-                                    <span className="font-semibold text-ink">Row {r.row_number}:</span>{" "}
-                                    <span className="text-danger">{r.error}</span>
-                                    <div className="mt-0.5 break-all text-muted">
-                                      {Object.entries(r.raw || {})
-                                        .filter(([, v]) => v)
-                                        .slice(0, 6)
-                                        .map(([k, v]) => `${k}: ${v}`)
-                                        .join(" · ")}
-                                    </div>
-                                  </div>
-                                ))}
-                                {rowErrors.isLoading ? <div className="text-xs text-muted">Loading…</div> : null}
-                                {!rowErrors.isLoading && !(rowErrors.data?.rows || []).length ? (
-                                  <div className="text-xs text-muted">No row errors recorded.</div>
-                                ) : null}
-                              </div>
-                            </div>
-                          ) : null}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
+                  <tr
+                    key={b.id}
+                    onClick={() => setOpenId(b.id)}
+                    className="cursor-pointer hover:bg-field/60"
+                    title="Open the batch details"
+                  >
+                    <Td><span className="whitespace-nowrap font-semibold text-ink">#B-{b.seq}</span></Td>
+                    <Td>
+                      <div className="font-medium text-ink">{BATCH_KIND_LABEL[b.kind] || b.kind}</div>
+                      <div className="max-w-[320px] truncate text-xs text-muted">{b.label || "—"}</div>
+                    </Td>
+                    <Td>
+                      <span className="flex flex-wrap items-center gap-1">
+                        <BatchStatusChip value={b.status} />
+                        {b.review_pending ? (
+                          <span className="whitespace-nowrap rounded-full bg-plum/10 px-2 py-0.5 text-[11px] font-semibold text-plum" title="Items still awaiting your approve/reject decision">
+                            {b.review_pending} to review
+                          </span>
+                        ) : null}
+                      </span>
+                    </Td>
+                    <Td><BatchProgress totals={b.totals || {}} /></Td>
+                    <Td>
+                      <span className="text-xs text-muted">
+                        {counterBits.length ? counterBits.slice(0, 4).join(" · ") : "—"}
+                      </span>
+                    </Td>
+                    <Td><span className="whitespace-nowrap">{formatDate(b.started_at)}</span></Td>
+                    <Td>{dur}</Td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -5683,6 +6372,104 @@ function BatchesDesk({
           ) : null}
         </div>
       </div>
+    </section>
+  );
+}
+
+// ── Import Source Domains (global Ingest) — staged, reviewed, then approved ──
+function DomainImportDesk({
+  token,
+  onNotice,
+  onOpenBatch
+}: {
+  token: string | null;
+  onNotice: (text: string) => void;
+  onOpenBatch: (batchId: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [text, setText] = useState("");
+  const [staged, setStaged] = useState<{ batch_id: string; seq: number; total: number; new: number; existing: number; duplicate: number } | null>(null);
+  const lineCount = text
+    .replace(/,/g, "\n")
+    .split("\n")
+    .map((t) => t.trim())
+    .filter((t) => t && !t.startsWith("#")).length;
+
+  const submit = useMutation({
+    mutationFn: () =>
+      api<{ batch_id: string; seq: number; total: number; new: number; existing: number; duplicate: number; message: string }>(
+        "/source-domains/import",
+        { token, method: "POST", body: JSON.stringify({ text }) }
+      ),
+    onSuccess: (r) => {
+      setStaged(r);
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Import Source Domains</h2>
+        <p className="text-sm text-muted">
+          Paste a list of websites — each import becomes a review batch where you can check DA/PA/Spam
+          (Moz), Authority Score (Semrush) and domain age per website, then approve only the ones worth
+          keeping. The Source Domains catalog is untouched until you approve.
+        </p>
+      </div>
+
+      {staged ? (
+        <div className="rounded-xl border border-ocean/40 bg-ocean/5 p-4 shadow-card">
+          <p className="text-sm font-semibold text-ink">
+            Review batch <span className="text-ocean">#B-{staged.seq}</span> created — {staged.total} domains staged
+          </p>
+          <p className="mt-1 text-sm text-muted">
+            {staged.new} new · {staged.existing} already in the catalog
+            {staged.duplicate ? ` · ${staged.duplicate} repeated lines collapsed` : ""}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={() => onOpenBatch(staged.batch_id)}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+            >
+              <Play className="h-4 w-4" /> Open review batch
+            </button>
+            <button
+              onClick={() => { setStaged(null); setText(""); }}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              Import another list
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Paste domains" />
+          <div className="space-y-3 p-4">
+            <textarea
+              className="min-h-[240px] w-full rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ocean/20"
+              placeholder={"one website per line, e.g.\nexample.com\nhttps://blog.publisher.net/some-page\nanother-site.org"}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => submit.mutate()}
+                disabled={!lineCount || submit.isPending}
+                className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+              >
+                {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+                Stage {lineCount || ""} domain{lineCount === 1 ? "" : "s"} for review
+              </button>
+              <span className="text-xs text-muted">
+                URLs are reduced to their main domain (blog.example.com/page → example.com); repeats are collapsed.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -7293,12 +8080,14 @@ function SourceDomainsDesk({
   token,
   projectId,
   onNotice,
-  onOpenBacklinks
+  onOpenBacklinks,
+  onImportDomains
 }: {
   token: string | null;
   projectId: string;
   onNotice: (text: string) => void;
   onOpenBacklinks: (filters: Record<string, string>) => void;
+  onImportDomains?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -7384,6 +8173,16 @@ function SourceDomainsDesk({
             {fetchSemrush.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
             Check AS (Semrush)
           </button>
+          {onImportDomains ? (
+            <button
+              onClick={onImportDomains}
+              title="Paste a list of websites — they land in a review batch and join this catalog only when you approve them"
+              className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              <Upload className="h-4 w-4" />
+              Import domains
+            </button>
+          ) : null}
         </div>
       </div>
       {projectId ? (

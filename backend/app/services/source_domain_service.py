@@ -88,10 +88,13 @@ _LINK = text(
     """
 )
 
+# Only 'derived' rows are recompute-owned; 'imported' rows (approved from a
+# domain-import batch, 0029) survive with zero backlinks — they are catalog
+# entries a user explicitly added.
 _ORPHAN = text(
     """
     DELETE FROM source_domains sd
-    WHERE sd.workspace_id = :ws AND NOT EXISTS (
+    WHERE sd.workspace_id = :ws AND sd.origin = 'derived' AND NOT EXISTS (
         SELECT 1 FROM backlink_records b
         WHERE b.workspace_id = sd.workspace_id AND b.source_domain = sd.domain_key);
     """

@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
+from pydantic import BaseModel, Field
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
+from app.models.enums import AuditAction
 from app.schemas.source_domain import SourceDomainDetailOut, SourceDomainOut
+from app.services import audit_service, batch_review_service
 from app.services import source_domain_service as svc
 
 router = APIRouter(prefix="/source-domains", tags=["source-domains"])
@@ -24,6 +27,41 @@ async def list_source_domains(
 ) -> list[SourceDomainOut]:
     rows = await svc.list_domains(db, ctx, sort=sort, order=order, search=search, limit=limit)
     return [SourceDomainOut(**r) for r in rows]
+
+
+class DomainImportRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2_000_000)
+    label: str | None = Field(default=None, max_length=200)
+
+
+# NOTE: declared before /{domain_id} so the literal path wins route matching.
+@router.post("/import", status_code=status.HTTP_202_ACCEPTED)
+async def import_source_domains(
+    payload: DomainImportRequest, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> dict:
+    """Stage a pasted list of domains/URLs into a review batch (0029). Each
+    domain is reviewable (check DA/PA/Spam/AS/age) and joins the Source Domains
+    catalog only when approved in the Batches desk."""
+    batch = await batch_review_service.stage_domain_import(
+        db, ctx, text_block=payload.text, label=payload.label
+    )
+    await audit_service.record(
+        db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="batch", entity_id=batch.id,
+        summary=f"Staged domain import for review (#B-{batch.seq})",
+    )
+    await db.commit()
+    c = batch.counters or {}
+    return {
+        "batch_id": str(batch.id),
+        "seq": batch.seq,
+        "total": int((batch.totals or {}).get("total", 0)),
+        "new": int(c.get("new", 0)),
+        "existing": int(c.get("existing", 0)),
+        "duplicate": int(c.get("duplicate", 0)),
+        "message": f"Review batch #B-{batch.seq} created — approve domains to add them to the catalog",
+    }
 
 
 # NOTE: declared before /{domain_id} so the literal path wins route matching.

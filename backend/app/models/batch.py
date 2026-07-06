@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, Text, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -27,6 +27,9 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 BATCH_KINDS = (
     "import", "sheet_sync", "writeback", "crawl", "recheck", "index_check",
     "duplicate_scan", "rescore", "competitor_import", "report",
+    # Review batches (0029): staged rows live in ``batch_items`` and reach the
+    # production tables only when a user approves them.
+    "link_review", "domain_import",
 )
 
 
@@ -41,7 +44,11 @@ class Batch(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     project_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
-    # pending | running | completed | failed | partial
+    # Human-friendly run number (#B-142) — global sequence, display + support refs.
+    seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("nextval('batches_seq_seq')")
+    )
+    # pending | running | completed | failed | partial | review (awaiting review)
     status: Mapped[str] = mapped_column(String(20), default="running", nullable=False)
     label: Mapped[str | None] = mapped_column(String(300))  # human name (sheet, file…)
     started_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
@@ -55,6 +62,39 @@ class Batch(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BatchItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One staged row of a review batch (0029) — a pasted link or an imported
+    domain. Items are the batch's OWN data: QA verdicts / fetched metrics land
+    in ``payload`` only, and nothing reaches ``backlink_records`` or
+    ``source_domains`` until the row is explicitly approved."""
+
+    __tablename__ = "batch_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "key_hash", name="uq_batch_items_batch_key"),
+        Index("ix_batch_items_ws_batch_state", "workspace_id", "batch_id", "state"),
+        Index("ix_batch_items_batch_created", "batch_id", "created_at"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("batches.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)  # link | domain
+    label: Mapped[str] = mapped_column(Text, nullable=False)  # URL / domain (display + search)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # sha256 in-batch identity
+    # new (not in the main DB yet) | existing (already there) | duplicate (repeated in this batch)
+    presence: Mapped[str] = mapped_column(String(12), default="new", nullable=False)
+    # pending | checking | checked | failed | approved | rejected
+    state: Mapped[str] = mapped_column(String(12), default="pending", nullable=False)
+    # links: {"mapped": {...import fields...}, "source_domain": ..., "qa": {...verdict...}}
+    # domains: {"metrics": {da, pa, spam_score, semrush_as, ...}}
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    error: Mapped[str | None] = mapped_column(Text)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BatchLog(UUIDPrimaryKeyMixin, Base):

@@ -106,13 +106,31 @@ def parse_xlsx(data: bytes) -> tuple[list[str], list[dict[str, str]]]:
 
 
 def parse_paste(text: str) -> tuple[list[str], list[dict[str, str]]]:
-    """Bulk paste: one URL/line, or ``source,target`` (or tab/semicolon) pairs."""
+    """Bulk paste: one URL/line, ``source,target`` (or tab/semicolon) pairs, or
+    a full CSV block. A first line made of recognized column names (and no
+    URLs) is treated as a header row — every column is kept so the mapping
+    sees anchor/rel/campaign/etc. instead of silently dropping them."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ["source_page_url", "target_url"], []
+    first = [p.strip() for p in _split_pair(lines[0])]
+    looks_like_header = (
+        len(first) >= 2
+        and bool(auto_map(first))
+        and not any("://" in p or p.lower().startswith("www.") for p in first)
+    )
+    if looks_like_header:
+        reader = csv.reader(io.StringIO("\n".join(lines)))
+        parsed = [row for row in reader if any((c or "").strip() for c in row)]
+        headers = [h.strip() for h in parsed[0]]
+        rows = [
+            {headers[i]: (c or "").strip() for i, c in enumerate(r) if i < len(headers)}
+            for r in parsed[1:]
+        ]
+        return headers, rows
     headers = ["source_page_url", "target_url"]
-    rows: list[dict[str, str]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    rows = []
+    for line in lines:
         parts = [p.strip() for p in _split_pair(line)]
         if len(parts) >= 2:
             rows.append({"source_page_url": parts[0], "target_url": parts[1]})

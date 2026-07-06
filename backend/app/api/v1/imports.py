@@ -24,8 +24,12 @@ from app.schemas.import_ import (
     PasteImportRequest,
     PastePreviewRequest,
 )
-from app.schemas.common import IdResponse
-from app.services import audit_service, import_parse, import_service, project_service
+from app.services import (
+    audit_service,
+    batch_review_service,
+    import_parse,
+    project_service,
+)
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -59,14 +63,40 @@ async def preview_paste(payload: PastePreviewRequest, ctx: AuthCtx) -> ImportPre
     return _preview(headers, rows)
 
 
-@router.post("/file", response_model=IdResponse, status_code=status.HTTP_202_ACCEPTED)
+def _mapped_rows(
+    headers: list[str], rows: list[dict[str, str]], mapping: dict[str, str] | None
+) -> list[dict[str, str]]:
+    """Apply the column mapping (user-chosen or auto) so the review batch
+    stages canonical import fields, exactly like ``stage_rows`` would."""
+    effective = mapping or import_parse.auto_map(headers)
+    return [import_parse.apply_mapping(raw, effective) for raw in rows]
+
+
+def _staged_response(batch) -> dict:
+    """What the Imports desk shows the moment a review batch is created."""
+    c = batch.counters or {}
+    return {
+        "batch_id": str(batch.id),
+        "seq": batch.seq,
+        "total": int((batch.totals or {}).get("total", 0)),
+        "new": int(c.get("new", 0)),
+        "existing": int(c.get("existing", 0)),
+        "duplicate": int(c.get("duplicate", 0)),
+        "invalid": int(c.get("invalid", 0)),
+        "message": f"Review batch #B-{batch.seq} created — nothing is imported until you approve it",
+    }
+
+
+@router.post("/file", status_code=status.HTTP_202_ACCEPTED)
 async def import_file(
     db: DbSession,
     project_id: uuid.UUID = Form(...),
     column_mapping: str | None = Form(default=None),
     file: UploadFile = File(...),
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
-) -> IdResponse:
+) -> dict:
+    """Stage a CSV/XLSX into a review batch (0029) — links are QA-testable in
+    isolation and reach the project only when approved in the Batches desk."""
     await project_service.get_project(db, ctx, project_id)  # scope check
     data = await file.read()
     if len(data) > _MAX_UPLOAD_BYTES:
@@ -75,49 +105,56 @@ async def import_file(
     mapping = json.loads(column_mapping) if column_mapping else None
     name = (file.filename or "upload").lower()
     src = ImportSource.XLSX if name.endswith(".xlsx") else ImportSource.CSV
+    headers, rows = (
+        import_parse.parse_xlsx(data) if name.endswith(".xlsx") else import_parse.parse_csv(data)
+    )
+    if not rows:
+        raise ValidationAppError("No rows found in the file")
 
+    # Keep the original upload for the audit trail (referenced from batch meta).
     key = f"{ctx.workspace_id}/{uuid.uuid4().hex}-{name}"
     await put_bytes_async(
         settings.S3_BUCKET_IMPORTS, key, data,
         "application/octet-stream",
     )
-    imp = await import_service.create_import(
-        db, ctx, project_id=project_id, source=src, filename=file.filename,
-        upload_key=key, column_mapping=mapping,
+    batch = await batch_review_service.stage_link_import(
+        db, ctx, project_id=project_id, rows=_mapped_rows(headers, rows, mapping),
+        source=src, filename=file.filename,
     )
+    batch.meta = {**(batch.meta or {}), "upload_key": key}
     await audit_service.record(
         db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
-        entity_type="import", entity_id=imp.id, summary=f"Import file {file.filename}",
+        entity_type="batch", entity_id=batch.id,
+        summary=f"Staged file {file.filename} for review (#B-{batch.seq})",
     )
     await db.commit()
-
-    from app.workers.dispatch import enqueue_import
-
-    enqueue_import(imp.id, parse_from_storage=True)
-    return IdResponse(id=str(imp.id))
+    return _staged_response(batch)
 
 
-@router.post("/paste", response_model=IdResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/paste", status_code=status.HTTP_202_ACCEPTED)
 async def import_paste(
     payload: PasteImportRequest, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
-) -> IdResponse:
+) -> dict:
+    """Stage pasted links into a review batch (0029) — same isolation as file
+    imports: QA-test first, approve what you keep."""
     await project_service.get_project(db, ctx, payload.project_id)
     headers, rows = import_parse.parse_paste(payload.text)
     if not rows:
         raise ValidationAppError("No rows found in pasted text")
 
-    imp = await import_service.create_import(
-        db, ctx, project_id=payload.project_id, source=ImportSource.PASTE,
-        column_mapping=payload.column_mapping or import_parse.auto_map(headers),
+    batch = await batch_review_service.stage_link_import(
+        db, ctx, project_id=payload.project_id,
+        rows=_mapped_rows(headers, rows, payload.column_mapping),
+        source=ImportSource.PASTE,
     )
-    await import_service.stage_rows(db, imp, rows)
+    await audit_service.record(
+        db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="batch", entity_id=batch.id,
+        summary=f"Staged pasted links for review (#B-{batch.seq})",
+    )
     await db.commit()
-
-    from app.workers.dispatch import enqueue_import
-
-    enqueue_import(imp.id, parse_from_storage=False)
-    return IdResponse(id=str(imp.id))
+    return _staged_response(batch)
 
 
 @router.get("", response_model=list[ImportOut])

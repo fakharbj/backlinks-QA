@@ -218,6 +218,12 @@ class Settings(BaseSettings):
     DOMAIN_METRICS_REFRESH_DAYS: int = 30   # only refetch a domain this often
     DOMAIN_METRICS_BATCH_LIMIT: int = 15    # domains processed per fetch trigger
     DOMAIN_METRICS_TIMEOUT_SECONDS: float = 8.0
+    # Review batches (0029): domain-import metric checks run inline in the
+    # request (like /source-domains/fetch-metrics) — this caps domains per call
+    # so the request stays snappy; the UI keeps calling until none remain.
+    BATCH_DOMAIN_CHECK_CAP: int = 25
+    # Staged QA checks are chunked onto the "qa" queue this many links per task.
+    BATCH_QA_CHUNK_SIZE: int = 10
 
     # ── Google Sheets (ingest + write-back) ──────────────────────────────────
     # One global main sheet lists projects (Project Name + Project Sheet URL); each

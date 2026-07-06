@@ -61,6 +61,7 @@ celery_app.conf.task_routes = {
     "tasks.sheets.*": {"queue": "sheets.sync"},
     "tasks.index.*": {"queue": "index.check"},
     "tasks.maintenance.*": {"queue": "maintenance"},
+    "tasks.staging.*": {"queue": "qa"},  # review-batch QA checks (0029)
     # crawl_batch is routed explicitly per-shard at dispatch time.
 }
 
@@ -103,6 +104,7 @@ celery_app.autodiscover_tasks(
         "app.workers.tasks.sheets",
         "app.workers.tasks.index",
         "app.workers.tasks.maintenance",
+        "app.workers.tasks.staging",
     ],
     force=True,
 )

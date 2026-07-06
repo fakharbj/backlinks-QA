@@ -291,6 +291,34 @@ seeding. Perf: argon2 moved off the event loop (`asyncio.to_thread` +
 `SEMRUSH_RAPIDAPI_ENDPOINT` is set in prod `.env` (Moz DA/PA already live
 via `RAPIDAPI_KEY`).
 
+**Batch System shipped + deployed** (migration `0029`, 152 tests): manual
+imports are now **staged, never direct**. `POST /imports/paste|file` creates a
+`link_review` batch (`batch_items`: presence new/existing/duplicate vs the
+project + in-batch, state pending→checking→checked|failed→approved|rejected);
+QA runs ISOLATED on the worker (`tasks.staging.check_staged_links`, full
+engine: proxy escalation + render pool + markdown/redirect matching) with
+verdicts stored in `item.payload.qa` only — `backlink_records`/`crawl_results`
+untouched until **Approve**, which feeds approved rows through the normal
+`import_service` pipeline linked to the same batch (logs + row errors in one
+place). **Import Source Domains** (global Ingest nav + Source Domains button):
+paste domains → `domain_import` batch → inline metric checks (Moz DA/PA/Spam,
+Semrush AS, RDAP age; capped `BATCH_DOMAIN_CHECK_CAP`/call) → approve into
+`source_domains` with **`origin='imported'`** (recompute's orphan-sweep only
+deletes `origin='derived'` — imported catalog rows survive with 0 backlinks).
+Batches got human ids **`#B-<seq>`** (global sequence, backfilled
+chronologically), status **"review"**, `review_pending` counts, and a full
+**Batch Details page** (summary cards that set filters, state/presence chip
+filters + search, bulk select, Run QA / Check DA/PA / Check AS / Approve /
+Reject / Re-run failed, per-item expandable QA/metrics facts, clean logs +
+row-error viewer) — same UX global + project. `parse_paste` is now
+header-aware (a recognized header line switches to full CSV parsing — extra
+columns like anchor/campaign are kept, not dropped). ImportDesk stages + file
+upload; new DomainImportDesk; `f_batch` deep-link opens a batch cross-desk.
+Kind/status wording maps (`BATCH_KIND_LABEL`/`BATCH_STATUS`). Live-verified
+end-to-end on prod (staged link → worker verdict PASS/94 → 0 rows in project
+→ batch deleted). Sheet sync intentionally still writes direct (automated
+pipeline; unchanged).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —

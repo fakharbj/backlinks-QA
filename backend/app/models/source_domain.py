@@ -43,6 +43,10 @@ class SourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     domain_key: Mapped[str] = mapped_column(String(255), nullable=False)  # registrable domain
     grouping: Mapped[str] = mapped_column(String(20), default="registrable", nullable=False)
+    # 'derived' rows are rebuilt from backlinks (recompute deletes orphans);
+    # 'imported' rows were approved from a domain-import batch and survive
+    # recompute even with zero backlinks (0029).
+    origin: Mapped[str] = mapped_column(String(12), default="derived", server_default="derived", nullable=False)
 
     backlink_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     indexed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
