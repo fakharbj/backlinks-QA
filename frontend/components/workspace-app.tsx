@@ -10810,86 +10810,366 @@ function SheetMappingEditor({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
+  type FieldMeta = { key: string; label: string; required: boolean; group: string; help: string };
   type MappingData = {
+    tabs: Array<{ id: string; tab_name: string; import_enabled: boolean }>;
+    tab_id: string | null;
     headers: string[];
     header_error: string | null;
+    sample_rows: Array<Record<string, string>>;
+    row_count: number;
     mapping: Record<string, string>;
+    tab_mapping: Record<string, string>;
+    source_mapping: Record<string, string>;
     is_manual: boolean;
-    auto_mapping: Record<string, string>;
+    auto: { mapping: Record<string, string>; matched: string[]; unmatched: string[] };
+    field_constants: Record<string, string>;
+    header_row: number;
     fields: string[];
+    field_meta: FieldMeta[];
     writeback_options: string[];
     writeback_columns: string[];
+    project_target: string | null;
+    required_ok: boolean;
   };
+
+  const [selectedTab, setSelectedTab] = useState<string | null>(null);
   const data = useQuery({
-    queryKey: ["sheet-mapping", token, sheetId],
+    queryKey: ["sheet-mapping", token, sheetId, selectedTab],
     enabled: Boolean(token),
-    queryFn: () => api<MappingData>(`/sheets/${sheetId}/mapping`, { token })
+    queryFn: () =>
+      api<MappingData>(
+        `/sheets/${sheetId}/mapping${selectedTab ? `?tab_id=${encodeURIComponent(selectedTab)}` : ""}`,
+        { token }
+      )
   });
-  const [draft, setDraft] = useState<Record<string, string> | null>(null);
-  const [wb, setWb] = useState<string[] | null>(null);
-  const mapping = draft ?? data.data?.mapping ?? {};
-  const wbCols = wb ?? data.data?.writeback_columns ?? [];
+
+  const [draftMapping, setDraftMapping] = useState<Record<string, string>>({});
+  const [draftConstants, setDraftConstants] = useState<Record<string, string>>({});
+  const [headerRow, setHeaderRow] = useState(1);
+  const [wbCols, setWbCols] = useState<string[]>([]);
+  // Constant-adder local state
+  const [newConstField, setNewConstField] = useState("");
+  const [newConstValue, setNewConstValue] = useState("");
+
+  const d = data.data;
+
+  // Seed all drafts whenever the loaded tab's data changes (load or tab switch).
+  useEffect(() => {
+    if (!d) return;
+    if (selectedTab === null && d.tab_id) setSelectedTab(d.tab_id);
+    setDraftMapping({ ...d.mapping });
+    setDraftConstants({ ...d.field_constants });
+    setHeaderRow(d.header_row || 1);
+    setWbCols([...d.writeback_columns]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d?.tab_id, d?.header_row]);
 
   const save = useMutation({
-    mutationFn: () =>
+    mutationFn: (apply_to: "tab" | "source" | "all_tabs") =>
       api<{ message: string }>(`/sheets/${sheetId}/mapping`, {
         token,
         method: "PUT",
-        body: JSON.stringify({ column_mapping: mapping, writeback_columns: wbCols })
+        body: JSON.stringify({
+          tab_id: selectedTab,
+          column_mapping: draftMapping,
+          field_constants: draftConstants,
+          header_row: headerRow,
+          writeback_columns: wbCols,
+          apply_to
+        })
       }),
     onSuccess: (r) => {
       onNotice(r.message);
       queryClient.invalidateQueries({ queryKey: ["sheet-mapping", token, sheetId] });
-      setDraft(null);
-      setWb(null);
+      queryClient.invalidateQueries({ queryKey: ["sheets"] });
     },
     onError: (e: Error) => onNotice(e.message)
   });
 
-  const fieldLabel = (f: string) => f.replaceAll("_", " ");
+  const fieldLabel = (f: string) => {
+    const m = d?.field_meta.find((x) => x.key === f);
+    return m ? m.label : f.replaceAll("_", " ");
+  };
+
   if (data.isLoading) {
     return <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>;
   }
-  const d = data.data;
   if (!d) return <Empty label="Could not load mapping." />;
+
+  const meta = d.field_meta;
+  // Reverse lookup: which sheet header currently feeds each field.
+  const headerForField = (f: string): string | null => {
+    for (const [h, field] of Object.entries(draftMapping)) if (field === f) return h;
+    return null;
+  };
+  // Fields not yet mapped to any column AND without a constant — candidates for a fixed value.
+  const mappedFields = new Set(Object.values(draftMapping));
+  const constantCandidates = meta.filter(
+    (m) => !mappedFields.has(m.key) && !(m.key in draftConstants)
+  );
+
+  const setColumnField = (header: string, field: string) =>
+    setDraftMapping((prev) => {
+      const next = { ...prev };
+      if (field) next[header] = field;
+      else delete next[header];
+      return next;
+    });
+
+  const addConstant = () => {
+    if (!newConstField) return;
+    setDraftConstants((prev) => ({ ...prev, [newConstField]: newConstValue }));
+    setNewConstField("");
+    setNewConstValue("");
+  };
+  const removeConstant = (f: string) =>
+    setDraftConstants((prev) => {
+      const next = { ...prev };
+      delete next[f];
+      return next;
+    });
+
+  const resetToAuto = () => {
+    setDraftMapping({ ...d.auto.mapping });
+    setDraftConstants({});
+  };
+
+  // The hard requirement: a source URL, from a column or a constant.
+  const allRequiredOk =
+    Object.values(draftMapping).includes("source_page_url") ||
+    "source_page_url" in draftConstants;
+
+  // Core fields to surface in the coverage panel: required + group "core".
+  const coreFields = meta.filter((m) => m.required || m.group === "core");
+  const activeTab = d.tabs.find((t) => t.id === (selectedTab ?? d.tab_id));
+
+  const truncate = (v: string, n = 40) => (v.length > n ? `${v.slice(0, n)}…` : v);
+
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-1.5 text-sm font-semibold text-ink">
-        Column mapping
-        <HelpTip text="Tell the sync which sheet column feeds each field. Auto-detect handles common names ('Source URL', 'User', 'Anchor'…); set a column manually when your sheet uses different wording. '(ignored)' columns are simply skipped." />
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+          Column mapping
+          <HelpTip text="Tell the sync which sheet column feeds each field. Auto-detect handles common names ('Source URL', 'User', 'Anchor'…); set a column manually when your sheet uses different wording. '(ignore)' columns are simply skipped, and a fixed value fills fields your sheet doesn't have a column for." />
+        </div>
+        {activeTab ? (
+          <span className="text-xs text-muted">
+            Tab <span className="font-medium text-ink">{activeTab.tab_name}</span>
+          </span>
+        ) : null}
         <span className="rounded-full bg-field px-2 py-0.5 text-[10px] font-semibold uppercase text-muted">
           {d.is_manual ? "Manual" : "Auto-detected"}
         </span>
       </div>
+
+      {/* TAB SWITCHER */}
+      {d.tabs.length > 1 ? (
+        <div className="flex items-center gap-1.5 overflow-x-auto">
+          <span className="shrink-0 text-xs text-muted">Mapping tab:</span>
+          <span className="inline-flex rounded-lg border border-line bg-field/40 p-0.5 text-xs font-medium">
+            {d.tabs.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setSelectedTab(t.id)}
+                className={clsx(
+                  "rounded-md px-2.5 py-1 transition",
+                  (selectedTab ?? d.tab_id) === t.id ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field"
+                )}
+              >
+                {t.tab_name}
+              </button>
+            ))}
+          </span>
+        </div>
+      ) : null}
+
+      {/* AUTO SCORECARD */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-field/40 px-3 py-2 text-xs">
+        <span className="text-muted">
+          <span className="font-semibold text-ink">{d.auto.matched.length}</span> of{" "}
+          <span className="font-semibold text-ink">{d.headers.length}</span> columns auto-detected
+          {" · "}
+          {d.auto.unmatched.length} ignored
+        </span>
+        <button
+          onClick={resetToAuto}
+          className="ml-auto rounded-md border border-line px-2 py-1 font-medium text-muted transition hover:bg-field"
+        >
+          Reset to auto-detect
+        </button>
+      </div>
+
+      {/* HEADER ROW control */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <label className="flex items-center gap-1.5 font-medium text-ink">
+          Headers are in row
+          <input
+            type="number"
+            min={1}
+            max={50}
+            value={headerRow}
+            onChange={(e) => setHeaderRow(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+            className="h-8 w-16 rounded-lg border border-line bg-panel px-2 text-xs"
+          />
+        </label>
+        <span className="text-muted">
+          Increase if your sheet has a title/banner above the column names. Applies on save, then re-reads the sheet.
+        </span>
+      </div>
+
       {d.header_error ? (
-        <div className="rounded-lg border border-ember/30 bg-ember/10 p-2 text-xs text-ember">
+        <div className="rounded-lg border border-danger/30 bg-danger/10 p-2 text-xs text-danger">
           Couldn&apos;t read the sheet&apos;s headers right now: {d.header_error}
         </div>
       ) : null}
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {(d.headers.length ? d.headers : Object.keys(mapping)).map((h) => (
-          <label key={h} className="text-xs">
-            <span className="mb-0.5 block truncate font-medium text-ink" title={h}>{h}</span>
-            <select
-              value={mapping[h] || ""}
-              onChange={(e) =>
-                setDraft((prev) => {
-                  const next = { ...(prev ?? d.mapping) };
-                  if (e.target.value) next[h] = e.target.value;
-                  else delete next[h];
-                  return next;
-                })
-              }
-              className="h-8 w-full rounded-lg border border-line bg-panel px-2 text-xs"
-            >
-              <option value="">(ignored)</option>
-              {d.fields.map((f) => (
-                <option key={f} value={f}>{fieldLabel(f)}</option>
-              ))}
-            </select>
-          </label>
-        ))}
+
+      {/* REQUIRED-FIELD / COVERAGE PANEL */}
+      <div className="rounded-lg border border-line bg-panel p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink">
+          Core fields
+          <HelpTip text="Where each key field comes from. Source page URL is mandatory — from a column or a fixed value. Target URL can default to the project target when left unmapped." />
+        </div>
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {coreFields.map((m) => {
+            const col = headerForField(m.key);
+            const constant = m.key in draftConstants ? draftConstants[m.key] : null;
+            let detail: React.ReactNode;
+            if (col) {
+              detail = <span className="rounded-full bg-ocean/10 px-2 py-0.5 font-medium text-ocean">from “{col}”</span>;
+            } else if (constant !== null) {
+              detail = <span className="rounded-full bg-plum/10 px-2 py-0.5 font-medium text-plum">= {constant || "(blank)"}</span>;
+            } else if (m.key === "target_url" && d.project_target) {
+              detail = <span className="rounded-full bg-field px-2 py-0.5 text-muted">defaults to {truncate(d.project_target, 32)}</span>;
+            } else if (m.required) {
+              detail = <span className="rounded-full bg-danger/10 px-2 py-0.5 font-medium text-danger">Not mapped — required</span>;
+            } else {
+              detail = <span className="rounded-full bg-danger/10 px-2 py-0.5 font-medium text-danger">Not mapped</span>;
+            }
+            return (
+              <div key={m.key} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate text-ink" title={m.help}>
+                  {m.label}
+                  {m.required ? <span className="text-danger"> *</span> : null}
+                </span>
+                {detail}
+              </div>
+            );
+          })}
+        </div>
+        {!allRequiredOk ? (
+          <p className="mt-2 text-xs text-danger">
+            Map a column to <span className="font-semibold">Source page URL</span> (or set a fixed value) before saving.
+          </p>
+        ) : null}
       </div>
+
+      {/* LIVE PREVIEW TABLE */}
+      <div>
+        <div className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink">
+          Live preview
+          <HelpTip text="Real rows from your sheet. Pick the field each column feeds from the dropdown under its name — the sample values below show exactly what will be imported." />
+        </div>
+        {d.header_error ? (
+          <div className="rounded-lg border border-danger/30 bg-danger/10 p-2 text-xs text-danger">
+            Preview unavailable — the sheet headers couldn&apos;t be read.
+          </div>
+        ) : !d.headers.length ? (
+          <Empty label="No columns found — check the header row above." />
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-line">
+            <table className="min-w-full border-collapse text-xs">
+              <thead>
+                <tr className="bg-field/60">
+                  {d.headers.map((h) => (
+                    <th key={h} className="border-b border-r border-line p-1.5 text-left align-top last:border-r-0">
+                      <span className="mb-1 block max-w-[9rem] truncate font-semibold text-ink" title={h}>{h}</span>
+                      <select
+                        value={draftMapping[h] || ""}
+                        onChange={(e) => setColumnField(h, e.target.value)}
+                        className="h-7 w-full min-w-[8rem] rounded-md border border-line bg-panel px-1.5 text-[11px]"
+                      >
+                        <option value="">(ignore)</option>
+                        {meta.map((m) => (
+                          <option key={m.key} value={m.key}>
+                            {m.label}{m.required ? " *" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {d.sample_rows.slice(0, 8).map((row, i) => (
+                  <tr key={i} className="odd:bg-panel even:bg-field/20">
+                    {d.headers.map((h) => (
+                      <td key={h} className="border-b border-r border-line p-1.5 align-top text-muted last:border-r-0" title={row[h] || ""}>
+                        {row[h] ? truncate(row[h]) : <span className="text-muted/50">—</span>}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {!d.sample_rows.length ? (
+                  <tr>
+                    <td colSpan={d.headers.length} className="p-3 text-center text-muted">
+                      No sample rows below the header row.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* CONSTANTS */}
+      <div className="rounded-lg border border-line bg-panel p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink">
+          Fixed values
+          <HelpTip text="Fill a field with the same value for every row when your sheet has no column for it — e.g. Link type = Guest Post, or Vendor = a supplier name." />
+        </div>
+        {Object.keys(draftConstants).length ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {Object.entries(draftConstants).map(([f, v]) => (
+              <span key={f} className="inline-flex items-center gap-1 rounded-full border border-line bg-field px-2.5 py-1 text-xs">
+                <span className="font-medium text-ink">{fieldLabel(f)}</span> = {v || "(blank)"}
+                <button
+                  onClick={() => removeConstant(f)}
+                  className="text-muted transition hover:text-danger"
+                  aria-label="Remove"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <SearchSelect
+            value={newConstField}
+            onChange={setNewConstField}
+            options={constantCandidates.map((m) => ({ value: m.key, label: m.label }))}
+            placeholder="Choose a field…"
+            width="w-52"
+          />
+          <input
+            value={newConstValue}
+            onChange={(e) => setNewConstValue(e.target.value)}
+            placeholder="Fixed value"
+            className="h-9 w-44 rounded-lg border border-line bg-panel px-2.5 text-sm"
+          />
+          <button
+            onClick={addConstant}
+            disabled={!newConstField}
+            className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
+      {/* WRITE-BACK */}
       <div>
         <div className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink">
           Write-back columns
@@ -10902,10 +11182,7 @@ function SheetMappingEditor({
                 type="checkbox"
                 checked={wbCols.includes(c)}
                 onChange={() =>
-                  setWb((prev) => {
-                    const cur = prev ?? d.writeback_columns;
-                    return cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c];
-                  })
+                  setWbCols((cur) => (cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]))
                 }
                 className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
               />
@@ -10914,24 +11191,37 @@ function SheetMappingEditor({
           ))}
         </div>
       </div>
-      <div className="flex gap-2">
+
+      {/* SAVE */}
+      <div className="flex flex-wrap items-center gap-2">
         <button
-          onClick={() => save.mutate()}
-          disabled={save.isPending}
+          onClick={() => save.mutate("tab")}
+          disabled={save.isPending || !allRequiredOk}
+          title={!allRequiredOk ? "Map Source page URL (or set a fixed value) first" : undefined}
           className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
         >
           {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-          Save mapping
+          Save for this tab
         </button>
+        {d.tabs.length > 1 ? (
+          <button
+            onClick={() => {
+              if (window.confirm("Apply this mapping to every tab in the sheet?")) save.mutate("all_tabs");
+            }}
+            disabled={save.isPending || !allRequiredOk}
+            title={!allRequiredOk ? "Map Source page URL (or set a fixed value) first" : undefined}
+            className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field disabled:opacity-50"
+          >
+            Apply to all tabs
+          </button>
+        ) : null}
         <button
-          onClick={() => {
-            setDraft({});
-            setWb(d.writeback_options);
-          }}
-          title="Clear manual choices — the next sync auto-detects columns again"
-          className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field"
+          onClick={() => save.mutate("source")}
+          disabled={save.isPending || !allRequiredOk}
+          title={!allRequiredOk ? "Map Source page URL (or set a fixed value) first" : "Use as the fallback for tabs without their own mapping"}
+          className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field disabled:opacity-50"
         >
-          Reset to auto
+          Save as sheet default
         </button>
       </div>
     </div>

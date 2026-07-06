@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,3 +40,11 @@ class GoogleSheetTab(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="detected", nullable=False)  # detected|missing
     row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Per-tab header→canonical-field override; null = inherit source default then auto-map.
+    column_mapping: Mapped[dict | None] = mapped_column(JSONB)
+    # canonical field → literal value applied to every row on the tab (e.g. link_type).
+    field_constants: Mapped[dict | None] = mapped_column(JSONB)
+    # 1-based row where headers live; null = 1.
+    header_row: Mapped[int | None] = mapped_column(Integer)
+    # last-seen headers, for the mapping UI + drift detection.
+    headers_snapshot: Mapped[list | None] = mapped_column(JSONB)

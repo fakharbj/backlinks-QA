@@ -21,6 +21,46 @@ CANONICAL_FIELDS = [
     "assigned_user_label", "employee_code", "link_type", "sheet_created_date",
 ]
 
+# Structured metadata for every canonical field, in CANONICAL_FIELDS order. Powers
+# the mapping UI (labels, grouping, required markers, help text). ``required`` is
+# True for ``source_page_url`` only — everything else is optional.
+CANONICAL_FIELD_META: list[dict] = [
+    {"key": "source_page_url", "label": "Source page URL", "required": True,
+     "group": "core", "help": "The live page where the backlink appears (mandatory)."},
+    {"key": "target_url", "label": "Target URL", "required": False,
+     "group": "core", "help": "The linked-to URL; can default to the project target if omitted."},
+    {"key": "expected_target_url", "label": "Expected target URL", "required": False,
+     "group": "core", "help": "The exact target the link should point to for QA matching."},
+    {"key": "expected_anchor_text", "label": "Expected anchor text", "required": False,
+     "group": "core", "help": "The anchor text the link is expected to use."},
+    {"key": "expected_rel", "label": "Expected rel", "required": False,
+     "group": "core", "help": "Expected follow type (dofollow / nofollow / sponsored / ugc)."},
+    {"key": "campaign", "label": "Campaign", "required": False,
+     "group": "attribution", "help": "Campaign this placement belongs to."},
+    {"key": "vendor", "label": "Vendor", "required": False,
+     "group": "attribution", "help": "Supplier / provider that built the link."},
+    {"key": "client_name", "label": "Client name", "required": False,
+     "group": "attribution", "help": "Client the placement was done for."},
+    {"key": "cost", "label": "Cost", "required": False,
+     "group": "attribution", "help": "Amount paid for the placement."},
+    {"key": "placement_date", "label": "Placement date", "required": False,
+     "group": "meta", "help": "Date the link went live."},
+    {"key": "expected_status", "label": "Expected status", "required": False,
+     "group": "meta", "help": "Expected HTTP status of the source page."},
+    {"key": "notes", "label": "Notes", "required": False,
+     "group": "meta", "help": "Free-text notes / comments."},
+    {"key": "tags", "label": "Tags", "required": False,
+     "group": "meta", "help": "Free-text labels for filtering."},
+    {"key": "assigned_user_label", "label": "Assigned user", "required": False,
+     "group": "attribution", "help": "Team member the link is attributed to."},
+    {"key": "employee_code", "label": "Employee code", "required": False,
+     "group": "attribution", "help": "Staff/employee identifier for attribution."},
+    {"key": "link_type", "label": "Link type", "required": False,
+     "group": "meta", "help": "Free-text category (guest post, directory, profile, …)."},
+    {"key": "sheet_created_date", "label": "Sheet date", "required": False,
+     "group": "meta", "help": "Date the row was added in the source sheet."},
+]
+
 # Header synonyms → canonical field. Compared after lower/strip/space-collapse.
 _SYNONYMS: dict[str, str] = {
     "source url": "source_page_url", "source": "source_page_url", "source page": "source_page_url",
@@ -67,6 +107,17 @@ def auto_map(headers: Iterable[str]) -> dict[str, str]:
         if canonical:
             mapping[header] = canonical
     return mapping
+
+
+def auto_map_report(headers: list[str]) -> dict:
+    """Auto-map ``headers`` and report which ones matched. Pure; drives the
+    mapping UI's "these columns were recognised / these were not" hints."""
+    mapping = auto_map(headers)
+    return {
+        "mapping": mapping,
+        "matched": [h for h in headers if h in mapping],
+        "unmatched": [h for h in headers if h not in mapping],
+    }
 
 
 def _decode(data: bytes) -> str:

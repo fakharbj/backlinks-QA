@@ -118,18 +118,23 @@ def _unique_headers(raw: list) -> list[str]:
 
 
 def read_project_sheet(
-    spreadsheet_id: str, tab: str | None = None
+    spreadsheet_id: str, tab: str | None = None, header_row: int = 1
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Return (headers, rows) for a project sheet; rows are dicts keyed by header.
-    Tolerates duplicate/blank header cells (common after write-back)."""
+    Tolerates duplicate/blank header cells (common after write-back). ``header_row``
+    is the 1-based row where the headers live (default 1 keeps prior behaviour);
+    everything below it is data."""
     client = _client()
     ws = _open_worksheet(client, spreadsheet_id, tab)
     values = ws.get_all_values()
     if not values:
         return [], []
-    headers = _unique_headers(values[0])
+    idx = max(1, header_row) - 1
+    if idx >= len(values):
+        return [], []
+    headers = _unique_headers(values[idx])
     rows: list[dict[str, str]] = []
-    for raw_row in values[1:]:
+    for raw_row in values[idx + 1:]:
         if not any(str(c).strip() for c in raw_row):
             continue  # skip fully blank rows
         rows.append(

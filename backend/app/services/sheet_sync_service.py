@@ -399,6 +399,16 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     tabs = await _sync_tabs(db, source, worksheets)
     await db.commit()
 
+    # The project's default target — used for bare-source rows that leave the
+    # target blank. Computed once per sync (target_urls[0] else the main domain).
+    project = await db.get(Project, source.project_id)
+    default_target: str | None = None
+    if project is not None:
+        if project.target_urls:
+            default_target = project.target_urls[0]
+        elif project.target_domain:
+            default_target = f"https://{project.target_domain}"
+
     enabled = [w for w in worksheets if tabs[w["gid"]].import_enabled]
     await batch_service.update(batch_id, totals={"total_tabs": len(enabled)})
 
@@ -413,7 +423,8 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         await batch_service.update(batch_id, meta={"current_step": f"Reading “{ws['title']}”"})
         try:
             headers, rows = await asyncio.to_thread(
-                google_sheets.read_project_sheet, source.spreadsheet_id, ws["title"]
+                google_sheets.read_project_sheet, source.spreadsheet_id, ws["title"],
+                (tab.header_row or 1),
             )
         except Exception as exc:  # noqa: BLE001 - one bad tab must not stop the rest
             log.warning("tab_read_failed", tab=ws["title"], error=repr(exc))
@@ -422,8 +433,12 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
                 level="error", row_ref=ws["title"],
             )
             continue
+        tab.headers_snapshot = headers  # best-effort; helps the mapping UI + drift
+        # Per-tab mapping wins; else the source-level default; else auto-detect.
         mapping = (
-            dict(source.column_mapping) if source.column_mapping else import_parse.auto_map(headers)
+            tab.column_mapping
+            or (dict(source.column_mapping) if source.column_mapping else None)
+            or import_parse.auto_map(headers)
         )
         imp = Import(
             workspace_id=source.workspace_id,
@@ -440,7 +455,8 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         db.add(imp)
         await db.flush()
         await import_service.stage_rows(
-            db, imp, rows, default_link_type=(tab.link_type_name or ws["title"])
+            db, imp, rows, default_link_type=(tab.link_type_name or ws["title"]),
+            field_constants=(tab.field_constants or {}), default_target=default_target,
         )
         await db.commit()
         new_ids = await import_service.process(db, imp.id)

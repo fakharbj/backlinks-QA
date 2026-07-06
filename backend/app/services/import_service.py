@@ -74,17 +74,26 @@ async def create_import(
 async def stage_rows(
     db: AsyncSession, imp: Import, raw_rows: list[dict[str, str]],
     *, default_link_type: str | None = None,
+    field_constants: dict | None = None, default_target: str | None = None,
 ) -> None:
     """Project each raw row through the mapping and persist it for processing.
 
     ``default_link_type`` (the sub-sheet/tab name) is applied to rows that don't
     already carry a link type, so every row in a tab inherits that link type.
+    ``field_constants`` (per-tab literals, e.g. link_type/vendor) fill a canonical
+    field ONLY when the mapped row has no value for it. ``default_target`` fills
+    ``target_url`` when the row (and its constants) leave it blank — bare-source
+    rows inherit the project's target.
     """
     mapping = imp.column_mapping or {}
     for i, raw in enumerate(raw_rows, start=1):
         mapped = apply_mapping(raw, mapping) if mapping else dict(raw)
         if default_link_type and not str(mapped.get("link_type") or "").strip():
             mapped["link_type"] = default_link_type
+        for k, v in (field_constants or {}).items():
+            mapped.setdefault(k, v)
+        if not mapped.get("target_url") and default_target:
+            mapped["target_url"] = default_target
         db.add(
             ImportRow(
                 import_id=imp.id,

@@ -103,14 +103,63 @@ async def writeback_one(
     )
 
 
+async def _resolve_mapping_tab(db, sheet_id: uuid.UUID, tab_id):
+    """The tab the mapping UI is operating on: the given ``tab_id`` if valid for
+    this sheet, else the first import-enabled tab by name, else the first tab."""
+    from app.models.sheet_tab import GoogleSheetTab
+
+    if tab_id:
+        try:
+            tid = uuid.UUID(str(tab_id))
+        except (ValueError, TypeError):
+            tid = None
+        if tid is not None:
+            tab = await db.get(GoogleSheetTab, tid)
+            if tab is not None and tab.sheet_source_id == sheet_id:
+                return tab
+    tab = (
+        await db.execute(
+            select(GoogleSheetTab)
+            .where(
+                GoogleSheetTab.sheet_source_id == sheet_id,
+                GoogleSheetTab.import_enabled.is_(True),
+            )
+            .order_by(GoogleSheetTab.tab_name)
+        )
+    ).scalars().first()
+    if tab is not None:
+        return tab
+    return (
+        await db.execute(
+            select(GoogleSheetTab)
+            .where(GoogleSheetTab.sheet_source_id == sheet_id)
+            .order_by(GoogleSheetTab.tab_name)
+        )
+    ).scalars().first()
+
+
+def _project_default_target(project) -> str | None:
+    """The project's default target: ``target_urls[0]`` else the main domain."""
+    if project is None:
+        return None
+    if project.target_urls:
+        return project.target_urls[0]
+    if project.target_domain:
+        return f"https://{project.target_domain}"
+    return None
+
+
 @router.get("/{sheet_id}/mapping")
-async def get_mapping(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> dict:
-    """Column-mapping settings: the sheet's real headers (read live from the
-    first enabled tab), the mapping in effect (manual override or auto-detected),
-    the canonical fields available, and the write-back column choices."""
+async def get_mapping(
+    sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession, tab_id: str | None = None,
+) -> dict:
+    """Column-mapping settings + a live preview for ONE tab: the tab's real
+    headers and sample rows (read live at its header row), the mapping in effect
+    (per-tab override → source default → auto-detected), the canonical fields and
+    field metadata, per-tab constants, and the write-back column choices."""
     import asyncio
 
-    from app.models.sheet_tab import GoogleSheetTab
+    from app.models.project import Project
     from app.services import import_parse
     from app.services.sheet_sync_service import _WRITEBACK_HEADERS
 
@@ -118,38 +167,77 @@ async def get_mapping(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> dic
     if source is None or source.workspace_id != ctx.workspace_id:
         raise NotFoundError("Sheet source not found")
 
-    headers: list[str] = []
-    header_error: str | None = None
-    try:
-        tab = (
-            await db.execute(
-                select(GoogleSheetTab)
-                .where(
-                    GoogleSheetTab.sheet_source_id == sheet_id,
-                    GoogleSheetTab.import_enabled.is_(True),
-                )
-                .order_by(GoogleSheetTab.tab_name)
-            )
-        ).scalars().first()
-        headers, _rows = await asyncio.to_thread(
-            google_sheets.read_project_sheet, source.spreadsheet_id,
-            tab.tab_name if tab else None,
+    from app.models.sheet_tab import GoogleSheetTab
+
+    all_tabs = (
+        await db.execute(
+            select(GoogleSheetTab)
+            .where(GoogleSheetTab.sheet_source_id == sheet_id)
+            .order_by(GoogleSheetTab.tab_name)
         )
-    except Exception as exc:  # noqa: BLE001 — mapping UI still works without live headers
-        header_error = str(exc)[:300]
+    ).scalars().all()
+    tab = await _resolve_mapping_tab(db, sheet_id, tab_id)
+
+    headers: list[str] = []
+    rows: list[dict] = []
+    header_error: str | None = None
+    if tab is not None:
+        try:
+            headers, rows = await asyncio.to_thread(
+                google_sheets.read_project_sheet, source.spreadsheet_id,
+                tab.tab_name, (tab.header_row or 1),
+            )
+        except Exception as exc:  # noqa: BLE001 — mapping UI still works without live headers
+            header_error = str(exc)[:300]
+        # Snapshot the columns for drift detection — strictly best-effort, in its
+        # own transaction so a write failure never masks a good live preview.
+        if headers:
+            try:
+                tab.headers_snapshot = headers
+                await db.commit()
+            except Exception:  # noqa: BLE001
+                await db.rollback()
+    else:
+        header_error = "No tabs detected yet — run a sync to discover the sheet's tabs."
 
     auto = import_parse.auto_map(headers) if headers else {}
-    manual = dict(source.column_mapping or {})
+    tab_mapping = dict(tab.column_mapping) if (tab and tab.column_mapping) else {}
+    source_mapping = dict(source.column_mapping or {})
+    effective = tab_mapping or source_mapping or auto
+
+    project = await db.get(Project, source.project_id)
+    project_target = _project_default_target(project)
+
+    field_constants = dict(tab.field_constants) if (tab and tab.field_constants) else {}
+    required_ok = bool(
+        effective and "source_page_url" in effective.values()
+    ) or ("source_page_url" in field_constants)
+
     return {
+        "tabs": [
+            {"id": str(t.id), "tab_name": t.tab_name, "import_enabled": t.import_enabled}
+            for t in all_tabs
+        ],
+        "tab_id": str(tab.id) if tab is not None else None,
         "headers": headers,
         "header_error": header_error,
-        "mapping": manual or auto,
-        "is_manual": bool(manual),
-        "auto_mapping": auto,
+        "sample_rows": rows[:8],
+        "row_count": len(rows),
+        "mapping": effective,
+        "tab_mapping": tab_mapping,
+        "source_mapping": source_mapping,
+        "is_manual": bool(tab_mapping or source_mapping),
+        "auto": import_parse.auto_map_report(headers) if headers else
+        {"mapping": {}, "matched": [], "unmatched": []},
+        "field_constants": field_constants,
+        "header_row": (tab.header_row or 1) if tab is not None else 1,
         "fields": import_parse.CANONICAL_FIELDS,
+        "field_meta": import_parse.CANONICAL_FIELD_META,
         "writeback_options": list(_WRITEBACK_HEADERS),
         "writeback_columns": (source.writeback_columns or {}).get("columns")
         or list(_WRITEBACK_HEADERS),
+        "project_target": project_target,
+        "required_ok": required_ok,
     }
 
 
@@ -158,8 +246,11 @@ async def put_mapping(
     sheet_id: uuid.UUID, payload: dict, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
 ) -> dict:
-    """Save manual column mapping ({header: field}) and/or the write-back column
-    selection. An empty mapping restores auto-detection."""
+    """Save mapping/constants/header-row for a tab, the source-level default, or
+    every import-enabled tab (``apply_to``: tab | source | all_tabs). Write-back
+    column selection is always source-level. An empty mapping restores
+    auto-detection."""
+    from app.models.sheet_tab import GoogleSheetTab
     from app.services import import_parse
     from app.services.sheet_sync_service import _WRITEBACK_HEADERS
 
@@ -167,20 +258,71 @@ async def put_mapping(
     if source is None or source.workspace_id != ctx.workspace_id:
         raise NotFoundError("Sheet source not found")
 
+    valid_fields = set(import_parse.CANONICAL_FIELDS)
+    apply_to = str(payload.get("apply_to") or "tab")
+    if apply_to not in ("tab", "source", "all_tabs"):
+        apply_to = "tab"
+
+    cleaned_mapping: dict | None = None
     raw_mapping = payload.get("column_mapping")
     if isinstance(raw_mapping, dict):
-        valid_fields = set(import_parse.CANONICAL_FIELDS)
-        source.column_mapping = {
+        cleaned_mapping = {
             str(h)[:200]: f for h, f in raw_mapping.items() if f in valid_fields
         }
+
+    cleaned_constants: dict | None = None
+    raw_constants = payload.get("field_constants")
+    if isinstance(raw_constants, dict):
+        cleaned_constants = {
+            k: v for k, v in raw_constants.items() if k in valid_fields
+        }
+
+    header_row = payload.get("header_row")
+    if header_row is not None:
+        try:
+            header_row = max(1, min(50, int(header_row)))
+        except (ValueError, TypeError):
+            header_row = None
+
+    if apply_to == "source":
+        if cleaned_mapping is not None:
+            source.column_mapping = cleaned_mapping
+    elif apply_to == "all_tabs":
+        tabs = (
+            await db.execute(
+                select(GoogleSheetTab).where(
+                    GoogleSheetTab.sheet_source_id == sheet_id,
+                    GoogleSheetTab.import_enabled.is_(True),
+                )
+            )
+        ).scalars().all()
+        for t in tabs:
+            if cleaned_mapping is not None:
+                t.column_mapping = cleaned_mapping
+            if cleaned_constants is not None:
+                t.field_constants = cleaned_constants
+            if header_row is not None:
+                t.header_row = header_row
+    else:  # tab
+        tab = await _resolve_mapping_tab(db, sheet_id, payload.get("tab_id"))
+        if tab is None:
+            raise ValidationAppError("No tab to save mapping for — run a sync first.")
+        if cleaned_mapping is not None:
+            tab.column_mapping = cleaned_mapping
+        if cleaned_constants is not None:
+            tab.field_constants = cleaned_constants
+        if header_row is not None:
+            tab.header_row = header_row
+
     raw_wb = payload.get("writeback_columns")
     if isinstance(raw_wb, list):
         chosen = [c for c in raw_wb if c in _WRITEBACK_HEADERS]
         source.writeback_columns = {"columns": chosen or list(_WRITEBACK_HEADERS)}
+
     await audit_service.record(
         db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
         entity_type="sheet_mapping", entity_id=sheet_id,
-        summary=f"Column mapping updated for '{source.project_name}'",
+        summary=f"Column mapping updated ({apply_to}) for '{source.project_name}'",
     )
     await db.commit()
     return {"message": "Mapping saved — it will be used on the next sync."}

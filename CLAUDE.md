@@ -350,6 +350,29 @@ rows also open the drawer. Live-verified on prod (bare-URL paste → target
 defaulted; two uploads → one parent "Rival Smoke Inc"). Deployed, built, PM2
 restarted, site 200; DB untouched.
 
+**Sheet-mapping finalization shipped + deployed** (migration `0030`, 158
+tests): the Google-Sheets column mapping is now flexible + preview-driven for
+real production sheets. Migration `0030` adds per-tab `column_mapping`,
+`field_constants`, `header_row`, `headers_snapshot` to `google_sheet_project_tabs`
+(all nullable → existing source-level mappings still work as the fallback).
+`GET /sheets/{id}/mapping?tab_id=` now returns a **live preview** (real headers
++ up to 8 sample rows read at the tab's header row), the effective mapping
+(per-tab → source default → auto), `auto_map_report` match counts, per-tab
+constants, `header_row`, `field_meta` (labels/required/help/group from
+`import_parse.CANONICAL_FIELD_META`), and `project_target`. `PUT` takes
+`apply_to: tab|source|all_tabs`. Sync resolves mapping per tab, reads at
+`tab.header_row`, applies `field_constants` (fill-when-absent) + **target
+default from the project** (unifies with imports) via new
+`stage_rows(field_constants=, default_target=)` kwargs; `read_project_sheet`
+gained a `header_row` param (default 1 = unchanged). The **redesigned
+SheetMappingEditor**: tab switcher, auto scorecard + reset, header-row input,
+required/coverage panel (Source URL hard-required → Save blocked; Target URL
+shows "defaults to <project target>"), a live preview table with the mapping
+dropdown above each real column of data, constant-value chips, write-back
+column picker, and three save scopes. Deployed; DB data untouched (additive
+columns only). NOTE (pre-existing, out of scope): sheet write-back still
+assumes headers on row 1.
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
