@@ -121,4 +121,8 @@ class CompetitorSourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     our_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     our_indexed_pct: Mapped[float | None] = mapped_column(Numeric(5, 1))
     is_new: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Competitor-domain Moz metrics (populated + read via raw SQL; mapped here so
+    # create_all / fresh installs include them — they are joined as coalesce(d.da, sd.da)).
+    da: Mapped[int | None] = mapped_column(Integer)
+    pa: Mapped[int | None] = mapped_column(Integer)
     last_recomputed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
