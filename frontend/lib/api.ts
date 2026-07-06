@@ -237,6 +237,19 @@ export type CompetitorSheet = {
   created_at: string;
 };
 
+export type CompetitorParent = {
+  competitor: string;
+  display_name: string;
+  competitor_url: string | null;
+  uploads: number;
+  total_rows: number;
+  new_domains: number;
+  existing_domains: number;
+  first_upload_at: string | null;
+  last_upload_at: string | null;
+  sheet_ids: string[];
+};
+
 export type CompetitorDomain = {
   id: string;
   domain_key: string;

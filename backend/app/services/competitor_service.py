@@ -28,6 +28,16 @@ from app.models.project import Project
 from app.services import canonical_service
 
 
+def competitor_key(sheet: CompetitorSheet) -> str:
+    """Grouping identity for a parent competitor: the registrable domain of its
+    URL (name as fallback for legacy rows without one)."""
+    if sheet.competitor_url:
+        parsed = normalize_url(sheet.competitor_url)
+        if parsed.valid and parsed.registrable_domain:
+            return parsed.registrable_domain
+    return (sheet.name or "unknown").strip().lower()
+
+
 async def _ensure_project(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> None:
     """Validate the project belongs to the caller's workspace (assert_project is a
     no-op for unrestricted admins, so we must check ownership explicitly — mirrors
@@ -459,6 +469,97 @@ async def sheet_backlinks(
         )
     ).mappings().all()
     return [dict(r) for r in rows]
+
+
+async def list_parents(
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID
+) -> list[dict]:
+    """Roll uploads up to their parent competitor (grouped by competitor_key), so
+    the desk shows one row per competitor with each upload folded underneath."""
+    sheets = await list_sheets(db, ctx, project_id)
+    groups: dict[str, list[CompetitorSheet]] = {}
+    for sheet in sheets:
+        groups.setdefault(competitor_key(sheet), []).append(sheet)
+
+    out: list[dict] = []
+    for key, group in groups.items():
+        # list_sheets is newest-first, so the group preserves that order.
+        display_name = next(
+            (s.name for s in group if s.name and s.name.strip().lower() != key), key
+        )
+        competitor_url = next((s.competitor_url for s in group if s.competitor_url), None)
+        created = [s.created_at for s in group if s.created_at]
+        out.append(
+            {
+                "competitor": key,
+                "display_name": display_name,
+                "competitor_url": competitor_url,
+                "uploads": len(group),
+                "total_rows": sum(s.total_rows for s in group),
+                "new_domains": sum(s.new_domains for s in group),
+                "existing_domains": sum(s.existing_domains for s in group),
+                "first_upload_at": min(created).isoformat() if created else None,
+                "last_upload_at": max(created).isoformat() if created else None,
+                "sheet_ids": [str(s.id) for s in group],
+            }
+        )
+    out.sort(key=lambda g: g["total_rows"], reverse=True)
+    return out
+
+
+async def parent_backlinks(
+    db: AsyncSession,
+    ctx: AuthContext,
+    project_id: uuid.UUID,
+    *,
+    competitor: str,
+    q: str | None = None,
+    limit: int = 1000,
+) -> list[dict]:
+    """All links across every upload belonging to one parent competitor (grouped
+    by competitor_key) — the expand-under-parent view for the grouped desk."""
+    sheets = await list_sheets(db, ctx, project_id)
+    sids = [s.id for s in sheets if competitor_key(s) == competitor]
+    if not sids:
+        return []
+    conds = ["cb.competitor_sheet_id IN :sids", "cb.workspace_id = :ws"]
+    if q and q.strip():
+        conds.append("(cb.raw_url ILIKE :q OR cb.source_domain ILIKE :q OR cb.anchor ILIKE :q)")
+    sql = text(
+        f"""
+        SELECT cb.raw_url AS url, cb.source_domain, cb.anchor, cb.rel,
+               cb.link_type_label AS link_type,
+               cs.name AS upload_name, cs.created_at AS uploaded_at,
+               coalesce(d.da, sd.da) AS da, coalesce(d.pa, sd.pa) AS pa,
+               sd.semrush_as AS semrush_as,
+               d.category AS domain_category,
+               coalesce(dec.status, 'open') AS decision
+        FROM competitor_backlinks cb
+        JOIN competitor_sheets cs ON cs.id = cb.competitor_sheet_id
+        LEFT JOIN competitor_source_domains d
+          ON d.workspace_id = cb.workspace_id AND d.project_id = cb.project_id
+         AND d.domain_key = cb.source_domain
+        LEFT JOIN source_domains sd
+          ON sd.workspace_id = cb.workspace_id AND sd.domain_key = cb.source_domain
+        LEFT JOIN competitor_domain_decisions dec
+          ON dec.workspace_id = cb.workspace_id AND dec.project_id = cb.project_id
+         AND dec.domain_key = cb.source_domain
+        WHERE {' AND '.join(conds)}
+        ORDER BY cb.source_domain ASC, cb.raw_url ASC
+        LIMIT :lim
+        """
+    ).bindparams(bindparam("sids", expanding=True))
+    params: dict = {"sids": sids, "ws": ctx.workspace_id, "lim": max(1, min(limit, 5000))}
+    if q and q.strip():
+        params["q"] = f"%{q.strip()}%"
+    rows = (await db.execute(sql, params)).mappings().all()
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        if d.get("uploaded_at") is not None:
+            d["uploaded_at"] = str(d["uploaded_at"])
+        out.append(d)
+    return out
 
 
 async def domain_backlinks(

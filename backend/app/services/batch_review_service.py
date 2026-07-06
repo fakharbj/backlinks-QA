@@ -85,13 +85,16 @@ async def stage_link_import(
     rows: list[dict[str, str]],
     source: ImportSource,
     filename: str | None = None,
+    default_target: str | None = None,
 ) -> Batch:
     """Create a ``link_review`` batch from already-mapped import rows.
 
     ``rows`` are canonical-field dicts (``source_page_url``/``target_url``/…) —
-    the caller applies column mapping first. Presence is computed against the
-    project's existing links in bulk; in-batch repeats are kept as visible
-    ``duplicate`` rows (their key is salted so the per-batch unique holds).
+    the caller applies column mapping first. Rows without a target inherit
+    ``default_target`` (project-scoped imports paste bare source URLs).
+    Presence is computed against the project's existing links in bulk;
+    in-batch repeats are kept as visible ``duplicate`` rows (their key is
+    salted so the per-batch unique holds).
     """
     if not rows:
         raise ValidationAppError("No rows found to import")
@@ -117,6 +120,9 @@ async def stage_link_import(
     for idx, mapped in enumerate(rows):
         source_raw = (mapped.get("source_page_url") or "").strip()
         target_raw = (mapped.get("target_url") or "").strip()
+        if not target_raw and default_target:
+            target_raw = default_target
+            mapped = {**mapped, "target_url": default_target}
         entry: dict = {
             "mapped": {k: v for k, v in mapped.items() if v},
             "source_raw": source_raw,

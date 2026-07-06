@@ -86,6 +86,25 @@ async def list_sheets(project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> l
     return [CompetitorSheetOut.model_validate(r) for r in rows]
 
 
+@router.get("/parents")
+async def list_parents(project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> list[dict]:
+    """Uploads rolled up to their parent competitor (grouped by registrable domain)."""
+    return await competitor_service.list_parents(db, ctx, project_id)
+
+
+@router.get("/parents/backlinks")
+async def parent_backlinks(
+    project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    competitor: str = Query(..., min_length=1),
+    q: str | None = Query(None, max_length=300),
+    limit: int = Query(500, ge=1, le=5000),
+) -> list[dict]:
+    """Every link across all uploads for one parent competitor."""
+    return await competitor_service.parent_backlinks(
+        db, ctx, project_id, competitor=competitor, q=q, limit=limit
+    )
+
+
 @router.get("/sheets/{sheet_id}/backlinks")
 async def sheet_backlinks(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> list[dict]:
     """Everything inside one competitor upload — the expand-under-parent view."""

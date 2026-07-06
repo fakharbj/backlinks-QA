@@ -72,6 +72,16 @@ def _mapped_rows(
     return [import_parse.apply_mapping(raw, effective) for raw in rows]
 
 
+def _project_default_target(project) -> str | None:
+    """Project-scoped imports may omit the target column — it defaults to the
+    project's first target URL (or https://<target_domain>)."""
+    if project.target_urls:
+        return project.target_urls[0]
+    if project.target_domain:
+        return f"https://{project.target_domain}"
+    return None
+
+
 def _staged_response(batch) -> dict:
     """What the Imports desk shows the moment a review batch is created."""
     c = batch.counters or {}
@@ -97,7 +107,8 @@ async def import_file(
 ) -> dict:
     """Stage a CSV/XLSX into a review batch (0029) — links are QA-testable in
     isolation and reach the project only when approved in the Batches desk."""
-    await project_service.get_project(db, ctx, project_id)  # scope check
+    project = await project_service.get_project(db, ctx, project_id)  # scope check
+    default = _project_default_target(project)
     data = await file.read()
     if len(data) > _MAX_UPLOAD_BYTES:
         raise ValidationAppError("File exceeds the 64 MiB limit")
@@ -119,7 +130,7 @@ async def import_file(
     )
     batch = await batch_review_service.stage_link_import(
         db, ctx, project_id=project_id, rows=_mapped_rows(headers, rows, mapping),
-        source=src, filename=file.filename,
+        source=src, filename=file.filename, default_target=default,
     )
     batch.meta = {**(batch.meta or {}), "upload_key": key}
     await audit_service.record(
@@ -128,7 +139,7 @@ async def import_file(
         summary=f"Staged file {file.filename} for review (#B-{batch.seq})",
     )
     await db.commit()
-    return _staged_response(batch)
+    return {**_staged_response(batch), "default_target": default}
 
 
 @router.post("/paste", status_code=status.HTTP_202_ACCEPTED)
@@ -138,7 +149,8 @@ async def import_paste(
 ) -> dict:
     """Stage pasted links into a review batch (0029) — same isolation as file
     imports: QA-test first, approve what you keep."""
-    await project_service.get_project(db, ctx, payload.project_id)
+    project = await project_service.get_project(db, ctx, payload.project_id)
+    default = _project_default_target(project)
     headers, rows = import_parse.parse_paste(payload.text)
     if not rows:
         raise ValidationAppError("No rows found in pasted text")
@@ -146,7 +158,7 @@ async def import_paste(
     batch = await batch_review_service.stage_link_import(
         db, ctx, project_id=payload.project_id,
         rows=_mapped_rows(headers, rows, payload.column_mapping),
-        source=ImportSource.PASTE,
+        source=ImportSource.PASTE, default_target=default,
     )
     await audit_service.record(
         db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
@@ -154,7 +166,7 @@ async def import_paste(
         summary=f"Staged pasted links for review (#B-{batch.seq})",
     )
     await db.commit()
-    return _staged_response(batch)
+    return {**_staged_response(batch), "default_target": default}
 
 
 @router.get("", response_model=list[ImportOut])

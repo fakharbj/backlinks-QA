@@ -63,6 +63,7 @@ import {
   BatchLog,
   ImportRowError,
   CompetitorDomain,
+  CompetitorParent,
   CompetitorSheet,
   CompetitorSummary,
   ConflictGroup,
@@ -87,7 +88,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -154,6 +155,14 @@ export function WorkspaceApp() {
     q.set("f_batch", batchId);
     window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
     setTab("batches");
+  };
+
+  // Open a specific person's dashboard from anywhere (Performance rows, cards).
+  const openUserDash = (label: string) => {
+    const q = new URLSearchParams(window.location.search);
+    q.set("f_user", label);
+    window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+    setTab("users");
   };
 
   const setActiveProjectId = (next: string) => {
@@ -359,7 +368,7 @@ export function WorkspaceApp() {
           {tab === "overview" ? (
             <Overview token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} />
           ) : null}
-          {tab === "analytics" ? <AnalyticsDesk token={token} projectId={activeProjectId} /> : null}
+          {tab === "analytics" ? <AnalyticsDesk token={token} projectId={activeProjectId} onNotice={setNotice} onOpenBacklinks={openBacklinks} /> : null}
           {tab === "backlinks" ? (
             <Backlinks token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -387,7 +396,10 @@ export function WorkspaceApp() {
             <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "performance" ? (
-            <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onPlanWork={() => setTab("tasks")} />
+            <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onOpenUser={openUserDash} />
+          ) : null}
+          {tab === "users" ? (
+            <UserDashboardsDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onPlanWork={() => setTab("tasks")} />
           ) : null}
           {tab === "tasks" ? (
             <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} />
@@ -543,7 +555,8 @@ const WORKSPACE_NAV: NavGroup[] = [
     items: [
       ["overview", "Dashboard", Gauge],
       ["analytics", "Analytics", BarChart3],
-      ["performance", "Performance", Activity]
+      ["performance", "Performance", Activity],
+      ["users", "User Dashboards", Users]
     ]
   },
   {
@@ -587,17 +600,18 @@ const PROJECT_NAV: NavGroup[] = [
       ["competitors", "Competitors", Swords]
     ]
   },
-  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet], ["batches", "Batches", History]] },
   {
     label: "Monitor",
     items: [
       ["analytics", "Analytics", BarChart3],
       ["performance", "Performance", Activity],
+      ["users", "User Dashboards", Users],
       ["tasks", "Tasks", CalendarDays],
       ["reports", "Reports", FileSpreadsheet],
       ["alerts", "Alerts", Bell]
     ]
   },
+  { label: "Ingest", items: [["imports", "Imports", Upload], ["sheets", "Sheets", Sheet], ["batches", "Batches", History]] },
   {
     label: "Configure",
     items: [["scoring", "Scoring", SlidersHorizontal], ["settings", "Settings", Settings]]
@@ -2485,6 +2499,7 @@ type StagedImportResult = {
   duplicate: number;
   invalid: number;
   message: string;
+  default_target?: string | null;
 };
 
 function ImportDesk({
@@ -2499,8 +2514,20 @@ function ImportDesk({
   onOpenBatch: (batchId: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [text, setText] = useState(samplePaste);
+  // In project context the project is fixed; in the global desk the user picks one.
+  const [localProject, setLocalProject] = useState("");
+  const effectiveProject = projectId || localProject;
+  const [text, setText] = useState(
+    projectId
+      ? `https://example-publisher.com/post-linking-to-you\nhttps://another-blog.net/article`
+      : samplePaste
+  );
   const [staged, setStaged] = useState<StagedImportResult | null>(null);
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
   const afterStage = (data: StagedImportResult) => {
     setStaged(data);
     onNotice(data.message);
@@ -2511,7 +2538,7 @@ function ImportDesk({
       api<StagedImportResult>("/imports/paste", {
         token,
         method: "POST",
-        body: JSON.stringify({ project_id: projectId, text })
+        body: JSON.stringify({ project_id: effectiveProject, text })
       }),
     onSuccess: afterStage,
     onError: (err: Error) => onNotice(err.message)
@@ -2519,7 +2546,7 @@ function ImportDesk({
   const uploadFile = useMutation({
     mutationFn: (file: File) => {
       const fd = new FormData();
-      fd.append("project_id", projectId);
+      fd.append("project_id", effectiveProject);
       fd.append("file", file);
       return api<StagedImportResult>("/imports/file", { token, method: "POST", body: fd });
     },
@@ -2527,13 +2554,9 @@ function ImportDesk({
     onError: (err: Error) => onNotice(err.message)
   });
 
-  if (!projectId) {
-    return (
-      <section className="rounded-xl border border-line bg-panel shadow-card p-8 text-center text-sm text-muted">
-        Select a project (top-left) to import links into it.
-      </section>
-    );
-  }
+  // This project's target — rows pasted without their own target default to it.
+  const activeProj = (projectsQ.data || []).find((p) => p.id === effectiveProject);
+  const defaultTarget = activeProj?.target_domain ? `https://${activeProj.target_domain}` : null;
 
   return (
     <section className="space-y-4">
@@ -2545,6 +2568,20 @@ function ImportDesk({
         </p>
       </div>
 
+      {!projectId ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel p-3 shadow-card">
+          <span className="text-sm font-medium text-ink">Import into:</span>
+          <SearchSelect
+            value={localProject}
+            onChange={setLocalProject}
+            options={(projectsQ.data || []).map((p) => ({ value: p.id, label: p.name }))}
+            placeholder="Choose a project…"
+            width="w-64"
+          />
+          <span className="text-xs text-muted">Pick the project these links belong to before staging.</span>
+        </div>
+      ) : null}
+
       {staged ? (
         <div className="rounded-xl border border-ocean/40 bg-ocean/5 p-4 shadow-card">
           <p className="text-sm font-semibold text-ink">
@@ -2554,6 +2591,9 @@ function ImportDesk({
             {staged.new} new · {staged.existing} already in this project · {staged.duplicate} repeated in the paste
             {staged.invalid ? ` · ${staged.invalid} invalid` : ""}
           </p>
+          {staged.default_target ? (
+            <p className="mt-1 text-xs text-muted">Targets defaulted to {staged.default_target}</p>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={() => onOpenBatch(staged.batch_id)}
@@ -2581,7 +2621,7 @@ function ImportDesk({
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={() => submit.mutate()}
-                disabled={submit.isPending}
+                disabled={submit.isPending || !effectiveProject}
                 className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
               >
                 {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
@@ -2596,6 +2636,11 @@ function ImportDesk({
                   className="hidden"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
+                    if (!effectiveProject) {
+                      onNotice("Choose a project first");
+                      e.target.value = "";
+                      return;
+                    }
                     if (f) uploadFile.mutate(f);
                     e.target.value = "";
                   }}
@@ -2605,6 +2650,12 @@ function ImportDesk({
                 First line = headers (auto-mapped). Existing links are flagged, never duplicated.
               </span>
             </div>
+            {defaultTarget ? (
+              <p className="text-xs text-muted">
+                Target URL is optional here — rows without one default to{" "}
+                <span className="font-medium text-ink">{defaultTarget}</span> (this project&apos;s target).
+              </p>
+            ) : null}
           </div>
         </div>
       )}
@@ -4288,6 +4339,7 @@ function UserDashboard({
   const [projFilter, setProjFilter] = useState(initialProjectId || "");
   const [ltFilter, setLtFilter] = useState("");
   const [historyStatus, setHistoryStatus] = useState("");
+  const [dashTab, setDashTab] = useState<"overview" | "projects" | "calendar" | "rates">("overview");
 
   const projectsQ = useQuery({
     queryKey: ["projects", token],
@@ -4507,9 +4559,12 @@ function UserDashboard({
           onClick={onClose}
           className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
         >
-          ← Team
+          ← All people
         </button>
-        <h2 className="text-base font-semibold text-ink">{userLabel} — user dashboard</h2>
+        <div>
+          <h2 className="text-base font-semibold text-ink">{userLabel}</h2>
+          <p className="text-xs text-muted">User dashboard — hours, targets, production, quality</p>
+        </div>
         {projFilter ? (
           <span className="flex items-center gap-1 rounded-full border border-ocean/40 bg-ocean/10 px-2.5 py-1 text-xs font-medium text-ocean">
             {projectName(projFilter)}
@@ -4556,6 +4611,23 @@ function UserDashboard({
         ) : null}
       </div>
 
+      <span className="inline-flex rounded-lg border border-line bg-field/40 p-0.5 text-xs font-medium">
+        {([
+          ["overview", "Overview"],
+          ["projects", "Projects"],
+          ["calendar", "Plans & calendar"],
+          ["rates", "Rates & leave"]
+        ] as Array<["overview" | "projects" | "calendar" | "rates", string]>).map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setDashTab(id)}
+            className={clsx("rounded-md px-2.5 py-1 transition", dashTab === id ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+          >
+            {label}
+          </button>
+        ))}
+      </span>
+
       {dash.isLoading ? (
         <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
       ) : null}
@@ -4565,7 +4637,7 @@ function UserDashboard({
         </p>
       ) : null}
 
-      {d ? (
+      {d && dashTab === "overview" ? (
         <>
           {/* Plan & effort */}
           <div className="grid gap-3 md:grid-cols-4">
@@ -4638,7 +4710,11 @@ function UserDashboard({
               </div>
             </section>
           </div>
+        </>
+      ) : null}
 
+      {d && dashTab === "projects" ? (
+        <>
           {/* Per-project comparison */}
           <section className="rounded-xl border border-line bg-panel shadow-card">
             <SectionTitle title="Projects — this person, side by side" />
@@ -4683,7 +4759,11 @@ function UserDashboard({
               {!d.projects.length ? <Empty label="No activity in this period." /> : null}
             </div>
           </section>
+        </>
+      ) : null}
 
+      {d && dashTab === "rates" ? (
+        <>
           <div className="grid gap-4 lg:grid-cols-2">
             {/* Rates in effect — with an inline personal-override editor */}
             <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -4759,6 +4839,8 @@ function UserDashboard({
         </>
       ) : null}
 
+      {dashTab === "calendar" ? (
+        <>
       {/* Calendar with admin quick actions */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
@@ -4945,6 +5027,8 @@ function UserDashboard({
           </div>
         </section>
       </div>
+        </>
+      ) : null}
     </section>
   );
 }
@@ -5128,7 +5212,9 @@ const TIMEFRAMES: Array<[string, string]> = [
   ["3650", "All time"]
 ];
 
-function PerformanceDesk({
+// ── User Dashboards — its own desk. Pick a person (or arrive via ?f_user) and
+// the full per-person dashboard takes over; otherwise a browsable people grid. ──
+function UserDashboardsDesk({
   token,
   projectId,
   onOpenBacklinks,
@@ -5141,8 +5227,137 @@ function PerformanceDesk({
   onNotice: (text: string) => void;
   onPlanWork?: () => void;
 }) {
-  // Full per-person dashboard (admin view) — opened by clicking a name.
-  const [dashUser, setDashUser] = useState<string | null>(null);
+  const [person, setPerson] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("f_user") || "";
+  });
+  // Deep link: "Open dashboard" from Performance rows lands here with ?f_user=<label>
+  // (mirrors the Batches f_batch reader) — consume it once, then clean the URL.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const target = q.get("f_user");
+    if (target) {
+      setPerson(target);
+      q.delete("f_user");
+      window.history.replaceState(null, "", `${window.location.pathname}${q.toString() ? `?${q.toString()}` : ""}`);
+    }
+  }, []);
+
+  const knownLabels = useQuery({
+    queryKey: ["workforce-labels", token],
+    enabled: Boolean(token),
+    queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+
+  type DeskUser = {
+    user_label: string; links: number; indexed: number; pass: number; fail: number;
+    duplicates: number; avg_score: number | null;
+    project_new_domains: number; global_new_domains: number;
+  };
+  const team = useQuery({
+    queryKey: ["user-dashboards-team", token, projectId],
+    enabled: Boolean(token) && !person,
+    queryFn: () => {
+      const p = new URLSearchParams({ days: "30", compare: "false" });
+      if (projectId) p.set("project_id", projectId);
+      return api<{ users: DeskUser[] }>(`/performance/users?${p.toString()}`, { token });
+    }
+  });
+
+  if (person)
+    return (
+      <UserDashboard
+        token={token}
+        userLabel={person}
+        initialProjectId={projectId || undefined}
+        onClose={() => setPerson("")}
+        onOpenBacklinks={onOpenBacklinks}
+        onNotice={onNotice}
+        onPlanWork={onPlanWork}
+      />
+    );
+
+  const users = team.data?.users || [];
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+            User Dashboards
+            <HelpTip text="Open any person's full dashboard — hours, targets, production, quality, calendar and trends. Pick a name or click a card." />
+          </h2>
+          <p className="text-sm text-muted">
+            {projectId ? "This project only." : "All people across the workspace."} Choose someone to see their full dashboard.
+          </p>
+        </div>
+        <SearchSelect
+          value={person}
+          onChange={setPerson}
+          options={(knownLabels.data || []).map((l) => ({ value: l, label: l }))}
+          placeholder="Find a person…"
+          width="w-64"
+        />
+      </div>
+
+      {team.isLoading ? (
+        <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+      ) : null}
+      {team.isError ? (
+        <p className="rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
+          Could not load people — {(team.error as Error)?.message}
+        </p>
+      ) : null}
+
+      {!team.isLoading && !team.isError ? (
+        users.length ? (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {users.map((u) => {
+              const rate = u.links > 0 ? Math.round((100 * u.indexed) / u.links) : null;
+              return (
+                <button
+                  key={u.user_label}
+                  onClick={() => setPerson(u.user_label)}
+                  title={`Open ${u.user_label}'s dashboard`}
+                  className="flex flex-col gap-2 rounded-xl border border-line bg-panel p-4 text-left shadow-card transition hover:border-ocean/40 hover:bg-field/40"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ocean/10 text-ocean">
+                      <Users className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-semibold text-ink">{u.user_label}</span>
+                  </span>
+                  <span className="text-xs text-muted">{u.links} links · last 30 days</span>
+                  {rate != null ? (
+                    <span className={clsx("w-fit rounded px-2 py-0.5 text-[11px] font-semibold",
+                      rate >= 80 ? "bg-ocean/10 text-ocean" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                      {rate}% indexed
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <Empty label="No people with activity in the last 30 days." />
+        )
+      ) : null}
+    </section>
+  );
+}
+
+function PerformanceDesk({
+  token,
+  projectId,
+  onOpenBacklinks,
+  onNotice,
+  onOpenUser
+}: {
+  token: string | null;
+  projectId: string;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+  onNotice: (text: string) => void;
+  onOpenUser?: (label: string) => void;
+}) {
   const [days, setDays] = useState("30");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -5212,19 +5427,6 @@ function PerformanceDesk({
   };
   const sortedUsers = sortRows(users, perfSort, perfDir, (u, k) => (u as unknown as Record<string, unknown>)[k]);
 
-  if (dashUser) {
-    return (
-      <UserDashboard
-        token={token}
-        userLabel={dashUser}
-        initialProjectId={projectId || undefined}
-        onClose={() => setDashUser(null)}
-        onOpenBacklinks={onOpenBacklinks}
-        onNotice={onNotice}
-        onPlanWork={onPlanWork}
-      />
-    );
-  }
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -5408,7 +5610,7 @@ function PerformanceDesk({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setDashUser(u.user_label);
+                          onOpenUser?.(u.user_label);
                         }}
                         title={`Open ${u.user_label}'s full dashboard (hours, targets, calendar, quality, trends)`}
                         className="font-medium text-ocean hover:underline"
@@ -6542,14 +6744,21 @@ function CompetitorDesk({
         { token }
       )
   });
-  // One competitor upload expanded to show everything inside it.
-  const [openSheet, setOpenSheet] = useState<string | null>(null);
-  const sheetLinks = useQuery({
-    queryKey: ["competitor-sheet-links", token, openSheet],
-    enabled: Boolean(token) && Boolean(openSheet),
+  // Uploads rolled up to their parent competitor (one row per competitor).
+  const [openCompetitor, setOpenCompetitor] = useState<string | null>(null);
+  const [compQ, setCompQ] = useState("");
+  const [parentSearch, setParentSearch] = useState("");
+  const parents = useQuery({
+    queryKey: ["competitor-parents", token, projectId],
+    enabled: Boolean(token) && Boolean(projectId),
+    queryFn: () => api<CompetitorParent[]>(`/competitors/parents?project_id=${projectId}`, { token })
+  });
+  const parentLinks = useQuery({
+    queryKey: ["competitor-parent-links", token, projectId, openCompetitor, compQ],
+    enabled: Boolean(token) && Boolean(projectId) && Boolean(openCompetitor),
     queryFn: () =>
-      api<Array<{ url: string; source_domain: string | null; anchor: string | null; rel: string | null; link_type: string | null; da?: number | null; pa?: number | null; semrush_as?: number | null; domain_category?: string | null; decision?: string | null }>>(
-        `/competitors/sheets/${openSheet}/backlinks`,
+      api<Array<{ url: string; source_domain: string | null; anchor: string | null; rel: string | null; link_type: string | null; da?: number | null; pa?: number | null; semrush_as?: number | null; domain_category?: string | null; decision?: string | null; upload_name: string | null; uploaded_at: string | null }>>(
+        `/competitors/parents/backlinks?project_id=${projectId}&competitor=${encodeURIComponent(openCompetitor || "")}${compQ.trim() ? `&q=${encodeURIComponent(compQ.trim())}` : ""}&limit=500`,
         { token }
       )
   });
@@ -6588,6 +6797,8 @@ function CompetitorDesk({
     onSuccess: (r) => {
       onNotice(r.message);
       queryClient.invalidateQueries({ queryKey: ["competitor-sheets"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-parents"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-parent-links"] });
       queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
       queryClient.invalidateQueries({ queryKey: ["competitor-summary"] });
     },
@@ -6655,6 +6866,8 @@ function CompetitorDesk({
       queryClient.invalidateQueries({ queryKey: ["competitor-summary"] });
       queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
       queryClient.invalidateQueries({ queryKey: ["competitor-sheets"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-parents"] });
+      queryClient.invalidateQueries({ queryKey: ["competitor-parent-links"] });
       queryClient.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (e: Error) => onNotice(e.message)
@@ -6699,11 +6912,11 @@ function CompetitorDesk({
       </div>
 
       <section className="rounded-xl border border-line bg-panel shadow-card p-4">
-        <SectionTitle title="Upload competitor links" flush />
+        <SectionTitle title="Add competitor upload" flush />
         <div className="space-y-3 pt-3">
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="Competitor website URL (required)" value={compUrl} onChange={setCompUrl} name="competitor-url" />
-            <Field label="Display name (optional — the domain is used if blank)" value={name} onChange={setName} />
+            <Field label="Display name (optional — domain is used when empty)" value={name} onChange={setName} />
           </div>
           <textarea
             value={pasted}
@@ -6790,90 +7003,135 @@ function CompetitorDesk({
         </div>
       </section>
 
-      {(sheets.data || []).length ? (
+      {(parents.data || []).length ? (
         <section className="rounded-xl border border-line bg-panel shadow-card">
-          <SectionTitle title="Uploads" />
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+            <h3 className="text-sm font-semibold text-ink">Competitors</h3>
+            <input
+              value={parentSearch}
+              onChange={(e) => setParentSearch(e.target.value)}
+              placeholder="Search competitors…"
+              className="h-9 w-52 rounded-md border border-line bg-panel px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+            />
+          </div>
           <div className="divide-y divide-line">
-            {(sheets.data || []).map((sh) => {
-              const compDomain = (sh.competitor_url || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
-              return (
-                <div key={sh.id}>
-                  <div
-                    onClick={() => setOpenSheet(openSheet === sh.id ? null : sh.id)}
-                    title="Click to see every backlink inside this upload"
-                    className={clsx(
-                      "flex cursor-pointer flex-wrap items-center justify-between gap-2 p-3 text-sm transition hover:bg-field/50",
-                      openSheet === sh.id && "bg-ocean/5"
-                    )}
-                  >
-                    <div className="min-w-0">
-                      <span className={clsx("mr-1 inline-block text-muted transition", openSheet === sh.id && "rotate-90")}>▸</span>
-                      <span className="font-semibold text-ink">{compDomain || sh.name}</span>{" "}
-                      {sh.competitor_url ? (
-                        <a
-                          href={sh.competitor_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          title="Open the competitor's website"
-                          className="mr-1 text-xs text-ocean hover:underline"
-                        >
-                          visit ↗
-                        </a>
-                      ) : null}
-                      {sh.name && compDomain && sh.name !== compDomain ? (
-                        <span className="mr-1 text-xs text-muted">({sh.name})</span>
-                      ) : null}
-                      <span className="whitespace-nowrap text-xs text-muted" title="New = domains first seen in this upload · Seen before = domains an earlier upload already covered">
-                        {sh.total_rows} links · {sh.new_domains} new domain{sh.new_domains === 1 ? "" : "s"} / {sh.existing_domains} seen before · {formatDate(sh.created_at)}
+            {(parents.data || [])
+              .filter((p) => {
+                const q = parentSearch.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  p.display_name.toLowerCase().includes(q) || p.competitor.toLowerCase().includes(q)
+                );
+              })
+              .map((p) => {
+                const isOpen = openCompetitor === p.competitor;
+                const uploads = (sheets.data || []).filter((s) => p.sheet_ids.includes(s.id));
+                return (
+                  <div key={p.competitor}>
+                    <div
+                      onClick={() => setOpenCompetitor(isOpen ? null : p.competitor)}
+                      title="Click to see every backlink across this competitor's uploads"
+                      className={clsx(
+                        "flex cursor-pointer flex-wrap items-center justify-between gap-2 p-3 text-sm transition hover:bg-field/50",
+                        isOpen && "bg-ocean/5"
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <Swords className={clsx("mr-1 inline-block h-4 w-4 text-muted transition", isOpen && "text-ocean")} />
+                        <span className="font-semibold text-ink">{p.display_name}</span>{" "}
+                        {p.competitor && p.competitor !== p.display_name ? (
+                          <span className="mr-1 text-xs text-muted">({p.competitor})</span>
+                        ) : null}
+                        {p.competitor_url ? (
+                          <a
+                            href={p.competitor_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Open the competitor's website"
+                            className="text-xs text-ocean hover:underline"
+                          >
+                            visit ↗
+                          </a>
+                        ) : null}
+                      </div>
+                      <span className="whitespace-nowrap text-xs text-muted" title="New domains = domains first seen from this competitor that this project doesn't have yet">
+                        {p.uploads} upload{p.uploads === 1 ? "" : "s"} · {p.total_rows} links · {p.new_domains} new domain{p.new_domains === 1 ? "" : "s"} · last {formatDate(p.last_upload_at)}
                       </span>
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (window.confirm(`Delete upload “${sh.name}” and its ${sh.total_rows} competitor links? Opportunities will be recalculated.`)) {
-                          deleteSheet.mutate(sh.id);
-                        }
-                      }}
-                      className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
-                      aria-label={`Delete upload ${sh.name}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                  {openSheet === sh.id ? (
-                    <div className="border-t border-line bg-field/40 p-3">
-                      <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-                        Backlinks in this upload
-                      </div>
-                      {sheetLinks.isLoading ? (
-                        <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
-                      ) : (
-                        <div className="max-h-72 space-y-1 overflow-y-auto">
-                          {(sheetLinks.data || []).map((l, i) => (
-                            <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
-                              <a href={l.url} target="_blank" rel="noreferrer" className="max-w-[420px] truncate text-ocean hover:underline" title={l.url}>
-                                {l.url}
-                              </a>
-                              {l.source_domain ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.source_domain}</span> : null}
-                              {l.anchor ? <span className="text-muted">“{l.anchor}”</span> : null}
-                              {l.rel ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.rel}</span> : null}
-                              {l.link_type ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">{l.link_type}</span> : null}
-                              <MetricTag label="DA" value={l.da} />
-                              <MetricTag label="AS" value={l.semrush_as} />
-                              {l.domain_category === "new_opportunity" && l.decision !== "dismissed" ? <span className="rounded bg-ocean/10 px-1.5 py-0.5 font-semibold text-ocean">Opportunity</span> : null}
-                              {l.domain_category === "existing" ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">Already have</span> : null}
-                              {l.decision === "dismissed" ? <span className="rounded bg-field px-1.5 py-0.5 text-muted">Dismissed</span> : null}
-                            </div>
-                          ))}
-                          {!(sheetLinks.data || []).length ? <p className="text-xs text-muted">No links stored for this upload.</p> : null}
+                    {isOpen ? (
+                      <div className="space-y-3 border-t border-line bg-field/40 p-3">
+                        <div>
+                          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                            Uploads
+                          </div>
+                          <div className="space-y-1">
+                            {uploads.map((sh) => (
+                              <div key={sh.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                <span className="min-w-0 truncate">
+                                  <span className="font-medium text-ink">{sh.name}</span>{" "}
+                                  <span className="text-muted">
+                                    {sh.total_rows} links · {formatDate(sh.created_at)}
+                                  </span>
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    if (window.confirm(`Delete upload “${sh.name}” and its ${sh.total_rows} competitor links? Opportunities will be recalculated.`)) {
+                                      deleteSheet.mutate(sh.id);
+                                    }
+                                  }}
+                                  className="grid h-7 w-7 place-items-center rounded-md border border-line text-danger transition hover:bg-danger/10"
+                                  aria-label={`Delete upload ${sh.name}`}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+                        <div>
+                          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Backlinks</span>
+                            <input
+                              value={compQ}
+                              onChange={(e) => setCompQ(e.target.value)}
+                              placeholder="Search this competitor's source URLs…"
+                              className="h-8 w-64 rounded-md border border-line bg-panel px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ocean/20"
+                            />
+                          </div>
+                          {parentLinks.isLoading ? (
+                            <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                          ) : (
+                            <div className="max-h-80 space-y-1 overflow-y-auto">
+                              {(parentLinks.data || []).map((l, i) => (
+                                <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
+                                  <a href={l.url} target="_blank" rel="noreferrer" className="max-w-[420px] truncate text-ocean hover:underline" title={l.url}>
+                                    {l.url}
+                                  </a>
+                                  {l.source_domain ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.source_domain}</span> : null}
+                                  {l.anchor ? <span className="text-muted">“{l.anchor}”</span> : null}
+                                  {l.rel ? <span className="rounded bg-panel px-1.5 py-0.5 text-muted">{l.rel}</span> : null}
+                                  {l.link_type ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">{l.link_type}</span> : null}
+                                  <MetricTag label="DA" value={l.da} />
+                                  <MetricTag label="AS" value={l.semrush_as} />
+                                  {l.domain_category === "new_opportunity" && l.decision !== "dismissed" ? <span className="rounded bg-ocean/10 px-1.5 py-0.5 font-semibold text-ocean">Opportunity</span> : null}
+                                  {l.domain_category === "existing" ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">Already have</span> : null}
+                                  {l.decision === "dismissed" ? <span className="rounded bg-field px-1.5 py-0.5 text-muted">Dismissed</span> : null}
+                                  {l.upload_name ? <span className="rounded bg-field px-1.5 py-0.5 text-muted">via {l.upload_name}</span> : null}
+                                </div>
+                              ))}
+                              {!(parentLinks.data || []).length ? <p className="text-xs text-muted">No links match.</p> : null}
+                              {(parentLinks.data || []).length >= 500 ? (
+                                <p className="pt-1 text-[11px] text-muted">Showing the first 500 — refine the search to narrow down.</p>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
           </div>
         </section>
       ) : null}
@@ -10721,12 +10979,36 @@ function loadViews(key: string): SavedView[] {
   }
 }
 
-function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: string }) {
+function AnalyticsDesk({
+  token,
+  projectId,
+  onNotice,
+  onOpenBacklinks
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+  onOpenBacklinks: (filters: Record<string, string>) => void;
+}) {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [groupBy, setGroupBy] = useState("user");
   const [drillKey, setDrillKey] = useState<string | null>(null);
   const [views, setViews] = useState<SavedView[]>(() => loadViews("ls_views_analytics"));
   const [viewName, setViewName] = useState("");
+  const [linksLimit, setLinksLimit] = useState(50);
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  // The actual backlink rows behind the analytics numbers — same filter whitelist
+  // the cards use, so "Matching links" always agrees with the pivots above.
+  const backlinkParams = () => {
+    const map: Record<string, string> = {};
+    ["status", "index_status", "duplicate_status", "rel", "link_type", "source_domain", "assigned_user_label", "project_id"].forEach(
+      (k) => {
+        if (filters[k]) map[k] = filters[k];
+      }
+    );
+    return map;
+  };
 
   // Project context: analytics is automatically scoped to the selected project.
   useEffect(() => {
@@ -10794,6 +11076,16 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
           facets: ANALYTICS_FACETS.map(([dim]) => dim)
         })
       })
+  });
+
+  const links = useQuery({
+    queryKey: ["analytics-links", token, filters, linksLimit],
+    enabled: Boolean(token),
+    queryFn: () => {
+      // Backend caps limit at 200 — clamp so a large "Load more" never 422s.
+      const p = new URLSearchParams({ ...backlinkParams(), limit: String(Math.min(200, linksLimit)), with_total: "true" });
+      return api<{ items: BacklinkRow[]; total?: number | null }>(`/backlinks?${p.toString()}`, { token });
+    }
   });
 
   const s = q.data?.summary || {};
@@ -11021,9 +11313,10 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
                                 </thead>
                                 <tbody className="divide-y divide-line">
                                   {(drill.data?.records || []).map((r) => (
-                                    <tr key={String(r.id)} className="hover:bg-field/60">
+                                    <tr key={String(r.id)} onClick={() => setDetailId(String(r.id))} className="cursor-pointer hover:bg-field/60">
                                       <Td>
                                         <a href={String(r.source_page_url)} target="_blank" rel="noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
                                           className="break-all text-ocean hover:underline">
                                           {String(r.source_page_url)}
                                         </a>
@@ -11051,6 +11344,110 @@ function AnalyticsDesk({ token, projectId }: { token: string | null; projectId: 
           ) : null}
         </div>
       </div>
+
+      {/* The actual links behind the numbers — same filters as the cards above. */}
+      <div className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Matching links</h2>
+            <p className="mt-0.5 text-xs text-muted">
+              The actual links behind these numbers — filtered exactly like the cards above. Click a row for full detail.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            {links.data?.total != null ? (
+              <span className="whitespace-nowrap text-xs text-muted">{links.data.total} total</span>
+            ) : null}
+            <button
+              onClick={() => {
+                const f: Record<string, string> = {};
+                if (filters.assigned_user_label) f.user = filters.assigned_user_label;
+                ["status", "index_status", "duplicate_status", "rel", "link_type", "source_domain"].forEach((k) => {
+                  if (filters[k]) f[k] = filters[k];
+                });
+                onOpenBacklinks(f);
+              }}
+              className="rounded-lg border border-line bg-field px-3 py-1.5 text-xs font-medium text-ink hover:bg-field/70"
+            >
+              Open in Backlinks
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr>
+                <Th>Source page</Th>
+                <Th>Target</Th>
+                <Th>Status</Th>
+                <Th>Score</Th>
+                <Th>Metrics</Th>
+                <Th>Checked</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(links.data?.items || []).map((row) => {
+                let host = "";
+                try {
+                  host = new URL(row.source_page_url).hostname.replace(/^www\./, "");
+                } catch {
+                  /* ignore unparseable urls */
+                }
+                return (
+                  <tr
+                    key={row.id}
+                    onClick={() => setDetailId(row.id)}
+                    className="cursor-pointer hover:bg-field/60"
+                  >
+                    <Td>
+                      <div className="max-w-[330px] truncate font-medium text-ink" title={row.source_page_url}>
+                        {row.source_page_url}
+                      </div>
+                      {host ? <div className="text-xs text-muted">{host}</div> : null}
+                    </Td>
+                    <Td>
+                      <div className="max-w-[260px] truncate text-ink" title={row.target_url}>{row.target_url}</div>
+                    </Td>
+                    <Td><Status value={row.override_status || row.status} compact /></Td>
+                    <Td>{row.score ?? "-"}</Td>
+                    <Td>
+                      {row.domain_da != null || row.domain_as != null ? (
+                        <span className="flex flex-wrap gap-1">
+                          <MetricTag label="DA" value={row.domain_da} />
+                          <MetricTag label="AS" value={row.domain_as} />
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted">—</span>
+                      )}
+                    </Td>
+                    <Td><span className="whitespace-nowrap">{row.last_checked_at ? formatDate(row.last_checked_at) : "—"}</span></Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {links.isLoading ? (
+            <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+          ) : null}
+          {!links.isLoading && !(links.data?.items || []).length ? (
+            <Empty label="No links match these filters." />
+          ) : null}
+          {(links.data?.items || []).length >= linksLimit ? (
+            <div className="border-t border-line p-3 text-center">
+              <button
+                onClick={() => setLinksLimit((l) => Math.min(200, l + 50))}
+                className="rounded-lg border border-line bg-field px-3 py-1.5 text-xs font-medium text-ink hover:bg-field/70"
+              >
+                Load more
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {detailId ? (
+        <BacklinkDetailDrawer token={token} backlinkId={detailId} onClose={() => setDetailId(null)} onNotice={onNotice} />
+      ) : null}
     </section>
   );
 }

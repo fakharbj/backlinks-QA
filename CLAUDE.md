@@ -319,6 +319,37 @@ end-to-end on prod (staged link → worker verdict PASS/94 → 0 rows in project
 → batch deleted). Sheet sync intentionally still writes direct (automated
 pipeline; unchanged).
 
+**Final delivery phase shipped + deployed** (no new migration, 155 tests):
+five delivery-gate features. (1) **Imports work global + project**: the Imports
+desk now has a project picker in the global (no-project) view (links still
+always belong to a project); in project scope the **target URL is optional** —
+rows pasted as bare source URLs inherit the project's target
+(`target_urls[0]` else `https://<target_domain>`), applied in
+`batch_review_service.stage_link_import(default_target=…)` and echoed as
+`default_target` in the staged response. (2) **Competitor parent grouping**:
+uploads group under a **parent competitor** keyed by the registrable domain of
+`competitor_url` (`competitor_service.competitor_key`); `GET /competitors/parents`
+(one row per competitor: display_name — the non-domain name wins, else the
+domain — uploads/total_rows/new_domains/last_upload_at/sheet_ids) +
+`GET /competitors/parents/backlinks?competitor=&q=` (all source URLs across the
+competitor's uploads, enriched w/ DA/PA/AS + opportunity decision + `upload_name`,
+searchable). CompetitorDesk's flat Uploads list → a **Competitors** list:
+expand a competitor to see its uploads (each still deletable) + a searchable
+per-competitor source-URL panel. (3) **User Dashboards is its own desk**
+(`users` tab in Monitor, global + project nav): a person picker + people-card
+grid; picking someone opens the full `UserDashboard`, now organized into
+**Overview / Projects / Plans & calendar / Rates & leave** tabs. Performance is
+decoupled — its person table deep-links into the Users desk via `openUserDash`
+(`f_user` param); `dashUser` removed from PerformanceDesk. (4) **Nav reorg**:
+Monitor group leads (Dashboard/Analytics/Performance/User Dashboards); project
+nav puts Monitor above Ingest. (5) **Analytics shows the actual links**: a
+**Matching links** card lists the backlinks behind the current analytics
+filters (clickable rows → the shared `BacklinkDetailDrawer`, reused verbatim
+from the Backlinks desk), an "Open in Backlinks" jump, and the inline drill
+rows also open the drawer. Live-verified on prod (bare-URL paste → target
+defaulted; two uploads → one parent "Rival Smoke Inc"). Deployed, built, PM2
+restarted, site 200; DB untouched.
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
