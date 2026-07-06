@@ -54,13 +54,55 @@ def excessive_outbound(ctx: CheckContext) -> Iterable[Issue]:
                     evidence={"outbound_links": n})
 
 
+# Regions that count as "on the page proper" (not header/nav/footer/sidebar ads).
+_IN_SCOPE_REGIONS = frozenset({"content", "anchor", "link_context"})
+
+
+def _spam_hit_region(hit: object) -> str:
+    """Region of a hit, tolerating both the new dict shape and the legacy plain
+    string shape (older persisted rows). Legacy strings carry no region → treat
+    as 'content' so historical behavior (always in-scope) is preserved."""
+    if isinstance(hit, dict):
+        return hit.get("region") or "content"
+    return "content"
+
+
+def _spam_hit_keyword(hit: object) -> str:
+    return hit.get("keyword", "") if isinstance(hit, dict) else str(hit)
+
+
 @check("PQ-06", CAT)
 def spam_neighborhood(ctx: CheckContext) -> Iterable[Issue]:
-    if not _has_page(ctx):
+    if not _has_page(ctx) or not ctx.policy.spam_enabled:
         return
-    hits = ctx.artifact.signals.spam_keyword_hits
-    if hits:
-        yield issue(code="PQ-06", label=IssueLabel.NONE, category=CAT, severity=Severity.MEDIUM,
-                    message="Page contains adult/gambling/pharma/spam keywords (risky neighborhood).",
-                    recommendation="Review host suitability for the client's brand.",
-                    evidence={"keywords": hits[:8]})
+    hits = ctx.artifact.signals.spam_keyword_hits or []
+    if not hits:
+        return
+
+    in_scope = [h for h in hits if _spam_hit_region(h) in _IN_SCOPE_REGIONS]
+    keywords = [_spam_hit_keyword(h) for h in hits][:8]
+    matches = [h for h in hits if isinstance(h, dict)][:8]
+
+    # Gate: MEDIUM only when enough in-scope hits exist (or scope="page", where
+    # any region counts). Boilerplate-only hits downgrade to LOW rather than a
+    # silent −10; if scope="content" and the min isn't met, still surface LOW so
+    # the reviewer sees the neighborhood signal without the penalty weight.
+    if ctx.policy.spam_scope == "page":
+        qualifies = len(hits) >= ctx.policy.spam_min_hits
+    else:
+        qualifies = len(in_scope) >= ctx.policy.spam_min_hits
+
+    severity = Severity.MEDIUM if qualifies else Severity.LOW
+    scope_note = "content" if in_scope else "boilerplate"
+    if not qualifies:
+        message = (
+            "Spam keywords appear only in page boilerplate (nav/footer/sidebar); "
+            "flagged for review, not penalised as main-content spam."
+        )
+    else:
+        message = "Page contains adult/gambling/pharma/spam keywords (risky neighborhood)."
+
+    yield issue(code="PQ-06", label=IssueLabel.NONE, category=CAT, severity=severity,
+                message=message,
+                recommendation="Review host suitability for the client's brand.",
+                evidence={"keywords": keywords, "matches": matches, "scope": scope_note})

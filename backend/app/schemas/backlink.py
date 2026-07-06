@@ -144,6 +144,8 @@ class CrawlResultOut(BaseModel):
     rendered_html_key: str | None
     # The exact href we matched on the page — proof of WHERE the link was found.
     matched_href: str | None = None
+    # Which scoring rule-set version produced this score (audit / transparency).
+    scoring_rule_version_id: uuid.UUID | None = None
 
 
 class BacklinkDetail(BacklinkRow):

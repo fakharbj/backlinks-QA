@@ -53,8 +53,13 @@ _LABEL_MAP: dict[IssueLabel, tuple[str, str]] = {
 }
 
 # A few mapped by code where the label is NONE but the concern is unambiguous.
+# HTTP-301/302 map redirects to their own tunable (parameter+outcome exist in the
+# 0016 registry); without this they fell back to plain Severity and could not be
+# tuned independently. Only mappings whose (parameter, outcome) exist are added.
 _CODE_MAP: dict[str, tuple[str, str]] = {
     "CAN-02": ("canonical", "missing"),  # canonical tag missing (label NONE)
+    "HTTP-301": ("source_http", "redirect"),  # permanent redirect (tunable)
+    "HTTP-302": ("source_http", "redirect"),  # temporary redirect (tunable)
 }
 
 # Placement regions LNK-17 can report (label NONE → mapped from evidence).
@@ -68,6 +73,40 @@ METRIC_PARAMS = (
     "external_index",
     "duplicate",
 )
+
+
+def metric_bands(
+    da: int | None,
+    semrush_as: int | None,
+    age_days: int | None,
+    *,
+    da_high: int,
+    da_medium: int,
+    as_high: int,
+    as_medium: int,
+    age_old_days: int,
+    age_medium_days: int,
+) -> dict[str, str]:
+    """Pure band computation for the DA / Semrush-AS / domain-age scoring signals.
+
+    Emits a signal ONLY when the underlying metric is present — a missing metric
+    contributes no key (so an absent metric never moves the score, even if a rule
+    set assigns points to the "unknown" outcome). Cutoffs are passed in (from
+    ``settings``) so the engine stays framework-free and unit-testable."""
+    out: dict[str, str] = {}
+    if da is not None:
+        out["source_da_band"] = "high" if da >= da_high else "medium" if da >= da_medium else "low"
+    if semrush_as is not None:
+        out["semrush_as_band"] = (
+            "high" if semrush_as >= as_high else "medium" if semrush_as >= as_medium else "low"
+        )
+    if age_days is not None:
+        out["domain_age_band"] = (
+            "old" if age_days >= age_old_days
+            else "medium" if age_days >= age_medium_days
+            else "new"
+        )
+    return out
 
 
 def param_outcome_for(issue) -> tuple[str, str] | None:
@@ -117,6 +156,88 @@ class ResolvedRuleset:
             return int(self.bands.get("warn_below", 80))
         except (TypeError, ValueError):
             return 80
+
+
+# ── Static human labels for breakdown transparency ───────────────────────────
+# Mirror the seeded parameters/outcomes from migration 0016 so the pure scorer can
+# annotate each ScoreStep with readable names WITHOUT a DB round-trip. If a key is
+# absent (e.g. a newer parameter) the scorer falls back to the raw key — never
+# raising — so this staying slightly behind the DB registry is safe.
+PARAM_LABELS: dict[str, str] = {
+    "link_presence": "Link presence",
+    "link_rel": "Link rel / followability",
+    "link_visibility": "Link visibility",
+    "link_placement": "Link placement",
+    "anchor_match": "Anchor text",
+    "source_http": "Source page HTTP",
+    "source_indexability": "Source indexability",
+    "canonical": "Canonical",
+    "duplicate": "Duplicate",
+    "external_index": "External index status",
+    "source_da_band": "Source domain authority (Moz DA)",
+    "semrush_as_band": "Semrush Authority Score",
+    "domain_age_band": "Source domain age",
+}
+
+OUTCOME_LABELS: dict[tuple[str, str], str] = {
+    ("link_presence", "found"): "Found",
+    ("link_presence", "wrong_target"): "Wrong target URL",
+    ("link_presence", "missing"): "Missing",
+    ("link_rel", "dofollow"): "Dofollow",
+    ("link_rel", "nofollow"): "Nofollow",
+    ("link_rel", "sponsored"): "Sponsored",
+    ("link_rel", "ugc"): "UGC",
+    ("link_visibility", "visible"): "Visible",
+    ("link_visibility", "hidden"): "Hidden",
+    ("link_placement", "in_content"): "In content",
+    ("link_placement", "sidebar"): "Sidebar",
+    ("link_placement", "footer"): "Footer",
+    ("link_placement", "header"): "Header",
+    ("link_placement", "nav"): "Nav",
+    ("anchor_match", "match"): "Matches",
+    ("anchor_match", "changed"): "Changed",
+    ("anchor_match", "missing"): "Not specified",
+    ("source_http", "ok"): "200 OK",
+    ("source_http", "redirect"): "Redirected",
+    ("source_http", "not_found"): "404 / 410",
+    ("source_http", "forbidden"): "403 (review)",
+    ("source_http", "server_error"): "5xx",
+    ("source_indexability", "indexable"): "Indexable",
+    ("source_indexability", "noindex"): "Noindex",
+    ("source_indexability", "robots_blocked"): "Robots blocked",
+    ("source_indexability", "unknown"): "Unknown",
+    ("canonical", "self"): "Self / OK",
+    ("canonical", "missing"): "Missing",
+    ("canonical", "mismatch"): "Mismatch",
+    ("canonical", "cross_domain"): "Cross-domain",
+    ("duplicate", "unique"): "Unique",
+    ("duplicate", "duplicate"): "Duplicate",
+    ("external_index", "indexed"): "Indexed",
+    ("external_index", "not_indexed"): "Not indexed",
+    ("external_index", "unknown"): "Unknown",
+    ("source_da_band", "high"): "High (60+)",
+    ("source_da_band", "medium"): "Medium (30–59)",
+    ("source_da_band", "low"): "Low (<30)",
+    ("source_da_band", "unknown"): "Unknown",
+    ("semrush_as_band", "high"): "High (50+)",
+    ("semrush_as_band", "medium"): "Medium (25–49)",
+    ("semrush_as_band", "low"): "Low (<25)",
+    ("semrush_as_band", "unknown"): "Unknown",
+    ("domain_age_band", "old"): "Old (5y+)",
+    ("domain_age_band", "medium"): "Medium (1–5y)",
+    ("domain_age_band", "new"): "New (<1y)",
+    ("domain_age_band", "unknown"): "Unknown",
+}
+
+
+def param_label(parameter: str) -> str:
+    """Human name for a parameter key (falls back to the raw key)."""
+    return PARAM_LABELS.get(parameter, parameter)
+
+
+def outcome_label(parameter: str, outcome: str) -> str:
+    """Human name for a (parameter, outcome) pair (falls back to the raw outcome)."""
+    return OUTCOME_LABELS.get((parameter, outcome), outcome)
 
 
 # The implicit default: empty overrides + standard bands → exactly today's scoring.

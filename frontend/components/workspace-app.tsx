@@ -62,6 +62,8 @@ import {
   BatchItemsPage,
   BatchLog,
   ImportRowError,
+  IssueEvidence,
+  SpamMatch,
   CompetitorDomain,
   CompetitorParent,
   CompetitorSheet,
@@ -2397,18 +2399,52 @@ function BacklinkDetailDrawer({
 
             {data.score_breakdown.length ? (
               <DetailBlock title="Score breakdown">
+                {(() => {
+                  // Rule-set version, if the payload exposes it. We only have the
+                  // id (a uuid) — show that it exists without inventing a number.
+                  const rv = data.scoring_rule_version_id ?? data.latest_result?.scoring_rule_version_id;
+                  return rv ? (
+                    <div className="mb-2 text-xs text-muted">Scored by rule set v{rv.slice(0, 8)}</div>
+                  ) : null;
+                })()}
                 <div className="space-y-1.5">
-                  {data.score_breakdown.map((step, i) => (
-                    <div key={`${step.code}-${i}`} className="flex items-center justify-between text-sm">
-                      <span className="text-muted">
-                        {step.code === "START" ? "Baseline" : step.code}
-                        {step.note ? <span className="ml-2 text-xs">{step.note}</span> : null}
-                      </span>
-                      <span className={clsx("font-semibold", step.delta < 0 ? "text-danger" : "text-ink")}>
-                        {step.cap_applied !== null ? `cap → ${step.cap_applied}` : step.delta === 0 ? "100" : step.delta}
-                      </span>
-                    </div>
-                  ))}
+                  {data.score_breakdown.map((step, i) => {
+                    // Human line: prefer parameter/outcome labels; else code + note.
+                    const label = step.code === "START" ? "Baseline" : step.code;
+                    const human =
+                      step.parameter_label && step.outcome_label
+                        ? `${step.parameter_label} - ${step.outcome_label}`
+                        : step.parameter_label || null;
+                    const srcTag = SCORE_SOURCE_LABEL[step.source ?? ""] ?? null;
+                    return (
+                      <div key={`${step.code}-${i}`} className="flex items-start justify-between gap-3 text-sm">
+                        <span className="min-w-0 text-muted">
+                          {human ? (
+                            <span className="text-ink">{human}</span>
+                          ) : (
+                            <>
+                              {label}
+                              {step.note ? <span className="ml-2 text-xs">{step.note}</span> : null}
+                            </>
+                          )}
+                          {srcTag ? (
+                            <span className="ml-2 rounded bg-field px-1 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                              {srcTag}
+                            </span>
+                          ) : null}
+                          {step.configured_points !== null && step.configured_points !== undefined ? (
+                            <span className="ml-2 text-[11px] text-muted">
+                              ({step.configured_points > 0 ? "+" : ""}
+                              {step.configured_points} pts)
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className={clsx("shrink-0 font-semibold", step.delta < 0 ? "text-danger" : "text-ink")}>
+                          {step.cap_applied !== null ? `cap → ${step.cap_applied}` : step.delta === 0 ? "100" : step.delta}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </DetailBlock>
             ) : null}
@@ -2425,6 +2461,7 @@ function BacklinkDetailDrawer({
                         <Severity value={issue.severity} />
                       </div>
                       <div className="mt-1 text-sm font-medium text-ink">{issue.message}</div>
+                      <SpamEvidence evidence={issue.evidence} />
                       {issue.recommendation ? (
                         <div className="mt-1 text-xs text-muted">→ {issue.recommendation}</div>
                       ) : null}
@@ -2550,6 +2587,56 @@ function FactRow({ k, v }: { k: string; v: React.ReactNode }) {
     <div className="flex items-start justify-between gap-4 py-1 text-sm">
       <span className="shrink-0 text-muted">{k}</span>
       <span className="min-w-0 break-words text-right font-medium text-ink">{v || "-"}</span>
+    </div>
+  );
+}
+
+// Human tag for a ScoreStep.source. Old rows lack source → no tag rendered.
+const SCORE_SOURCE_LABEL: Record<string, string> = {
+  ruleset: "configured",
+  severity: "severity",
+  metric_signal: "metric",
+  cap: "cap",
+};
+
+// Renders spam-keyword evidence under an issue message. Tolerates BOTH the new
+// object shape (evidence.matches: [{keyword,category,region,snippet}]) and the
+// legacy shape (evidence.keywords: string[]).
+function SpamEvidence({ evidence }: { evidence?: IssueEvidence | null }) {
+  if (!evidence) return null;
+  const rawMatches = Array.isArray(evidence.matches) ? evidence.matches : [];
+  const legacy = Array.isArray(evidence.keywords)
+    ? (evidence.keywords as unknown[]).filter((k): k is string => typeof k === "string")
+    : [];
+  // Normalize legacy string[] into the same {keyword} shape.
+  const matches: SpamMatch[] = rawMatches.length
+    ? rawMatches
+    : legacy.map((k) => ({ keyword: k }));
+  if (!matches.length) return null;
+  // First non-empty snippet (new shape only) shown as a muted one-liner.
+  const snippet = rawMatches.map((m) => m?.snippet).find((s) => typeof s === "string" && s.trim());
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap gap-1">
+        {matches.map((m, i) => {
+          const kw = m?.keyword || "match";
+          return (
+            <span
+              key={`${kw}-${i}`}
+              className="inline-flex items-center rounded border border-line bg-danger/5 px-1.5 py-0.5 text-[11px] text-ink"
+            >
+              <span className="font-medium">{kw}</span>
+              {m?.category ? <span className="ml-1 text-muted">({m.category})</span> : null}
+              {m?.region ? <span className="ml-1 text-muted">- {m.region}</span> : null}
+            </span>
+          );
+        })}
+      </div>
+      {snippet ? (
+        <div className="mt-1 truncate text-[11px] italic text-muted" title={snippet}>
+          &ldquo;{snippet}&rdquo;
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -26,7 +26,9 @@ from app.models.backlink import BacklinkRecord
 from app.models.crawl import CrawlJob
 from app.models.enums import JobStatus, OverallStatus, ScheduleInterval
 from app.models.project import Project
+from app.models.source_domain import SourceDomain
 from app.qa import evaluate
+from app.qa.scoring_rules import metric_bands
 from app.qa.types import QAPolicy
 from app.services import alert_service, result_service, scoring_config_service
 from app.workers.celery_app import celery_app
@@ -35,10 +37,15 @@ from app.workers.runtime import RedisRobotsCache, get_browser, make_rate_limiter
 log = get_logger("worker.crawl")
 
 
-def _scoring_signals(record: BacklinkRecord) -> dict[str, str]:
-    """Metric-parameter values for the scorer (duplicate / external index). DA /
-    Semrush / age bands are looked up only when a rule set configures them; they
-    default to no contribution otherwise (added in a later increment)."""
+def _scoring_signals(
+    record: BacklinkRecord, source_domain: SourceDomain | None = None
+) -> dict[str, str]:
+    """Metric-parameter values for the scorer.
+
+    Always emits duplicate / external-index from the record. When the source
+    domain's aggregate row is supplied, also emits the DA / Semrush-AS / domain-age
+    bands (one signal per metric that is actually present). Bands are computed from
+    the configured cutoffs; each contributes 0 unless a rule set assigns points."""
     signals: dict[str, str] = {}
     dup = record.duplicate_status
     if dup:
@@ -46,6 +53,20 @@ def _scoring_signals(record: BacklinkRecord) -> dict[str, str]:
     idx = record.index_status
     if idx in ("indexed", "not_indexed"):
         signals["external_index"] = idx
+    if source_domain is not None:
+        signals.update(
+            metric_bands(
+                source_domain.da,
+                source_domain.semrush_as,
+                source_domain.domain_age_days,
+                da_high=settings.SCORE_DA_HIGH,
+                da_medium=settings.SCORE_DA_MEDIUM,
+                as_high=settings.SCORE_AS_HIGH,
+                as_medium=settings.SCORE_AS_MEDIUM,
+                age_old_days=settings.SCORE_AGE_OLD_DAYS,
+                age_medium_days=settings.SCORE_AGE_MEDIUM_DAYS,
+            )
+        )
     return signals
 
 _INTERVAL_HOURS = {
@@ -195,7 +216,22 @@ async def _persist_one(
         ruleset = await scoring_config_service.resolve(
             s, record.workspace_id, record.project_id, record.link_type_id
         )
-        qa = evaluate(artifact, policy, ruleset=ruleset, signals=_scoring_signals(record))
+        # Source-domain metrics (DA / Semrush AS / age) feed the band signals; one
+        # keyed lookup per record on (workspace_id, domain_key). None → bands omit.
+        source_dom: SourceDomain | None = None
+        if record.source_domain:
+            source_dom = (
+                await s.execute(
+                    select(SourceDomain).where(
+                        SourceDomain.workspace_id == record.workspace_id,
+                        SourceDomain.domain_key == record.source_domain,
+                    )
+                )
+            ).scalar_one_or_none()
+        qa = evaluate(
+            artifact, policy, ruleset=ruleset,
+            signals=_scoring_signals(record, source_dom),
+        )
         QA_VERDICTS.labels(status=qa.status.value).inc()
 
         interval = _INTERVAL_HOURS.get(

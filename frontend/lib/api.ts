@@ -497,6 +497,21 @@ export type Page<T> = {
   total: number | null;
 };
 
+// One spam-keyword hit surfaced in issue.evidence.matches (new shape). Older
+// rows carry evidence.keywords (string[]) instead — readers tolerate both.
+export type SpamMatch = {
+  keyword?: string | null;
+  category?: string | null;
+  region?: string | null;
+  snippet?: string | null;
+};
+
+export type IssueEvidence = {
+  matches?: SpamMatch[];
+  keywords?: string[]; // legacy shape
+  [key: string]: unknown;
+};
+
 export type IssueOut = {
   code: string;
   label: string;
@@ -504,7 +519,7 @@ export type IssueOut = {
   severity: string;
   message: string;
   recommendation: string | null;
-  evidence: Record<string, unknown>;
+  evidence: IssueEvidence;
 };
 
 export type HistoryEventOut = {
@@ -523,6 +538,14 @@ export type ScoreStep = {
   delta: number;
   cap_applied: number | null;
   note: string;
+  // ── Explainability metadata (additive; older breakdown rows lack these) ──
+  parameter_key?: string | null;
+  parameter_label?: string | null;
+  outcome_key?: string | null;
+  outcome_label?: string | null;
+  // where the delta came from: "severity" | "ruleset" | "metric_signal" | "cap"
+  source?: string | null;
+  configured_points?: number | null;
 };
 
 export type CrawlResultOut = {
@@ -551,6 +574,7 @@ export type CrawlResultOut = {
   raw_html_key: string | null;
   rendered_html_key: string | null;
   matched_href?: string | null; // the exact href we matched on the page
+  scoring_rule_version_id?: string | null; // which rule set produced this verdict (if exposed)
 };
 
 export type BacklinkDetail = BacklinkRow & {
@@ -565,6 +589,7 @@ export type BacklinkDetail = BacklinkRow & {
   issues: IssueOut[];
   recommendations: string[];
   score_breakdown: ScoreStep[];
+  scoring_rule_version_id?: string | null; // which rule set scored this link (if exposed)
   latest_result: CrawlResultOut | null;
   history: HistoryEventOut[];
 };

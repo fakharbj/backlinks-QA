@@ -161,6 +161,37 @@ class Settings(BaseSettings):
     QA_TREAT_SPONSORED_AS_FOLLOW: bool = True  # paid-campaign default
     QA_TRAILING_SLASH_POLICY: Literal["strict", "lenient"] = "lenient"
 
+    # ── Spam-neighborhood keyword scan (PQ-06) ───────────────────────────────
+    # Historically PQ-06 substring-matched a fixed keyword tuple over the WHOLE
+    # page text, firing inside legit words (porn⊂popcorn, casino⊂casinos) and on
+    # nav/footer ad blocks — a silent −10 pts. It is now a word-boundary scan
+    # scoped to main content by default, with these tunables:
+    QA_SPAM_ENABLED: bool = True          # master switch for the PQ-06 scan
+    # Which regions count toward the PQ-06 gate: "content" = only main content /
+    # link anchor / link context (boilerplate hits are downgraded to LOW);
+    # "page" = any region can trip the MEDIUM issue (legacy-ish behavior).
+    QA_SPAM_SCOPE: Literal["content", "page"] = "content"
+    QA_SPAM_MIN_HITS: int = 1             # in-scope hits required to fire MEDIUM
+    # Extra phrases appended to the default spam corpus (category "other").
+    QA_SPAM_EXTRA_KEYWORDS: list[str] = []
+    # Phrases to drop from the corpus / suppress as hits (case-insensitive).
+    QA_SPAM_ALLOWLIST: list[str] = []
+
+    # ── Metric-band cutoffs (scoring signals) ────────────────────────────────
+    # The scorer's DA / Semrush-AS / domain-age band signals (source_da_band,
+    # semrush_as_band, domain_age_band) are computed from the source domain's
+    # stored metrics using these thresholds, so agencies can retune the bands
+    # without a redeploy. A metric >= HIGH → "high", >= MEDIUM → "medium", else
+    # "low"; a missing metric emits no signal at all (not "unknown"). These only
+    # affect the score when a rule set assigns points to those band outcomes
+    # (all default to 0 → no score change out of the box).
+    SCORE_DA_HIGH: int = 60     # Moz DA >= this → "high"
+    SCORE_DA_MEDIUM: int = 30   # Moz DA >= this → "medium" (else "low")
+    SCORE_AS_HIGH: int = 50     # Semrush AS >= this → "high"
+    SCORE_AS_MEDIUM: int = 25   # Semrush AS >= this → "medium" (else "low")
+    SCORE_AGE_OLD_DAYS: int = 1825    # domain age >= this (5y) → "old"
+    SCORE_AGE_MEDIUM_DAYS: int = 365  # domain age >= this (1y) → "medium" (else "new")
+
     # ── Access control (Phase 9) ─────────────────────────────────────────────
     # Open self-signup. False (default) = once the first workspace exists, only
     # admins create accounts (Team desk); the very first registration always

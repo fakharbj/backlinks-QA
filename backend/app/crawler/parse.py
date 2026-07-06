@@ -36,10 +36,68 @@ _REGION_TAGS = {
     "footer": "footer",
     "aside": "sidebar",
 }
-_SPAM_KEYWORDS = (
-    "viagra", "cialis", "casino", "poker", "porn", "escort", "payday loan",
-    "replica watch", "weight loss pill",
+# Default spam-neighborhood corpus (PQ-06). Same phrases as before, now
+# categorised so evidence/UI can group them. Kept as the *default* — the config
+# allowlist can drop entries and QA_SPAM_EXTRA_KEYWORDS can append more, so the
+# scan stays opt-in tunable without touching code.
+_DEFAULT_SPAM_CORPUS: tuple[dict[str, str], ...] = (
+    {"phrase": "viagra", "category": "pharma"},
+    {"phrase": "cialis", "category": "pharma"},
+    {"phrase": "casino", "category": "gambling"},
+    {"phrase": "poker", "category": "gambling"},
+    {"phrase": "porn", "category": "adult"},
+    {"phrase": "escort", "category": "adult"},
+    {"phrase": "payday loan", "category": "payday"},
+    {"phrase": "replica watch", "category": "replica"},
+    {"phrase": "weight loss pill", "category": "pharma"},
 )
+
+
+def _compile_spam_phrase(phrase: str) -> "re.Pattern[str]":
+    """Unicode-aware, word-boundary-anchored, case-insensitive matcher for one
+    phrase. Negative lookarounds (not \\b) so multi-word phrases and phrases with
+    internal spaces/punctuation match cleanly — ``porn`` won't fire inside
+    ``popcorn`` and ``casino`` won't fire inside ``casinos``."""
+    return re.compile(
+        r"(?<![^\W_])" + re.escape(phrase) + r"(?![^\W_])",
+        re.IGNORECASE | re.UNICODE,
+    )
+
+
+def _build_spam_corpus() -> list[dict]:
+    """Assemble the effective corpus (default − allowlist + extras) with a
+    compiled pattern cached per phrase. Reads settings (parse.py is not a
+    qa/check, so this is allowed). Rebuilt at module load; safe if settings are
+    unavailable (falls back to the defaults)."""
+    try:
+        from app.core.config import settings
+
+        allow = {a.strip().lower() for a in (settings.QA_SPAM_ALLOWLIST or []) if a.strip()}
+        extras = [e.strip() for e in (settings.QA_SPAM_EXTRA_KEYWORDS or []) if e.strip()]
+    except Exception:  # pragma: no cover - config always importable in practice
+        allow, extras = set(), []
+
+    corpus: list[dict] = []
+    seen: set[str] = set()
+    for entry in _DEFAULT_SPAM_CORPUS:
+        phrase = entry["phrase"]
+        low = phrase.lower()
+        if low in allow or low in seen:
+            continue
+        seen.add(low)
+        corpus.append({**entry, "pattern": _compile_spam_phrase(phrase)})
+    for phrase in extras:
+        low = phrase.lower()
+        if low in allow or low in seen:
+            continue
+        seen.add(low)
+        corpus.append(
+            {"phrase": phrase, "category": "other", "pattern": _compile_spam_phrase(phrase)}
+        )
+    return corpus
+
+
+_SPAM_CORPUS = _build_spam_corpus()
 
 # Query params that commonly carry the real destination inside a redirect/tracker
 # link (e.g. directories like Clutch use r.clutch.co/redirect?...&u=<real url>).
@@ -563,8 +621,126 @@ def _extract_signals(tree: object, body: str, page: ParsedPage) -> None:
     s.word_count = len(_WORD_RE.findall(text))
     s.page_bytes = len(body.encode("utf-8", errors="ignore"))
 
-    low = text.lower()
-    s.spam_keyword_hits = [kw for kw in _SPAM_KEYWORDS if kw in low]
+    # Spam-neighborhood scan (PQ-06). Scope to MAIN CONTENT (page text minus
+    # header/nav/footer/aside subtrees) plus each link's anchor + context, using
+    # compiled word-boundary patterns. Boilerplate hits are still recorded (with
+    # their region) so QA can down-weight rather than silently over-penalise.
+    hits = _scan_spam(tree, text, page.links)
+    s.spam_keyword_hits = hits
+    seen_terms: list[str] = []
+    for h in hits:
+        if h["keyword"] not in seen_terms:
+            seen_terms.append(h["keyword"])
+    s.spam_keyword_terms = seen_terms
+
+
+def _spam_snippet(text: str, start: int, end: int, width: int = 120) -> str:
+    """~120-char text-only window around a match, whitespace-collapsed."""
+    pad = max(0, (width - (end - start)) // 2)
+    lo = max(0, start - pad)
+    hi = min(len(text), end + pad)
+    snippet = re.sub(r"\s+", " ", text[lo:hi]).strip()
+    return snippet[:width]
+
+
+def _scan_one(
+    text: str, region: str, corpus: list[dict], acc: dict[tuple[str, str], dict], cap: int
+) -> None:
+    """Scan one text blob for every corpus phrase, accumulating hits keyed by
+    (keyword, region). Stops registering NEW hit-buckets once ``cap`` is reached,
+    but keeps counting occurrences of already-seen buckets."""
+    if not text:
+        return
+    for entry in corpus:
+        m = entry["pattern"].search(text)
+        if not m:
+            continue
+        key = (entry["phrase"], region)
+        if key not in acc:
+            if len(acc) >= cap:
+                continue
+            acc[key] = {
+                "keyword": entry["phrase"],
+                "category": entry["category"],
+                "region": region,
+                "count": 0,
+                "snippet": _spam_snippet(text, m.start(), m.end()),
+            }
+        acc[key]["count"] += sum(1 for _ in entry["pattern"].finditer(text))
+
+
+def _scan_spam(tree: object, content_text: str, links: list) -> list[dict]:
+    """Return structured spam hits (capped at 8) across main content + each
+    link's anchor and context text. content_text already has boilerplate present;
+    we recompute a content-only blob by dropping boilerplate subtrees so nav/
+    footer ads don't count as content, but we still scan those separately so the
+    hit's region is recorded honestly."""
+    if not _SPAM_CORPUS:
+        return []
+    cap = 8
+
+    # Partition text: main content (body minus boilerplate) vs each boilerplate
+    # region. Collect the outermost boilerplate subtrees only — a nested
+    # aside-in-footer is skipped so its text isn't double-counted. Identity uses
+    # ancestor-tag/ident inspection (not id(), which is unreliable for lxml's
+    # transient element proxies).
+    def _boilerplate_region(el: object) -> str | None:
+        tag = str(getattr(el, "tag", "")).lower()
+        region = _REGION_TAGS.get(tag)
+        if region is not None:
+            return region
+        if hasattr(el, "get"):
+            ident = " ".join(
+                filter(None, [el.get("class", ""), el.get("id", ""), el.get("role", "")])
+            ).lower()
+            if "sidebar" in ident:
+                return "sidebar"
+        return None
+
+    boilerplate_text: dict[str, list[str]] = {}
+    for node in tree.iter():
+        region = _boilerplate_region(node)
+        if region is None:
+            continue
+        # Skip if any ancestor is itself a boilerplate root (keep outermost only).
+        anc = node.getparent()
+        nested = False
+        while anc is not None:
+            if _boilerplate_region(anc) is not None:
+                nested = True
+                break
+            anc = anc.getparent()
+        if nested:
+            continue
+        try:
+            blob = " ".join(node.itertext())
+        except Exception:
+            blob = node.text or ""
+        boilerplate_text.setdefault(region, []).append(blob)
+
+    acc: dict[tuple[str, str], dict] = {}
+
+    # Main content = full content_text with each boilerplate blob removed once.
+    main_text = content_text
+    for blobs in boilerplate_text.values():
+        for blob in blobs:
+            stripped = blob.strip()
+            if stripped:
+                main_text = main_text.replace(stripped, " ", 1)
+    _scan_one(main_text, "content", _SPAM_CORPUS, acc, cap)
+
+    for region, blobs in boilerplate_text.items():
+        _scan_one(" ".join(blobs), region, _SPAM_CORPUS, acc, cap)
+
+    # Link anchor + surrounding context (skip comment-embedded links).
+    for link in links or []:
+        if getattr(link, "in_comment", False):
+            continue
+        anchor = getattr(link, "anchor_text", "") or ""
+        _scan_one(anchor, "anchor", _SPAM_CORPUS, acc, cap)
+        _scan_one(getattr(link, "context_text", "") or "", "link_context", _SPAM_CORPUS, acc, cap)
+
+    return list(acc.values())[:cap]
 
 
 # ── Markdown-syntax links (LNK-10) ───────────────────────────────────────────

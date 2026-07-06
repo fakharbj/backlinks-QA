@@ -83,7 +83,11 @@ async def persist(
             "internal_links": artifact.signals.internal_link_count,
             "external_links": artifact.signals.external_link_count,
             "page_bytes": artifact.signals.page_bytes,
+            # Structured hits (new shape: list[dict]); readers must tolerate the
+            # legacy list[str] on old rows. spam_terms is the plain-string
+            # backward-compat view for any consumer that only wants the phrases.
             "spam_hits": artifact.signals.spam_keyword_hits,
+            "spam_terms": artifact.signals.spam_keyword_terms,
             "published_date": artifact.signals.published_date,
             "modified_date": artifact.signals.modified_date,
             "date_source": artifact.signals.date_source,

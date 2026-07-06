@@ -16,6 +16,8 @@ from app.qa.scoring_rules import (
     DEFAULT_RULESET,
     METRIC_PARAMS,
     ResolvedRuleset,
+    outcome_label,
+    param_label,
     param_outcome_for,
 )
 from app.qa.types import Issue, ScoreStep
@@ -26,15 +28,19 @@ _LABEL_CAPS: dict[IssueLabel, int] = {
 }
 
 
-def _issue_delta(iss: Issue, ruleset: ResolvedRuleset) -> int:
-    """Signed score delta for one issue: the configured override if the rule set
-    sets one for its (parameter, outcome), else today's ``-severity.deduction``."""
+def _issue_delta(iss: Issue, ruleset: ResolvedRuleset) -> tuple[int, tuple[str, str] | None, bool]:
+    """Signed score delta for one issue plus its explainability facts.
+
+    Returns ``(delta, param_outcome, from_ruleset)`` where ``param_outcome`` is the
+    ``(parameter, outcome)`` this issue maps to (or ``None`` if unmapped → severity
+    fallback), and ``from_ruleset`` is True when a rule set override supplied the
+    points (else today's ``-severity.deduction``)."""
     outcome = param_outcome_for(iss)
     if outcome is not None:
         override = ruleset.points(*outcome)
         if override is not None:
-            return override
-    return -iss.severity.deduction
+            return override, outcome, True
+    return -iss.severity.deduction, outcome, False
 
 
 def score_issues(
@@ -53,17 +59,25 @@ def score_issues(
 
     # 1) Per-issue deltas (override or severity deduction).
     for iss in issues:
-        delta = _issue_delta(iss, rs)
+        delta, po, from_ruleset = _issue_delta(iss, rs)
         if delta:
-            score += delta
+            pkey = po[0] if po else None
+            okey = po[1] if po else None
             breakdown.append(
                 ScoreStep(
                     code=iss.code,
                     severity=iss.severity,
                     delta=delta,
                     note=iss.label.value if iss.label is not IssueLabel.NONE else iss.message[:48],
+                    parameter_key=pkey,
+                    parameter_label=param_label(pkey) if pkey else None,
+                    outcome_key=okey,
+                    outcome_label=outcome_label(pkey, okey) if pkey and okey else None,
+                    source="ruleset" if from_ruleset else "severity",
+                    configured_points=delta if from_ruleset else None,
                 )
             )
+            score += delta
 
     # 2) Metric-parameter contributions (DA/Semrush/age/index/duplicate). These are
     #    not QA issues; they only move the score when explicitly configured.
@@ -79,7 +93,13 @@ def score_issues(
                         code=f"{param}:{outcome}",
                         severity=Severity.INFO,
                         delta=pts,
-                        note=f"{param} = {outcome}",
+                        note=f"{param_label(param)} = {outcome_label(param, outcome)}",
+                        parameter_key=param,
+                        parameter_label=param_label(param),
+                        outcome_key=outcome,
+                        outcome_label=outcome_label(param, outcome),
+                        source="metric_signal",
+                        configured_points=pts,
                     )
                 )
 
@@ -103,6 +123,7 @@ def score_issues(
                 delta=cap_value - score,
                 cap_applied=cap_value,
                 note=f"Capped at {cap_value} by {cap_code}",
+                source="cap",
             )
         )
         score = cap_value

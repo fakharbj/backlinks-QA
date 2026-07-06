@@ -51,6 +51,19 @@ class ScoreStep:
     delta: int = 0
     cap_applied: int | None = None
     note: str = ""
+    # ── Explainability metadata (additive; older breakdown rows lack these) ──
+    # parameter_key/outcome_key link the step to a configurable scoring parameter
+    # (see scoring_rules registry); *_label are the human-readable names. source
+    # says where the delta came from: "severity" (default legacy deduction),
+    # "ruleset" (a rule set override for this parameter/outcome), "metric_signal"
+    # (a worker-derived DA/AS/age/index/duplicate signal), or "cap" (the ceiling
+    # step). configured_points is the raw points a rule set assigned (for display).
+    parameter_key: str | None = None
+    parameter_label: str | None = None
+    outcome_key: str | None = None
+    outcome_label: str | None = None
+    source: str = "severity"
+    configured_points: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +72,12 @@ class ScoreStep:
             "delta": self.delta,
             "cap_applied": self.cap_applied,
             "note": self.note,
+            "parameter_key": self.parameter_key,
+            "parameter_label": self.parameter_label,
+            "outcome_key": self.outcome_key,
+            "outcome_label": self.outcome_label,
+            "source": self.source,
+            "configured_points": self.configured_points,
         }
 
 
@@ -121,6 +140,13 @@ class QAPolicy:
     excessive_outbound_links: int = 100
     redirect_warn_threshold: int = 3
     trailing_slash_policy: str = "lenient"
+    # Spam-neighborhood (PQ-06) gate. spam_scope "content" = only in-scope hits
+    # (content/anchor/link_context) fire the MEDIUM issue, boilerplate-only hits
+    # downgrade to LOW; "page" = any region can fire MEDIUM. spam_min_hits = how
+    # many in-scope hits are required before the MEDIUM issue is raised.
+    spam_enabled: bool = True
+    spam_scope: str = "content"
+    spam_min_hits: int = 1
 
     @classmethod
     def from_settings(cls, *, treat_sponsored_as_follow: bool | None = None) -> "QAPolicy":
@@ -136,6 +162,9 @@ class QAPolicy:
             excessive_outbound_links=settings.QA_EXCESSIVE_OUTBOUND_LINKS,
             redirect_warn_threshold=settings.CRAWL_REDIRECT_WARN_THRESHOLD,
             trailing_slash_policy=settings.QA_TRAILING_SLASH_POLICY,
+            spam_enabled=settings.QA_SPAM_ENABLED,
+            spam_scope=settings.QA_SPAM_SCOPE,
+            spam_min_hits=settings.QA_SPAM_MIN_HITS,
         )
 
 

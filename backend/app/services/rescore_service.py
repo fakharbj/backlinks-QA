@@ -15,12 +15,15 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.crawler.types import CrawlArtifact, CrawlRequest, FetchError
 from app.models.backlink import BacklinkRecord
 from app.models.crawl import CrawlResult
+from app.models.source_domain import SourceDomain
 from app.qa.classification import classify
 from app.qa.enums import IssueCategory, IssueLabel, Severity
 from app.qa.scoring import score_issues
+from app.qa.scoring_rules import metric_bands
 from app.qa.types import Issue
 from app.services import scoring_config_service
 
@@ -54,13 +57,59 @@ def _artifact_from_result(cr: CrawlResult) -> CrawlArtifact:
     return art
 
 
-def _signals(rec: BacklinkRecord) -> dict[str, str]:
+def _signals(
+    rec: BacklinkRecord,
+    domain_metrics: dict[str, tuple[int | None, int | None, int | None]] | None = None,
+) -> dict[str, str]:
     sig: dict[str, str] = {}
     if rec.duplicate_status:
         sig["duplicate"] = "unique" if rec.duplicate_status == "unique" else "duplicate"
     if rec.index_status in ("indexed", "not_indexed"):
         sig["external_index"] = rec.index_status
+    # DA / Semrush-AS / age bands from the batch-loaded {domain_key: (da,as,age)}
+    # map (avoids an N+1 SourceDomain lookup on a workspace-wide rescore).
+    if domain_metrics and rec.source_domain:
+        metrics = domain_metrics.get(rec.source_domain)
+        if metrics is not None:
+            da, semrush_as, age_days = metrics
+            sig.update(
+                metric_bands(
+                    da, semrush_as, age_days,
+                    da_high=settings.SCORE_DA_HIGH,
+                    da_medium=settings.SCORE_DA_MEDIUM,
+                    as_high=settings.SCORE_AS_HIGH,
+                    as_medium=settings.SCORE_AS_MEDIUM,
+                    age_old_days=settings.SCORE_AGE_OLD_DAYS,
+                    age_medium_days=settings.SCORE_AGE_MEDIUM_DAYS,
+                )
+            )
     return sig
+
+
+async def _domain_metrics_map(
+    db: AsyncSession, workspace_id: uuid.UUID
+) -> dict[str, tuple[int | None, int | None, int | None]]:
+    """One query: {domain_key: (da, semrush_as, domain_age_days)} for the workspace.
+
+    Loaded up-front so the per-record ``_signals`` call is a dict hit, keeping a
+    workspace-wide rescore free of per-row SourceDomain queries (N+1). Only rows
+    with at least one metric present are kept — a domain absent from the map emits
+    no band signals (identical to today's no-contribution behaviour)."""
+    rows = (
+        await db.execute(
+            select(
+                SourceDomain.domain_key,
+                SourceDomain.da,
+                SourceDomain.semrush_as,
+                SourceDomain.domain_age_days,
+            ).where(SourceDomain.workspace_id == workspace_id)
+        )
+    ).all()
+    return {
+        r.domain_key: (r.da, r.semrush_as, r.domain_age_days)
+        for r in rows
+        if r.da is not None or r.semrush_as is not None or r.domain_age_days is not None
+    }
 
 
 async def _latest_results_by_backlink(
@@ -113,6 +162,7 @@ async def rescore(
     score_delta_sum = 0
     transitions: dict[str, int] = {}
     latest = await _latest_results_by_backlink(db, list(records))
+    domain_metrics = await _domain_metrics_map(db, workspace_id)
     # All records sharing a (project, link_type) resolve to the same rule set —
     # cache it so a large rescore doesn't re-run the scope-chain queries per row.
     ruleset_cache: dict[tuple, object] = {}
@@ -128,7 +178,9 @@ async def rescore(
                 db, workspace_id, rec.project_id, rec.link_type_id
             )
             ruleset_cache[cache_key] = ruleset
-        score, _ = score_issues(issues, ruleset=ruleset, signals=_signals(rec))
+        score, _ = score_issues(
+            issues, ruleset=ruleset, signals=_signals(rec, domain_metrics)
+        )
         status = classify(_artifact_from_result(cr), issues, score, bands=ruleset.bands)
 
         total += 1

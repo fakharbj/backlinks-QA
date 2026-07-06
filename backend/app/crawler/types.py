@@ -137,7 +137,14 @@ class PageSignals:
     external_link_count: int = 0
     outbound_link_count: int = 0
     load_time_ms: int | None = None
-    spam_keyword_hits: list[str] = field(default_factory=list)
+    # Structured spam-neighborhood hits (PQ-06). Each dict carries:
+    #   {keyword, category, region, count, snippet}
+    # (region ∈ content|nav|footer|sidebar|anchor|link_context). Older persisted
+    # rows stored a plain list[str] — readers must tolerate string-or-dict.
+    spam_keyword_hits: list[dict] = field(default_factory=list)
+    # Cheap backward-compat: the distinct matched phrases as plain strings, for
+    # any consumer that only wants the terms (kept in sync when hits are set).
+    spam_keyword_terms: list[str] = field(default_factory=list)
     # Posted/published date discovered on the page (JSON-LD, meta, or <time>).
     published_date: str | None = None
     modified_date: str | None = None
