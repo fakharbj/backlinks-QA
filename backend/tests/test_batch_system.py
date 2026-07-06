@@ -187,7 +187,7 @@ def test_domain_import_check_approve_and_recompute_survival(live_stack):
         batch_id = body["batch_id"]
 
         # Catalog untouched before approval.
-        catalog = client.get("/api/v1/source-domains", headers=h).json()
+        catalog = client.get("/api/v1/source-domains", headers=h).json()["items"]
         assert not [r for r in catalog if r["domain_key"] in (d1, d2)]
 
         # Inline metrics check (no API keys in tests → sparse but state moves).
@@ -206,7 +206,7 @@ def test_domain_import_check_approve_and_recompute_survival(live_stack):
         res = client.post(f"/api/v1/batches/{batch_id}/items/approve", json={}, headers=h)
         assert res.status_code == 200, res.text
         assert res.json()["domains_added"] == 2
-        catalog = client.get("/api/v1/source-domains", headers=h).json()
+        catalog = client.get("/api/v1/source-domains", headers=h).json()["items"]
         got = {r["domain_key"] for r in catalog}
         assert d1 in got and d2 in got
         assert client.get(f"/api/v1/batches/{batch_id}", headers=h).json()["status"] == "completed"
@@ -215,7 +215,7 @@ def test_domain_import_check_approve_and_recompute_survival(live_stack):
         # even though they have zero backlinks.
         rec = client.post("/api/v1/source-domains/recompute", headers=h)
         assert rec.status_code == 200, rec.text
-        catalog = {r["domain_key"] for r in client.get("/api/v1/source-domains", headers=h).json()}
+        catalog = {r["domain_key"] for r in client.get("/api/v1/source-domains", headers=h).json()["items"]}
         assert d1 in catalog and d2 in catalog
 
         # Importing the same list again flags them as already-there.

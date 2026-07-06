@@ -36,6 +36,12 @@ class SourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("workspace_id", "domain_key", name="uq_source_domains_ws_domain"),
         Index("ix_source_domains_workspace", "workspace_id"),
         Index("ix_source_domains_backlinks", "workspace_id", "backlink_count"),
+        # Metric-sort composites for the Source-Domains desk (0033).
+        Index("ix_source_domains_ws_da", "workspace_id", "da"),
+        Index("ix_source_domains_ws_pa", "workspace_id", "pa"),
+        Index("ix_source_domains_ws_spam", "workspace_id", "spam_score"),
+        Index("ix_source_domains_ws_as", "workspace_id", "semrush_as"),
+        Index("ix_source_domains_ws_qualified", "workspace_id", "qualified_count"),
     )
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
@@ -61,6 +67,29 @@ class SourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     project_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     user_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_recomputed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── QA-outcome counters (0033) — STORED, refreshed by recompute ───────────
+    # Buckets use the EFFECTIVE status (coalesce(override_status, status));
+    # qualified == PASS, not_qualified == everything else. referring_domains_count
+    # is the distinct target_domain count for this source domain.
+    qualified_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    not_qualified_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    warning_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    fail_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    pending_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    referring_domains_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     # ── Third-party metrics (Phase 8 F21/F22/F23) — per source main domain ────
     da: Mapped[int | None] = mapped_column(Integer)

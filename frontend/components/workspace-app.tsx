@@ -85,6 +85,12 @@ import {
   SheetSource,
   SourceDomain,
   SourceDomainDetail,
+  SourceDomainList,
+  SourceDomainStats,
+  SourceDomainRule,
+  SourceDomainRuleCondition,
+  SourceDomainRuleDefinition,
+  SourceDomainSavedFilter,
   SiteMetrics,
   TeamMember,
   TokenPair
@@ -8486,6 +8492,75 @@ function ProjectDomainsPanel({
   );
 }
 
+// ── Source-Domains enterprise desk (rich filters + stats + rules + exports) ──
+// The whitelisted numeric filter fields — MUST mirror the backend
+// _NUMERIC_FILTER_COLUMNS / _RANGE_PARAMS whitelist (source_domain_service.py).
+// {min/max query-param prefix, human label, whether the value is a percentage}.
+const SD_NUMERIC_FILTERS: Array<{ key: string; label: string; pct?: boolean }> = [
+  { key: "da", label: "DA" },
+  { key: "pa", label: "PA" },
+  { key: "spam", label: "Spam" },
+  { key: "as", label: "AS (Semrush)" },
+  { key: "backlinks", label: "Backlinks" },
+  { key: "qualified", label: "Qualified count" },
+  { key: "referring", label: "Referring domains" },
+  { key: "qualified_pct", label: "Qualified %", pct: true },
+  { key: "not_qualified_pct", label: "Not-qualified %", pct: true },
+  { key: "indexed_pct", label: "Indexed %", pct: true }
+];
+
+// Sortable columns — MUST mirror backend _SORT_COLUMNS keys.
+type SdSort =
+  | "domain"
+  | "backlinks"
+  | "referring_domains_count"
+  | "indexed_pct"
+  | "qualified_count"
+  | "qualified_pct"
+  | "not_qualified_pct"
+  | "da"
+  | "pa"
+  | "spam_score"
+  | "semrush_as"
+  | "avg_score"
+  | "duplicates";
+
+// Whitelisted rule fields (backend _NUMERIC_FILTER_COLUMNS + origin string field).
+const SD_RULE_NUMERIC_FIELDS: Array<{ value: string; label: string }> = [
+  { value: "da", label: "DA" },
+  { value: "pa", label: "PA" },
+  { value: "spam_score", label: "Spam score" },
+  { value: "semrush_as", label: "AS (Semrush)" },
+  { value: "backlink_count", label: "Backlinks" },
+  { value: "qualified_count", label: "Qualified count" },
+  { value: "referring_domains_count", label: "Referring domains" },
+  { value: "qualified_pct", label: "Qualified %" },
+  { value: "not_qualified_pct", label: "Not-qualified %" },
+  { value: "indexed_pct", label: "Indexed %" }
+];
+const SD_RULE_OPS: Array<{ value: string; label: string }> = [
+  { value: ">=", label: "≥" },
+  { value: "<=", label: "≤" },
+  { value: ">", label: ">" },
+  { value: "<", label: "<" },
+  { value: "==", label: "=" },
+  { value: "between", label: "between" }
+];
+
+// Spam is inverted (low is good): reuse MetricTag coloring by flipping the value.
+function SpamTag({ value }: { value: number | null }) {
+  if (value == null) return <MetricTag label="Spam" value={null} />;
+  const tone = value <= 5 ? "bg-ocean/10 text-ocean" : value <= 20 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
+  return (
+    <span
+      className={clsx("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tone)}
+      title="Spam score — lower is better"
+    >
+      Spam {value}
+    </span>
+  );
+}
+
 function SourceDomainsDesk({
   token,
   projectId,
@@ -8500,68 +8575,263 @@ function SourceDomainsDesk({
   onImportDomains?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const PAGE = 100;
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("backlinks");
+  const [origin, setOrigin] = useState(""); // "" | "derived" | "imported"
+  // numeric filters: keyed by "<prefix>_min" / "<prefix>_max" → string value.
+  const [ranges, setRanges] = useState<Record<string, string>>({});
+  const [sort, setSort] = useState<SdSort>("backlinks");
+  const [dir, setDir] = useState<"asc" | "desc">("desc");
+  const [showFilters, setShowFilters] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showRules, setShowRules] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [savedOpen, setSavedOpen] = useState(false);
 
-  const domains = useQuery({
-    queryKey: ["source-domains", token, sort, search],
+  // Build the shared query-param string that drives BOTH the list and the stats.
+  const filterParams = useMemo(() => {
+    const p = new URLSearchParams();
+    if (search.trim()) p.set("search", search.trim());
+    if (origin) p.set("origin", origin);
+    for (const [k, v] of Object.entries(ranges)) {
+      if (v != null && String(v).trim() !== "") p.set(k, String(v).trim());
+    }
+    return p;
+  }, [search, origin, ranges]);
+  const filterKey = filterParams.toString();
+
+  const domains = useInfiniteQuery({
+    queryKey: ["source-domains", token, sort, dir, filterKey],
     enabled: Boolean(token),
-    queryFn: () =>
-      api<SourceDomain[]>(
-        `/source-domains?sort=${sort}&order=desc&search=${encodeURIComponent(search)}`,
-        { token }
-      )
+    initialPageParam: 0,
+    getNextPageParam: (last: SourceDomainList, all: SourceDomainList[]) => {
+      const loaded = all.reduce((n, pg) => n + pg.items.length, 0);
+      return loaded < last.total ? loaded : undefined;
+    },
+    queryFn: ({ pageParam }) => {
+      const p = new URLSearchParams(filterKey);
+      p.set("sort", sort);
+      p.set("order", dir);
+      p.set("limit", String(PAGE));
+      p.set("offset", String(pageParam));
+      return api<SourceDomainList>(`/source-domains?${p.toString()}`, { token });
+    }
   });
+  const rows = useMemo(
+    () => (domains.data?.pages || []).flatMap((pg) => pg.items),
+    [domains.data]
+  );
+  const total = domains.data?.pages?.[0]?.total ?? 0;
+
+  const stats = useQuery({
+    queryKey: ["source-domains-stats", token, filterKey],
+    enabled: Boolean(token),
+    queryFn: () => api<SourceDomainStats>(`/source-domains/stats?${filterKey}`, { token })
+  });
+
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+    queryClient.invalidateQueries({ queryKey: ["source-domains-stats"] });
+  };
+
   const recompute = useMutation({
-    mutationFn: () => api<SourceDomain[]>("/source-domains/recompute", { token, method: "POST" }),
+    mutationFn: () => api<SourceDomainList>("/source-domains/recompute", { token, method: "POST" }),
     onSuccess: () => {
       onNotice("Source-domain metrics refreshed");
-      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+      invalidateAll();
     },
     onError: (e: Error) => onNotice(e.message)
   });
   const fetchMoz = useMutation({
-    mutationFn: () => api<SourceDomain[]>("/source-domains/fetch-metrics?providers=moz", { token, method: "POST" }),
+    mutationFn: () => api<SourceDomainList>("/source-domains/fetch-metrics?providers=moz", { token, method: "POST" }),
     onSuccess: () => {
       onNotice("Moz DA/PA check started for the stalest domains");
-      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+      invalidateAll();
     },
     onError: (e: Error) => onNotice(e.message)
   });
   const fetchSemrush = useMutation({
-    mutationFn: () => api<SourceDomain[]>("/source-domains/fetch-metrics?providers=semrush", { token, method: "POST" }),
+    mutationFn: () => api<SourceDomainList>("/source-domains/fetch-metrics?providers=semrush", { token, method: "POST" }),
     onSuccess: () => {
       onNotice("Semrush AS check started — needs the Semrush API endpoint configured on the server");
-      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+      invalidateAll();
     },
     onError: (e: Error) => onNotice(e.message)
   });
 
+  // Saved filters (per-workspace store).
+  const savedFilters = useQuery({
+    queryKey: ["source-domains-saved-filters", token],
+    enabled: Boolean(token),
+    queryFn: () => api<SourceDomainSavedFilter[]>("/source-domains/saved-filters", { token })
+  });
+  const saveFilter = useMutation({
+    mutationFn: (name: string) =>
+      api<SourceDomainSavedFilter[]>("/source-domains/saved-filters", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({ name, params: Object.fromEntries(filterParams.entries()) })
+      }),
+    onSuccess: () => {
+      setSaveName("");
+      onNotice("Filter saved");
+      queryClient.invalidateQueries({ queryKey: ["source-domains-saved-filters"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const deleteFilter = useMutation({
+    mutationFn: (name: string) =>
+      api<SourceDomainSavedFilter[]>(`/source-domains/saved-filters?name=${encodeURIComponent(name)}`, {
+        token,
+        method: "DELETE"
+      }),
+    onSuccess: () => {
+      onNotice("Filter deleted");
+      queryClient.invalidateQueries({ queryKey: ["source-domains-saved-filters"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  function applySaved(f: SourceDomainSavedFilter) {
+    const p = f.params || {};
+    setSearch(String(p.search || ""));
+    setOrigin(String(p.origin || ""));
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (k !== "search" && k !== "origin" && v != null && String(v) !== "") next[k] = String(v);
+    }
+    setRanges(next);
+    setSavedOpen(false);
+    setShowFilters(true);
+  }
+
+  function clearFilters() {
+    setSearch("");
+    setOrigin("");
+    setRanges({});
+  }
+  const activeFilterCount =
+    (search.trim() ? 1 : 0) +
+    (origin ? 1 : 0) +
+    Object.values(ranges).filter((v) => String(v).trim() !== "").length;
+
+  function setRange(key: string, value: string) {
+    setRanges((prev) => {
+      const next = { ...prev };
+      if (value.trim() === "") delete next[key];
+      else next[key] = value;
+      return next;
+    });
+  }
+
+  function onSort(key: string) {
+    if (sort === key) setDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSort(key as SdSort);
+      setDir("desc");
+    }
+  }
+
+  // Export the CURRENT filtered set via the server (CSV or XLSX), auth via token.
+  async function exportServer(format: "csv" | "xlsx") {
+    try {
+      const p = new URLSearchParams(filterKey);
+      p.set("format", format);
+      p.set("sort", sort);
+      p.set("order", dir);
+      const res = await fetch(`${API_BASE}/source-domains/export?${p.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `source-domains.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : "Export failed");
+    }
+  }
+
+  // Export just the selected rows (client-side CSV — respects the current selection).
+  function exportSelected() {
+    const chosen = rows.filter((r) => selected.has(r.id));
+    if (!chosen.length) {
+      onNotice("Select some domains first");
+      return;
+    }
+    downloadCsv(
+      "source-domains-selected.csv",
+      [
+        "Domain",
+        "Backlinks",
+        "Referring",
+        "Indexed %",
+        "Qualified",
+        "Qualified %",
+        "Not-qualified %",
+        "DA",
+        "PA",
+        "Spam",
+        "AS",
+        "Traffic",
+        "Age (days)",
+        "Projects",
+        "Avg score",
+        "Origin"
+      ],
+      chosen.map((r) => [
+        r.domain_key,
+        r.backlink_count,
+        r.referring_domains_count,
+        r.indexed_pct,
+        r.qualified_count,
+        r.qualified_pct,
+        r.not_qualified_pct,
+        r.da ?? "",
+        r.pa ?? "",
+        r.spam_score ?? "",
+        r.semrush_as ?? "",
+        r.semrush_traffic ?? "",
+        r.domain_age_days ?? "",
+        r.project_count,
+        r.avg_score ?? "",
+        r.origin
+      ])
+    );
+  }
+
+  const allOnPageSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allOnPageSelected) rows.forEach((r) => next.delete(r.id));
+      else rows.forEach((r) => next.add(r.id));
+      return next;
+    });
+  }
+  function toggleRow(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const st = stats.data;
   return (
     <section className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted">
-          Every backlink grouped by its source website. Ratios are read from stored counts — no full
-          scans.
+          Every backlink grouped by its source website. Filter, sort and export the catalog; build
+          reusable rules to surface the domains that matter.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <input
-            className="h-9 w-44 rounded-md border border-line bg-panel px-3 text-sm"
-            placeholder="Search domain…"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          <select
-            className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
-            value={sort}
-            onChange={(event) => setSort(event.target.value)}
-          >
-            <option value="backlinks">Most backlinks</option>
-            <option value="indexed">Most indexed</option>
-            <option value="avg_score">Avg score</option>
-            <option value="duplicates">Most duplicates</option>
-            <option value="domain">Domain A–Z</option>
-          </select>
           <button
             onClick={() => recompute.mutate()}
             className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
@@ -8595,43 +8865,339 @@ function SourceDomainsDesk({
           ) : null}
         </div>
       </div>
+
+      {/* Stat cards — refetched with the active filters */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
+        <Metric label="Domains" value={st ? st.total_domains : "—"} icon={Globe} tone="ink" />
+        <Metric
+          label="Total backlinks"
+          value={st ? compactNum(st.total_backlinks) : "—"}
+          icon={Link2}
+          tone="ocean"
+        />
+        <Metric
+          label="Qualified %"
+          value={st ? `${Math.round(st.overall_qualified_pct)}%` : "—"}
+          icon={CheckCircle2}
+          tone="ocean"
+        />
+        <Metric
+          label="Indexed %"
+          value={st ? `${Math.round(st.overall_indexed_pct)}%` : "—"}
+          icon={Activity}
+          tone="ocean"
+        />
+        <Metric
+          label="Avg DA"
+          value={st?.avg_da != null ? Math.round(st.avg_da) : "—"}
+          icon={Gauge}
+          tone="plum"
+        />
+        <Metric
+          label="Avg AS"
+          value={st?.avg_as != null ? Math.round(st.avg_as) : "—"}
+          icon={Gauge}
+          tone="plum"
+        />
+        <Metric
+          label="Avg Spam"
+          value={st?.avg_spam != null ? Math.round(st.avg_spam) : "—"}
+          icon={ShieldAlert}
+          tone="ember"
+        />
+        <Metric
+          label="DA ≥ 50"
+          value={st ? st.count_da_ge_50 : "—"}
+          icon={Star}
+          tone="ocean"
+          help="Domains with a Moz Domain Authority of 50 or higher."
+        />
+      </div>
+
+      {/* Filter toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
+          <input
+            className="h-9 w-full rounded-md border border-line bg-panel px-3 text-sm"
+            placeholder="Search domain…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </div>
+        <button
+          onClick={() => setShowFilters((v) => !v)}
+          className={clsx(
+            "flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition",
+            activeFilterCount
+              ? "border-ocean bg-ocean/10 text-ocean"
+              : "border-line bg-panel text-ink hover:bg-field"
+          )}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+          Filters
+          {activeFilterCount ? (
+            <span className="rounded-full bg-ocean px-1.5 text-[11px] font-bold text-white dark:text-slate-900">
+              {activeFilterCount}
+            </span>
+          ) : null}
+        </button>
+        {/* Saved filters dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setSavedOpen((v) => !v)}
+            className="flex h-9 items-center gap-1.5 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            <Star className="h-4 w-4" />
+            Saved
+            <ChevronDown className="h-3.5 w-3.5 text-muted" />
+          </button>
+          {savedOpen ? (
+            <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-xl border border-line bg-panel p-2 shadow-pop">
+              <div className="max-h-56 overflow-y-auto">
+                {(savedFilters.data || []).length ? (
+                  (savedFilters.data || []).map((f) => (
+                    <div
+                      key={f.name}
+                      className="flex items-center gap-1 rounded-md px-1.5 py-1 hover:bg-field"
+                    >
+                      <button
+                        onClick={() => applySaved(f)}
+                        className="flex-1 truncate text-left text-sm text-ink"
+                      >
+                        {f.name}
+                      </button>
+                      <button
+                        onClick={() => deleteFilter.mutate(f.name)}
+                        title="Delete saved filter"
+                        className="text-muted hover:text-danger"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="px-2 py-2 text-xs text-muted">No saved filters yet.</p>
+                )}
+              </div>
+              <div className="mt-2 flex items-center gap-1 border-t border-line pt-2">
+                <input
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder="Save current as…"
+                  className="h-8 flex-1 rounded-md border border-line bg-field/50 px-2 text-xs"
+                />
+                <button
+                  disabled={!saveName.trim() || saveFilter.isPending}
+                  onClick={() => saveFilter.mutate(saveName.trim())}
+                  className="h-8 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <button
+          onClick={() => setShowRules((v) => !v)}
+          className={clsx(
+            "flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition",
+            showRules ? "border-ocean bg-ocean/10 text-ocean" : "border-line bg-panel text-ink hover:bg-field"
+          )}
+        >
+          <Filter className="h-4 w-4" />
+          Rules
+        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => exportServer("csv")}
+            title="Download all filtered domains as CSV"
+            className="flex h-9 items-center gap-1.5 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            <Download className="h-4 w-4" /> CSV
+          </button>
+          <button
+            onClick={() => exportServer("xlsx")}
+            title="Download all filtered domains as Excel"
+            className="flex h-9 items-center gap-1.5 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            <FileSpreadsheet className="h-4 w-4" /> Excel
+          </button>
+        </div>
+      </div>
+
+      {/* Advanced filter panel */}
+      {showFilters ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-ink">Advanced filters</h3>
+            <button onClick={clearFilters} className="text-xs font-medium text-muted hover:text-danger">
+              Clear all
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {SD_NUMERIC_FILTERS.map((f) => (
+              <div key={f.key} className="flex items-center gap-2">
+                <label className="w-32 shrink-0 text-xs font-medium text-muted">{f.label}</label>
+                <input
+                  type="number"
+                  placeholder="min"
+                  value={ranges[`${f.key}_min`] ?? ""}
+                  onChange={(e) => setRange(`${f.key}_min`, e.target.value)}
+                  className="h-8 w-full rounded-md border border-line bg-field/50 px-2 text-sm"
+                />
+                <span className="text-muted">–</span>
+                <input
+                  type="number"
+                  placeholder="max"
+                  value={ranges[`${f.key}_max`] ?? ""}
+                  onChange={(e) => setRange(`${f.key}_max`, e.target.value)}
+                  className="h-8 w-full rounded-md border border-line bg-field/50 px-2 text-sm"
+                />
+              </div>
+            ))}
+            <div className="flex items-center gap-2">
+              <label className="w-32 shrink-0 text-xs font-medium text-muted">Origin</label>
+              <select
+                value={origin}
+                onChange={(e) => setOrigin(e.target.value)}
+                className="h-8 w-full rounded-md border border-line bg-panel px-2 text-sm"
+              >
+                <option value="">All origins</option>
+                <option value="derived">Derived (from backlinks)</option>
+                <option value="imported">Imported (catalog)</option>
+              </select>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {/* Rules engine panel */}
+      {showRules ? (
+        <SourceDomainRules
+          token={token}
+          projectId={projectId}
+          onNotice={onNotice}
+          onApplied={(count) => onNotice(`Rule matches ${count} domain${count === 1 ? "" : "s"}`)}
+        />
+      ) : null}
+
       {projectId ? (
         <ProjectDomainsPanel token={token} projectId={projectId} onOpenBacklinks={onOpenBacklinks} />
       ) : null}
+
+      {/* Bulk action bar */}
+      {selected.size ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-ocean/40 bg-ocean/5 px-3 py-2 text-sm">
+          <span className="font-medium text-ink">{selected.size} selected</span>
+          <button
+            onClick={exportSelected}
+            className="flex h-8 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-medium text-ink transition hover:bg-field"
+          >
+            <Download className="h-3.5 w-3.5" /> Export selected (CSV)
+          </button>
+          <button
+            onClick={() => fetchMoz.mutate()}
+            title="The metrics fetch runs over the stalest domains workspace-wide (no per-selection scope on the endpoint)."
+            className="flex h-8 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-medium text-ink transition hover:bg-field"
+          >
+            <Globe className="h-3.5 w-3.5" /> Check DA/PA
+          </button>
+          <button
+            onClick={() => fetchSemrush.mutate()}
+            title="The metrics fetch runs over the stalest domains workspace-wide (no per-selection scope on the endpoint)."
+            className="flex h-8 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-medium text-ink transition hover:bg-field"
+          >
+            <Globe className="h-3.5 w-3.5" /> Check AS
+          </button>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="ml-auto text-xs font-medium text-muted hover:text-ink"
+          >
+            Clear selection
+          </button>
+        </div>
+      ) : null}
+
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-field text-left text-xs uppercase text-muted">
               <tr>
-                <Th>Source domain</Th>
-                <Th>Backlinks</Th>
-                <Th>Indexed</Th>
-                <Th>Dofollow</Th>
-                <Th>DA</Th>
-                <Th>AS</Th>
+                <th className="w-8 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={allOnPageSelected}
+                    onChange={toggleSelectAll}
+                    className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+                    aria-label="Select all"
+                  />
+                </th>
+                <SortTh label="Domain" sortKey="domain" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Backlinks" sortKey="backlinks" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Referring" sortKey="referring_domains_count" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Indexed %" sortKey="indexed_pct" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Qualified" sortKey="qualified_count" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Qual %" sortKey="qualified_pct" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Not-qual %" sortKey="not_qualified_pct" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="DA" sortKey="da" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="PA" sortKey="pa" sort={sort} dir={dir} onSort={onSort} />
+                <SortTh label="Spam" sortKey="spam_score" sort={sort} dir={dir} onSort={onSort} help="Spam score — lower is better." />
+                <SortTh label="AS" sortKey="semrush_as" sort={sort} dir={dir} onSort={onSort} />
                 <Th>Traffic</Th>
                 <Th>Age</Th>
-                <Th>Dupes</Th>
-                <Th>Avg score</Th>
                 <Th>Projects</Th>
+                <SortTh label="Avg score" sortKey="avg_score" sort={sort} dir={dir} onSort={onSort} />
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {(domains.data || []).map((d) => (
-                <SourceDomainRow key={d.id} d={d} token={token} />
+              {rows.map((d) => (
+                <SourceDomainRow
+                  key={d.id}
+                  d={d}
+                  token={token}
+                  selected={selected.has(d.id)}
+                  onToggle={() => toggleRow(d.id)}
+                />
               ))}
             </tbody>
           </table>
-          {!domains.isLoading && !domains.data?.length ? (
-            <Empty label="No source domains yet — click Recompute (or import some backlinks)." />
+          {!domains.isLoading && !rows.length ? (
+            <Empty label="No source domains match — clear filters, or click Recompute / import some backlinks." />
           ) : null}
         </div>
+        {rows.length ? (
+          <div className="flex items-center justify-between border-t border-line px-4 py-2 text-xs text-muted">
+            <span>
+              Showing {rows.length} of {total}
+            </span>
+            {domains.hasNextPage ? (
+              <button
+                onClick={() => domains.fetchNextPage()}
+                disabled={domains.isFetchingNextPage}
+                className="flex h-8 items-center gap-1.5 rounded-md border border-line bg-panel px-3 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+              >
+                {domains.isFetchingNextPage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                Load more
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </section>
     </section>
   );
 }
 
-function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }) {
+function SourceDomainRow({
+  d,
+  token,
+  selected,
+  onToggle
+}: {
+  d: SourceDomain;
+  token: string | null;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const detail = useQuery({
     queryKey: ["source-domain", token, d.id],
@@ -8641,26 +9207,53 @@ function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }
   const dist = Object.entries(d.link_type_distribution || {});
   return (
     <>
-      <tr className="cursor-pointer hover:bg-field/40" onClick={() => setOpen(!open)}>
+      <tr className="hover:bg-field/40">
         <Td>
-          <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onToggle}
+            onClick={(e) => e.stopPropagation()}
+            className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+            aria-label={`Select ${d.domain_key}`}
+          />
+        </Td>
+        <Td>
+          <button
+            onClick={() => setOpen(!open)}
+            className="flex items-center gap-2 text-left"
+          >
             {open ? (
               <ChevronUp className="h-4 w-4 shrink-0 text-muted" />
             ) : (
               <ChevronDown className="h-4 w-4 shrink-0 text-muted" />
             )}
             <span className="font-medium text-ink">{d.domain_key}</span>
-          </div>
+            {d.origin === "imported" ? (
+              <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum">
+                imported
+              </span>
+            ) : null}
+          </button>
         </Td>
         <Td>{d.backlink_count}</Td>
+        <Td>{d.referring_domains_count}</Td>
         <Td>
           <span className="font-medium text-ink">{d.indexed_pct}%</span>{" "}
           <span className="text-xs text-muted">
             ({d.indexed_count}/{d.indexed_count + d.not_indexed_count})
           </span>
         </Td>
-        <Td>{d.dofollow_pct}%</Td>
+        <Td>{d.qualified_count}</Td>
+        <Td>
+          <MetricTag label="" value={Math.round(d.qualified_pct)} title={`${d.qualified_pct}% qualified`} />
+        </Td>
+        <Td>{Math.round(d.not_qualified_pct)}%</Td>
         <Td>{d.da != null ? <MetricTag label="DA" value={d.da} /> : "—"}</Td>
+        <Td>{d.pa != null ? <MetricTag label="PA" value={d.pa} /> : "—"}</Td>
+        <Td>
+          <SpamTag value={d.spam_score} />
+        </Td>
         <Td>{d.semrush_as != null ? <MetricTag label="AS" value={d.semrush_as} /> : "—"}</Td>
         <Td>{d.semrush_traffic != null ? compactNum(d.semrush_traffic) : "—"}</Td>
         <Td>
@@ -8670,13 +9263,12 @@ function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }
             "—"
           )}
         </Td>
-        <Td>{d.duplicate_count}</Td>
-        <Td>{d.avg_score ?? "—"}</Td>
         <Td>{d.project_count}</Td>
+        <Td>{d.avg_score ?? "—"}</Td>
       </tr>
       {open ? (
         <tr>
-          <td colSpan={11} className="bg-field/30 px-4 py-3">
+          <td colSpan={16} className="bg-field/30 px-4 py-3">
             <div className="grid gap-4 md:grid-cols-[260px_1fr]">
               <div>
                 <div className="text-xs font-semibold uppercase text-muted">Index status</div>
@@ -8737,6 +9329,443 @@ function SourceDomainRow({ d, token }: { d: SourceDomain; token: string | null }
         </tr>
       ) : null}
     </>
+  );
+}
+
+// ── Rules engine: list + condition builder + apply/export/delete ──────────────
+type SdRuleDraft = {
+  name: string;
+  description: string;
+  match: "all" | "any";
+  conditions: SourceDomainRuleCondition[];
+};
+
+function emptyRuleDraft(): SdRuleDraft {
+  return {
+    name: "",
+    description: "",
+    match: "all",
+    conditions: [{ field: "da", op: ">=", value: 0 }]
+  };
+}
+
+function SourceDomainRules({
+  token,
+  projectId,
+  onNotice,
+  onApplied
+}: {
+  token: string | null;
+  projectId: string;
+  onNotice: (text: string) => void;
+  onApplied: (count: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<SdRuleDraft | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [applied, setApplied] = useState<{ ruleId: string; items: SourceDomain[]; total: number; match: number } | null>(
+    null
+  );
+
+  const rules = useQuery({
+    queryKey: ["source-domain-rules", token],
+    enabled: Boolean(token),
+    queryFn: () => api<SourceDomainRule[]>("/source-domains/rules", { token })
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["source-domain-rules"] });
+
+  function draftToDefinition(d: SdRuleDraft): SourceDomainRuleDefinition {
+    return {
+      match: d.match,
+      conditions: d.conditions.map((c) => {
+        if (c.field === "origin") {
+          return { field: "origin", op: "==", value_str: (c.value_str || "").trim() || null };
+        }
+        return {
+          field: c.field,
+          op: c.op,
+          value: c.value == null || Number.isNaN(c.value) ? 0 : Number(c.value),
+          value2: c.op === "between" ? (c.value2 == null || Number.isNaN(c.value2) ? 0 : Number(c.value2)) : null
+        };
+      })
+    };
+  }
+
+  const createRule = useMutation({
+    mutationFn: (d: SdRuleDraft) =>
+      api<SourceDomainRule>("/source-domains/rules", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          name: d.name.trim(),
+          description: d.description.trim() || null,
+          project_id: projectId || null,
+          is_shared: true,
+          definition: draftToDefinition(d)
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Rule saved");
+      setDraft(null);
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const updateRule = useMutation({
+    mutationFn: (v: { id: string; d: SdRuleDraft }) =>
+      api<SourceDomainRule>(`/source-domains/rules/${v.id}`, {
+        token,
+        method: "PATCH",
+        body: JSON.stringify({
+          name: v.d.name.trim(),
+          description: v.d.description.trim() || null,
+          definition: draftToDefinition(v.d)
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Rule updated");
+      setDraft(null);
+      setEditingId(null);
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const deleteRule = useMutation({
+    mutationFn: (id: string) => api(`/source-domains/rules/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => {
+      onNotice("Rule deleted");
+      setApplied((a) => (a ? null : a));
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const applyRule = useMutation({
+    mutationFn: (id: string) =>
+      api<{ items: SourceDomain[]; total: number; match_count: number }>(
+        `/source-domains/rules/${id}/apply?limit=100&offset=0`,
+        { token }
+      ).then((r) => ({ id, ...r })),
+    onSuccess: (r) => {
+      setApplied({ ruleId: r.id, items: r.items, total: r.total, match: r.match_count });
+      onApplied(r.match_count);
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  async function exportRule(id: string, format: "csv" | "xlsx") {
+    try {
+      const res = await fetch(`${API_BASE}/source-domains/rules/${id}/export?format=${format}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rule-matches.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : "Export failed");
+    }
+  }
+
+  function startEdit(r: SourceDomainRule) {
+    const def = r.definition || { match: "all", conditions: [] };
+    setDraft({
+      name: r.name,
+      description: r.description || "",
+      match: def.match === "any" ? "any" : "all",
+      conditions: (def.conditions || []).map((c) => ({
+        field: c.field,
+        op: c.field === "origin" ? "==" : c.op,
+        value: c.value ?? 0,
+        value2: c.value2 ?? null,
+        value_str: c.value_str ?? null
+      }))
+    });
+    setEditingId(r.id);
+  }
+
+  function updateCondition(idx: number, patch: Partial<SourceDomainRuleCondition>) {
+    setDraft((d) =>
+      d
+        ? { ...d, conditions: d.conditions.map((c, i) => (i === idx ? { ...c, ...patch } : c)) }
+        : d
+    );
+  }
+  function addCondition() {
+    setDraft((d) => (d ? { ...d, conditions: [...d.conditions, { field: "da", op: ">=", value: 0 }] } : d));
+  }
+  function removeCondition(idx: number) {
+    setDraft((d) => (d ? { ...d, conditions: d.conditions.filter((_, i) => i !== idx) } : d));
+  }
+
+  const saving = createRule.isPending || updateRule.isPending;
+  function saveDraft() {
+    if (!draft || !draft.name.trim()) {
+      onNotice("Give the rule a name");
+      return;
+    }
+    if (editingId) updateRule.mutate({ id: editingId, d: draft });
+    else createRule.mutate(draft);
+  }
+
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <h3 className="text-sm font-semibold text-ink">Rules engine</h3>
+        <button
+          onClick={() => {
+            setDraft(emptyRuleDraft());
+            setEditingId(null);
+          }}
+          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+        >
+          <Plus className="h-3.5 w-3.5" /> New rule
+        </button>
+      </div>
+
+      {/* Rule editor */}
+      {draft ? (
+        <div className="space-y-3 border-b border-line bg-field/20 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              placeholder="Rule name"
+              className="h-9 w-56 rounded-md border border-line bg-panel px-3 text-sm"
+            />
+            <input
+              value={draft.description}
+              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+              placeholder="Description (optional)"
+              className="h-9 flex-1 min-w-[180px] rounded-md border border-line bg-panel px-3 text-sm"
+            />
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted">Match</span>
+            <select
+              value={draft.match}
+              onChange={(e) => setDraft({ ...draft, match: e.target.value as "all" | "any" })}
+              className="h-8 rounded-md border border-line bg-panel px-2 text-sm"
+            >
+              <option value="all">all conditions</option>
+              <option value="any">any condition</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            {draft.conditions.map((c, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2">
+                <select
+                  value={c.field}
+                  onChange={(e) => {
+                    const field = e.target.value;
+                    updateCondition(i, field === "origin" ? { field, op: "==" } : { field, op: c.op === "==" ? ">=" : c.op });
+                  }}
+                  className="h-8 rounded-md border border-line bg-panel px-2 text-sm"
+                >
+                  {SD_RULE_NUMERIC_FIELDS.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                  <option value="origin">Origin</option>
+                </select>
+                {c.field === "origin" ? (
+                  <>
+                    <span className="text-sm text-muted">is</span>
+                    <select
+                      value={c.value_str || ""}
+                      onChange={(e) => updateCondition(i, { value_str: e.target.value })}
+                      className="h-8 rounded-md border border-line bg-panel px-2 text-sm"
+                    >
+                      <option value="">—</option>
+                      <option value="derived">derived</option>
+                      <option value="imported">imported</option>
+                    </select>
+                  </>
+                ) : (
+                  <>
+                    <select
+                      value={c.op}
+                      onChange={(e) => updateCondition(i, { op: e.target.value })}
+                      className="h-8 rounded-md border border-line bg-panel px-2 text-sm"
+                    >
+                      {SD_RULE_OPS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      value={c.value ?? ""}
+                      onChange={(e) => updateCondition(i, { value: e.target.value === "" ? null : Number(e.target.value) })}
+                      className="h-8 w-24 rounded-md border border-line bg-panel px-2 text-sm"
+                    />
+                    {c.op === "between" ? (
+                      <>
+                        <span className="text-sm text-muted">and</span>
+                        <input
+                          type="number"
+                          value={c.value2 ?? ""}
+                          onChange={(e) =>
+                            updateCondition(i, { value2: e.target.value === "" ? null : Number(e.target.value) })
+                          }
+                          className="h-8 w-24 rounded-md border border-line bg-panel px-2 text-sm"
+                        />
+                      </>
+                    ) : null}
+                  </>
+                )}
+                {draft.conditions.length > 1 ? (
+                  <button
+                    onClick={() => removeCondition(i)}
+                    className="text-muted hover:text-danger"
+                    title="Remove condition"
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            <button onClick={addCondition} className="flex items-center gap-1 text-xs font-medium text-ocean hover:underline">
+              <Plus className="h-3.5 w-3.5" /> Add condition
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={saveDraft}
+              disabled={saving}
+              className="h-9 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+            >
+              {saving ? "Saving…" : editingId ? "Update rule" : "Save rule"}
+            </button>
+            <button
+              onClick={() => {
+                setDraft(null);
+                setEditingId(null);
+              }}
+              className="h-9 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Rule list */}
+      <div className="divide-y divide-line">
+        {(rules.data || []).map((r) => (
+          <div key={r.id} className="px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-medium text-ink">{r.name}</div>
+                {r.description ? <div className="text-xs text-muted">{r.description}</div> : null}
+                <div className="mt-0.5 text-xs text-muted">
+                  Match {r.definition?.match === "any" ? "any" : "all"} ·{" "}
+                  {(r.definition?.conditions || [])
+                    .map((c) =>
+                      c.field === "origin"
+                        ? `origin = ${c.value_str}`
+                        : `${c.field} ${c.op} ${c.value}${c.op === "between" ? `–${c.value2}` : ""}`
+                    )
+                    .join(r.definition?.match === "any" ? " OR " : " AND ") || "no conditions"}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => applyRule.mutate(r.id)}
+                  className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+                >
+                  {applyRule.isPending && applyRule.variables === r.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Play className="h-3.5 w-3.5" />
+                  )}
+                  Apply
+                </button>
+                <button
+                  onClick={() => exportRule(r.id, "csv")}
+                  title="Export matches (CSV)"
+                  className="flex h-8 items-center gap-1 rounded-md border border-line bg-panel px-2 text-xs font-medium text-ink transition hover:bg-field"
+                >
+                  <Download className="h-3.5 w-3.5" /> CSV
+                </button>
+                <button
+                  onClick={() => startEdit(r)}
+                  className="flex h-8 items-center gap-1 rounded-md border border-line bg-panel px-2 text-xs font-medium text-ink transition hover:bg-field"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => deleteRule.mutate(r.id)}
+                  title="Delete rule"
+                  className="grid h-8 w-8 place-items-center rounded-md border border-line bg-panel text-muted transition hover:text-danger"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Inline matches for the applied rule */}
+            {applied && applied.ruleId === r.id ? (
+              <div className="mt-3 rounded-lg border border-line">
+                <div className="flex items-center justify-between border-b border-line bg-field/40 px-3 py-1.5 text-xs">
+                  <span className="font-medium text-ink">
+                    {applied.match} match{applied.match === 1 ? "" : "es"}
+                  </span>
+                  <button onClick={() => setApplied(null)} className="text-muted hover:text-ink">
+                    Close
+                  </button>
+                </div>
+                <div className="max-h-64 overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-field text-left uppercase text-muted">
+                      <tr>
+                        <Th>Domain</Th>
+                        <Th>Backlinks</Th>
+                        <Th>DA</Th>
+                        <Th>PA</Th>
+                        <Th>Spam</Th>
+                        <Th>AS</Th>
+                        <Th>Qual %</Th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-line">
+                      {applied.items.map((d) => (
+                        <tr key={d.id}>
+                          <Td>
+                            <span className="font-medium text-ink">{d.domain_key}</span>
+                          </Td>
+                          <Td>{d.backlink_count}</Td>
+                          <Td>{d.da ?? "—"}</Td>
+                          <Td>{d.pa ?? "—"}</Td>
+                          <Td>{d.spam_score ?? "—"}</Td>
+                          <Td>{d.semrush_as ?? "—"}</Td>
+                          <Td>{Math.round(d.qualified_pct)}%</Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {applied.total > applied.items.length ? (
+                  <div className="border-t border-line px-3 py-1.5 text-xs text-muted">
+                    Showing first {applied.items.length} of {applied.total} — export for the full set.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))}
+        {!rules.isLoading && !(rules.data || []).length && !draft ? (
+          <Empty label="No rules yet — click New rule to build one." />
+        ) : null}
+      </div>
+    </section>
   );
 }
 

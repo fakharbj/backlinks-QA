@@ -290,11 +290,17 @@ export type SourceDomain = {
   nofollow_count: number;
   dofollow_pct: number;
   duplicate_count: number;
+  qualified_count: number;
+  not_qualified_count: number;
+  qualified_pct: number;
+  not_qualified_pct: number;
+  referring_domains_count: number;
   avg_score: number | null;
   project_count: number;
   user_count: number;
   link_type_distribution: Record<string, number>;
   last_recomputed_at: string | null;
+  origin: string;
   da: number | null;
   pa: number | null;
   spam_score: number | null;
@@ -303,6 +309,63 @@ export type SourceDomain = {
   semrush_keywords: number | null;
   domain_age_days: number | null;
   metrics_updated_at: string | null;
+};
+
+// Paginated list envelope for the Source-Domains desk.
+export type SourceDomainList = {
+  items: SourceDomain[];
+  total: number;
+};
+
+// Set-based aggregate over the filtered source-domain population (/source-domains/stats).
+export type SourceDomainStats = {
+  total_domains: number;
+  total_backlinks: number;
+  total_qualified: number;
+  overall_qualified_pct: number;
+  overall_indexed_pct: number;
+  avg_da: number | null;
+  avg_pa: number | null;
+  avg_spam: number | null;
+  avg_as: number | null;
+  count_da_ge_50: number;
+  count_spam_le_5: number;
+  count_indexed: number;
+};
+
+// Rules engine — a whitelisted condition ({field, op, value(s)}) matched all/any.
+export type SourceDomainRuleCondition = {
+  field: string;
+  op: string;
+  value?: number | null;
+  value2?: number | null;
+  value_str?: string | null;
+};
+
+export type SourceDomainRuleDefinition = {
+  match: string; // "all" | "any"
+  conditions: SourceDomainRuleCondition[];
+};
+
+export type SourceDomainRule = {
+  id: string;
+  workspace_id: string;
+  project_id: string | null;
+  name: string;
+  description: string | null;
+  definition: SourceDomainRuleDefinition;
+  is_shared: boolean;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  match_count: number | null;
+};
+
+// A named, reusable filter set stored per workspace.
+export type SourceDomainSavedFilter = {
+  name: string;
+  params: Record<string, string>;
 };
 
 export type SourceDomainBacklink = {

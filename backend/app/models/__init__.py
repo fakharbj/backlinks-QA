@@ -36,6 +36,7 @@ from app.models.project_settings import ProjectDomain, ProjectSettings  # noqa: 
 from app.models.report import Report  # noqa: F401
 from app.models.scoring import ScoringParameter, ScoringRuleVersion  # noqa: F401
 from app.models.source_domain import SourceDomain  # noqa: F401
+from app.models.source_domain_rule import SourceDomainRule  # noqa: F401
 from app.models.settings import Setting  # noqa: F401
 from app.models.sheet_tab import GoogleSheetTab  # noqa: F401
 from app.models.sheets import SheetSource  # noqa: F401
