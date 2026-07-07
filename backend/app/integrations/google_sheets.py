@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import re
+import time
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -19,6 +20,55 @@ from app.core.logging import get_logger
 log = get_logger("integrations.google_sheets")
 
 _SHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9\-_]+)")
+
+# ── Sheets API read-rate guard ────────────────────────────────────────────────
+# Google caps read requests per project (~300/min). We throttle every read to a
+# per-second token bucket in Redis (shared across all worker processes), so no
+# burst — however many projects/tabs sync at once — can exceed the quota; excess
+# reads block up to a safety window. Fail-open: if Redis is unavailable we don't
+# block the sync.
+_rate_redis = None
+_rate_redis_tried = False
+
+
+def _rate_client():
+    global _rate_redis, _rate_redis_tried
+    if _rate_redis_tried:
+        return _rate_redis
+    _rate_redis_tried = True
+    try:
+        import redis  # sync client (celery's broker lib)
+
+        _rate_redis = redis.Redis.from_url(
+            str(settings.CELERY_BROKER_URL), socket_timeout=3, socket_connect_timeout=3
+        )
+    except Exception as exc:  # noqa: BLE001 — throttle is best-effort
+        log.warning("sheets_rate_redis_unavailable", error=repr(exc))
+        _rate_redis = None
+    return _rate_redis
+
+
+def _throttle_read() -> None:
+    """Block until a Sheets API read token is free (≈ READS_PER_MIN/60 per second)."""
+    rpm = int(getattr(settings, "GOOGLE_SHEETS_READS_PER_MIN", 0) or 0)
+    if rpm <= 0:
+        return
+    per_sec = max(1, rpm // 60)
+    client = _rate_client()
+    if client is None:
+        return  # fail-open — never block a sync on a missing limiter
+    for _ in range(180):  # ~180s safety cap so a stuck limiter can't hang forever
+        try:
+            bucket = int(time.time())
+            key = f"ls:sheetsread:{bucket}"
+            n = client.incr(key)
+            if n == 1:
+                client.expire(key, 2)
+            if n <= per_sec:
+                return
+        except Exception:  # noqa: BLE001 — Redis hiccup → fail-open
+            return
+        time.sleep(1.0)
 
 
 def is_enabled() -> bool:
@@ -76,6 +126,7 @@ def extract_spreadsheet_id(url_or_id: str) -> str | None:
 
 
 def _open_worksheet(client, spreadsheet_id: str, tab: str | None):
+    _throttle_read()  # open_by_key fetches spreadsheet metadata = one read
     sheet = client.open_by_key(spreadsheet_id)
     if tab:
         return sheet.worksheet(tab)
@@ -85,6 +136,7 @@ def _open_worksheet(client, spreadsheet_id: str, tab: str | None):
 def list_worksheets(spreadsheet_id: str) -> list[dict]:
     """Return every tab in a spreadsheet: ``[{title, gid, index}]`` (stable gid)."""
     client = _client()
+    _throttle_read()
     sheet = client.open_by_key(spreadsheet_id)
     return [
         {"title": ws.title, "gid": str(ws.id), "index": ws.index}
@@ -96,6 +148,7 @@ def read_main_sheet() -> list[dict[str, str]]:
     """Rows of the global main sheet as dicts keyed by header."""
     client = _client()
     ws = _open_worksheet(client, settings.GOOGLE_MAIN_SHEET_ID, settings.GOOGLE_MAIN_SHEET_TAB)
+    _throttle_read()
     return [
         {str(k): ("" if v is None else str(v)) for k, v in r.items()}
         for r in ws.get_all_records()
@@ -126,6 +179,7 @@ def read_project_sheet(
     everything below it is data."""
     client = _client()
     ws = _open_worksheet(client, spreadsheet_id, tab)
+    _throttle_read()
     values = ws.get_all_values()
     if not values:
         return [], []
@@ -166,6 +220,7 @@ def write_back(
     """
     client = _client()
     ws = _open_worksheet(client, spreadsheet_id, tab)
+    _throttle_read()
     input_cols = len(ws.row_values(1)) or 1
     start_col = input_cols + 2  # leave one empty gap column
     ncols = len(result_headers)

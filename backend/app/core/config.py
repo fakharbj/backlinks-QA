@@ -275,6 +275,15 @@ class Settings(BaseSettings):
     # Spread the per-project syncs so 1,000 sheets don't hammer the Sheets API at once.
     GOOGLE_SYNC_STAGGER_SECONDS: float = 2.0
     GOOGLE_SHEETS_TIMEOUT_SECONDS: float = 60.0
+    # Google Sheets read-quota guard. Google caps read requests at ~300/min per
+    # project; we hard-cap OUR reads well under it via a shared Redis
+    # token-per-second bucket, so a big multi-project / multi-tab sync can never
+    # trip the quota (excess reads simply wait their turn). 0 disables the cap.
+    GOOGLE_SHEETS_READS_PER_MIN: int = 250
+    # Sync project sheets ONE AT A TIME (a Celery chain) instead of dispatching all
+    # of them at once — each project finishes before the next starts, so the API
+    # isn't hit by every project simultaneously. False → legacy staggered fan-out.
+    GOOGLE_SHEETS_SEQUENTIAL_SYNC: bool = True
     # Auto-create an app account (Viewer role, scoped to that project) for every
     # sheet "User" name that has no catalog mapping yet; admins hand out access
     # via Team → Reset password. Off → sheets never touch the user table.
