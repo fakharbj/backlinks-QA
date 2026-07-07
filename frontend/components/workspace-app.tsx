@@ -4315,6 +4315,61 @@ function TasksDesk({
 }
 
 // ── Shared: GSC-style chart, CSV export, help tips ──────────────────────────
+// One self-scaled "you vs team average" comparison row: two proportional bars
+// (scaled to the larger of the two values) + a delta chip. Used in the User
+// Dashboard team benchmark so quality metrics aren't dwarfed by raw volume.
+function BenchmarkRow({
+  label,
+  you,
+  team,
+  suffix = "",
+  integer = false,
+  higherIsBetter = true
+}: {
+  label: string;
+  you: number;
+  team: number;
+  suffix?: string;
+  integer?: boolean;
+  higherIsBetter?: boolean;
+}) {
+  const max = Math.max(you, team, 1);
+  const delta = you - team;
+  const good = higherIsBetter ? delta >= 0 : delta <= 0;
+  const fmt = (v: number) =>
+    integer ? `${Math.round(v).toLocaleString()}${suffix}` : `${Math.round(v * 10) / 10}${suffix}`;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="font-medium text-ink">{label}</span>
+        <span
+          className={clsx(
+            "rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+            Math.abs(delta) < 0.05 ? "bg-field text-muted" : good ? "bg-ocean/10 text-ocean" : "bg-danger/10 text-danger"
+          )}
+          title="Difference from the team average"
+        >
+          {Math.abs(delta) < 0.05 ? "= team avg" : `${delta > 0 ? "+" : ""}${fmt(delta)} vs team`}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-16 shrink-0 text-[11px] text-muted">You</span>
+        <div className="h-2 flex-1 overflow-hidden rounded-full bg-field">
+          <div className="h-2 rounded-full bg-ocean" style={{ width: `${(you / max) * 100}%` }} />
+        </div>
+        <span className="w-14 shrink-0 text-right text-[11px] font-semibold text-ink tabular-nums">{fmt(you)}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-16 shrink-0 text-[11px] text-muted">Team avg</span>
+        <div className="h-2 flex-1 overflow-hidden rounded-full bg-field">
+          <div className="h-2 rounded-full bg-muted/40" style={{ width: `${(team / max) * 100}%` }} />
+        </div>
+        <span className="w-14 shrink-0 text-right text-[11px] text-muted tabular-nums">{fmt(team)}</span>
+      </div>
+    </div>
+  );
+}
+
 const _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Human-friendly label for a chart bucket key. "2026-07-04" → "Jul 4"
 // (axis) or "Jul 4, 2026" (tooltip); "2026-07" → "Jul 2026". Falls back to raw.
@@ -5179,22 +5234,18 @@ function UserDashboard({
                   Rank #{d.team.rank ?? "—"} of {d.team.of} by links
                 </span>
               </div>
-              <div className="grid gap-4 pt-2 lg:grid-cols-2">
-                <BarCompare
-                  labels={["Links", "Indexed"]}
-                  a={[num(d.links.links), num(d.links.indexed)]}
-                  b={[d.team.avg_links, d.team.avg_indexed]}
-                  aName="This person"
-                  bName="Team average"
-                  aVar="--ocean"
-                  bVar="--line"
-                />
-                <div className="grid grid-cols-2 gap-2 self-center">
-                  <Issue label="Your qualified %" value={d.links.qualified_rate ?? 0} help="Your pass rate this period." />
-                  <Issue label="Team avg qualified %" value={d.team.avg_qualified_rate ?? 0} help="Average pass rate across the visible team." />
-                  <Issue label="Your avg score" value={d.links.avg_score ?? 0} help="Your average QA score." />
-                  <Issue label="Team avg score" value={d.team.avg_score ?? 0} help="Average QA score across the visible team." />
-                </div>
+              <p className="pt-1 text-xs text-muted">
+                How this person compares to the team average on each dimension. Each row is
+                scaled on its own, so quality metrics aren&apos;t drowned out by raw volume.
+              </p>
+              <div className="grid gap-x-6 gap-y-3 pt-3 sm:grid-cols-2">
+                <BenchmarkRow label="Qualified %" you={d.links.qualified_rate ?? 0} team={d.team.avg_qualified_rate ?? 0} suffix="%" />
+                <BenchmarkRow label="Avg QA score" you={d.links.avg_score ?? 0} team={d.team.avg_score ?? 0} />
+                <BenchmarkRow label="Indexed %"
+                  you={num(d.links.links) ? (num(d.links.indexed) / num(d.links.links)) * 100 : 0}
+                  team={d.team.avg_links ? (d.team.avg_indexed / d.team.avg_links) * 100 : 0}
+                  suffix="%" />
+                <BenchmarkRow label="Links built (volume)" you={num(d.links.links)} team={d.team.avg_links} integer />
               </div>
             </section>
           ) : null}
