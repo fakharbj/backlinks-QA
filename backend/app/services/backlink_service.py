@@ -71,7 +71,9 @@ def _multi_clause(column, value, *, valid: set[str] | None = None, lower: bool =
     if vals:
         conds.append(column.in_(vals))
     if want_blanks:
-        conds.append(or_(column.is_(None), column == ""))
+        # NULL, empty, or whitespace-only all count as "blank" (matches the
+        # dashboard KPI's btrim grouping so counts and drill-downs agree).
+        conds.append(or_(column.is_(None), func.btrim(column) == ""))
     if not conds:
         return None
     return or_(*conds) if len(conds) > 1 else conds[0]
@@ -577,6 +579,11 @@ async def update_backlink(
         if norm.valid:
             bl.target_url_normalized = norm.normalized
             bl.target_domain = norm.registrable_domain
+    if "assigned_user_label" in data:
+        # Store a trimmed label (or NULL) so a whitespace-only value never becomes
+        # its own "user" — keeps it in the "(unassigned)" bucket, matching imports.
+        cleaned = (data["assigned_user_label"] or "").strip()
+        data["assigned_user_label"] = cleaned or None
     for field, value in data.items():
         setattr(bl, field, value)
     await db.flush()

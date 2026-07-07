@@ -314,7 +314,9 @@ async def _trends_uncached(
     days = max(1, min(days, 3660))
     now = datetime.now(timezone.utc)
     t0 = now - timedelta(days=days)
-    prev0 = t0 - timedelta(days=days)
+    # "All time" (the ~10-year window): drop the previous-period comparison — there
+    # is nothing before all-time and a negative-span prev window is meaningless.
+    prev0 = t0 if days >= 3650 else t0 - timedelta(days=days)
     params |= {"t0": t0, "t1": now, "p0": prev0}
     first_scope = (
         "e.project_id = b.project_id" if project_id is not None else "e.workspace_id = b.workspace_id"
@@ -348,19 +350,26 @@ async def _trends_uncached(
             )                                                          AS prev_domains,
             count(*) FILTER (WHERE {eff} >= :t0 AND b.index_status = 'indexed') AS new_indexed
         FROM backlink_records b
-        WHERE {where} AND {eff} >= :p0
+        WHERE {where} AND {eff} >= :p0 AND {eff} <= :t1
         """,
         params,
     )
     head = (await db.execute(sql, params)).mappings().first() or {}
 
+    # Per-week series: links + new domains, plus effective-status + indexed splits so
+    # the dashboard can chart qualified-vs-not-qualified and indexed% over time.
+    est = _effective("b")
     weekly_sql, _ = _bind(
         f"""
         SELECT to_char(date_trunc('week', {eff}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
-               count(*) FILTER (WHERE {new_domain}) AS new_domains
+               count(*) FILTER (WHERE {new_domain}) AS new_domains,
+               count(*) FILTER (WHERE {est} = 'PASS') AS qualified,
+               count(*) FILTER (WHERE {est} = 'FAIL') AS not_qualified,
+               count(*) FILTER (WHERE {est} = 'WARNING') AS needs_improvement,
+               count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed
         FROM backlink_records b
-        WHERE {where} AND {eff} >= :t0
+        WHERE {where} AND {eff} >= :t0 AND {eff} <= :t1
         GROUP BY 1 ORDER BY 1 ASC
         """,
         params,
@@ -375,33 +384,39 @@ async def _trends_uncached(
     # Project scope stays on "first backlink for this project" above (source_domains
     # is workspace-scoped, and that already matches the project rule).
     if project_id is None:
+        dparams = {"ws": ctx.workspace_id, "t0": t0, "p0": prev0, "t1": now}
         dsql, _ = _bind(
             """
-            SELECT count(*) FILTER (WHERE discovery_date >= :t0)                     AS nd,
-                   count(*) FILTER (WHERE discovery_date >= :p0 AND discovery_date < :t0) AS pd
+            SELECT count(*) FILTER (WHERE discovery_date >= :t0 AND discovery_date <= :t1) AS nd,
+                   count(*) FILTER (WHERE discovery_date >= :p0 AND discovery_date < :t0)  AS pd
             FROM source_domains WHERE workspace_id = :ws
             """,
-            {"ws": ctx.workspace_id, "t0": t0, "p0": prev0},
+            dparams,
         )
-        drow = (await db.execute(dsql, {"ws": ctx.workspace_id, "t0": t0, "p0": prev0})).mappings().first() or {}
+        drow = (await db.execute(dsql, dparams)).mappings().first() or {}
         new_domains = int(drow.get("nd") or 0)
         prev_domains = int(drow.get("pd") or 0)
+        wparams = {"ws": ctx.workspace_id, "t0": t0, "t1": now}
         wsql, _ = _bind(
             """
             SELECT to_char(date_trunc('week', discovery_date), 'YYYY-MM-DD') AS week, count(*) AS n
-            FROM source_domains WHERE workspace_id = :ws AND discovery_date >= :t0
+            FROM source_domains
+            WHERE workspace_id = :ws AND discovery_date >= :t0 AND discovery_date <= :t1
             GROUP BY 1
             """,
-            {"ws": ctx.workspace_id, "t0": t0},
+            wparams,
         )
-        wkmap = {r["week"]: int(r["n"]) for r in (await db.execute(wsql, {"ws": ctx.workspace_id, "t0": t0})).mappings().all()}
+        wkmap = {r["week"]: int(r["n"]) for r in (await db.execute(wsql, wparams)).mappings().all()}
         seen = set()
         for w in weekly:
             w["new_domains"] = wkmap.get(w["week"], 0)
             seen.add(w["week"])
         for week, n in wkmap.items():
             if week not in seen:
-                weekly.append({"week": week, "links": 0, "new_domains": n})
+                weekly.append({
+                    "week": week, "links": 0, "new_domains": n,
+                    "qualified": 0, "not_qualified": 0, "needs_improvement": 0, "indexed": 0,
+                })
         weekly.sort(key=lambda w: w["week"])
 
     return {
@@ -420,7 +435,7 @@ async def _assigned_user_stats(db, ctx, project_id) -> list[AssignedUserStat]:
     eff = _effective()
     sql, _ = _bind(
         f"""
-        SELECT coalesce(nullif(assigned_user_label, ''), '(unassigned)') AS assigned_user_label,
+        SELECT coalesce(nullif(btrim(assigned_user_label), ''), '(unassigned)') AS assigned_user_label,
                count(*)                                  AS total,
                count(*) FILTER (WHERE {eff} = 'PASS')    AS pass_count,
                count(*) FILTER (WHERE {eff} = 'FAIL')    AS fail_count,

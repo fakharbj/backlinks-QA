@@ -476,13 +476,24 @@ def _parse_date(value: str | None) -> date | None:
     if not value:
         return None
     raw = str(value).strip()
+    today = datetime.now(timezone.utc).date()
+
+    def _guard(d: date | None) -> date | None:
+        # A placement / sheet date can never be in the future. Two-digit years
+        # (e.g. "10-Nov-35" → 2035) or a mis-parsed cell would otherwise store a
+        # bogus future date and push the dashboard trend axis out to that year.
+        # Drop it (→ None) so the row falls back to created_at via coalesce.
+        if d is None or d > today:
+            return None
+        return d
+
     for fmt in _DATE_FORMATS:
         try:
-            return datetime.strptime(raw, fmt).date()
+            return _guard(datetime.strptime(raw, fmt).date())
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(raw).date()
+        return _guard(datetime.fromisoformat(raw).date())
     except ValueError:
         return None
 

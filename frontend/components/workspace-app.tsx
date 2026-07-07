@@ -1094,7 +1094,7 @@ function Overview({
     queryFn: () => api<Project[]>("/projects", { token })
   });
   const activeProject = (projectsQ.data || []).find((p) => p.id === projectId) || null;
-  const [trendDays, setTrendDays] = useState("30");
+  const [trendDays, setTrendDays] = useState("3650"); // default: All time
   const trends = useQuery({
     queryKey: ["dashboard-trends", token, projectId, trendDays],
     enabled: Boolean(token),
@@ -1102,7 +1102,10 @@ function Overview({
       api<{
         new_links: number; new_domains: number; new_indexed: number;
         prev_links: number; prev_domains: number;
-        weekly: Array<{ week: string; links: number; new_domains: number }>;
+        weekly: Array<{
+          week: string; links: number; new_domains: number;
+          qualified?: number; not_qualified?: number; needs_improvement?: number; indexed?: number;
+        }>;
       }>(
         `/dashboard/trends?days=${trendDays}${projectId ? `&project_id=${projectId}` : ""}`,
         { token }
@@ -1110,6 +1113,10 @@ function Overview({
   });
 
   const stats = dashboard.data;
+  // Defensive: never plot a bucket dated in the future (a bad sheet date can't
+  // stretch the axis). The backend already caps at today; this guards the UI too.
+  const _todayStr = new Date().toISOString().slice(0, 10);
+  const weekly = (trends.data?.weekly || []).filter((w) => w.week <= _todayStr);
   return (
     <section className="space-y-5">
       {projectId ? (
@@ -1204,6 +1211,40 @@ function Overview({
           help="Average quality score (0–100) across these links. Hover any score in the Backlinks list to see how it's calculated." />
       </div>
 
+      {/* Health mix — modern at-a-glance QA-outcome split; click a segment to drill. */}
+      {stats?.totals && (stats.totals.total ?? 0) > 0 ? (
+        <section className="rounded-xl border border-line bg-panel shadow-card p-4">
+          <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink">
+            Health mix
+            <HelpTip text="How this view's links split across QA outcomes. Click any segment or legend chip to open that slice in the Backlinks list." />
+          </div>
+          <StackedBar
+            segments={[
+              { name: "Qualified", cssVar: "--ocean", value: stats.totals.pass_count ?? 0 },
+              { name: "Needs improvement", cssVar: "--ember", value: stats.totals.warning_count ?? 0 },
+              { name: "Needs review", cssVar: "--plum", value: stats.totals.review_count ?? 0 },
+              { name: "Not qualified", cssVar: "--danger", value: stats.totals.fail_count ?? 0 },
+              {
+                name: "QA pending", cssVar: "--muted",
+                value: Math.max(
+                  0,
+                  (stats.totals.total ?? 0) - (stats.totals.pass_count ?? 0) -
+                    (stats.totals.warning_count ?? 0) - (stats.totals.review_count ?? 0) -
+                    (stats.totals.fail_count ?? 0)
+                )
+              }
+            ]}
+            onSegmentClick={(name) => {
+              const map: Record<string, string> = {
+                Qualified: "PASS", "Needs improvement": "WARNING",
+                "Needs review": "NEEDS_MANUAL_REVIEW", "Not qualified": "FAIL", "QA pending": "PENDING"
+              };
+              onOpenBacklinks(map[name] ? { status: map[name] } : {});
+            }}
+          />
+        </section>
+      ) : null}
+
       {/* KPI stat boxes — HTTP / index / quality / spam / duplicate / orphaned.
           Each drills into the Backlinks list via the matching filter. */}
       {stats?.kpi && Object.keys(stats.kpi).length ? (
@@ -1288,17 +1329,50 @@ function Overview({
             </div>
           </div>
         </div>
-        {(trends.data?.weekly || []).length ? (
-          <div className="border-t border-line p-4">
-            <TrendChart
-              labels={(trends.data?.weekly || []).map((w) => w.week)}
-              series={[
-                { name: "Links added", cssVar: "--ocean", values: (trends.data?.weekly || []).map((w) => w.links) },
-                { name: "New source domains", cssVar: "--plum", values: (trends.data?.weekly || []).map((w) => w.new_domains) }
-              ]}
-            />
+        {weekly.length ? (
+          <div className="space-y-5 border-t border-line p-4">
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+                Links &amp; new source domains over time
+              </div>
+              <TrendChart
+                labels={weekly.map((w) => w.week)}
+                series={[
+                  { name: "Links added", cssVar: "--ocean", values: weekly.map((w) => w.links) },
+                  { name: "New source domains", cssVar: "--plum", values: weekly.map((w) => w.new_domains) }
+                ]}
+              />
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+                Quality over time <span className="normal-case text-[10px]">(by link&apos;s placement week)</span>
+              </div>
+              <TrendChart
+                labels={weekly.map((w) => w.week)}
+                series={[
+                  { name: "Qualified", cssVar: "--ocean", values: weekly.map((w) => w.qualified ?? 0) },
+                  { name: "Not qualified", cssVar: "--danger", values: weekly.map((w) => w.not_qualified ?? 0) },
+                  { name: "Needs improvement", cssVar: "--ember", values: weekly.map((w) => w.needs_improvement ?? 0) }
+                ]}
+              />
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+                Indexed links over time
+              </div>
+              <TrendChart
+                labels={weekly.map((w) => w.week)}
+                series={[
+                  { name: "Indexed", cssVar: "--plum", values: weekly.map((w) => w.indexed ?? 0) }
+                ]}
+              />
+            </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="border-t border-line p-4">
+            <Empty label="No activity in this range yet." />
+          </div>
+        )}
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
@@ -4411,6 +4485,58 @@ function fmtChartLabel(raw: string, withYear = false): string {
   const m = /^(\d{4})-(\d{2})$/.exec(raw);
   if (m) return `${_MONTHS[parseInt(m[2], 10) - 1] || m[2]} ${m[1]}`;
   return raw;
+}
+
+// Modern 100%-stacked horizontal bar for a categorical mix (status, index state).
+// Pure inline SVG-free (flex rects); each segment carries an exact count + share
+// in its tooltip and is click-through to the matching Backlinks filter.
+function StackedBar({
+  segments,
+  onSegmentClick
+}: {
+  segments: Array<{ name: string; value: number; cssVar: string }>;
+  onSegmentClick?: (name: string) => void;
+}) {
+  const shown = segments.filter((s) => s.value > 0);
+  const total = shown.reduce((a, s) => a + s.value, 0);
+  if (!total) return <Empty label="No data yet." />;
+  return (
+    <div>
+      <div className="flex h-7 w-full overflow-hidden rounded-lg border border-line bg-field">
+        {shown.map((s) => {
+          const wPct = (s.value / total) * 100;
+          return (
+            <div
+              key={s.name}
+              title={`${s.name}: ${s.value.toLocaleString()} (${wPct.toFixed(1)}%)`}
+              onClick={onSegmentClick ? () => onSegmentClick(s.name) : undefined}
+              style={{ width: `${wPct}%`, background: `rgb(var(${s.cssVar}))` }}
+              className={clsx(
+                "h-full transition-all duration-500",
+                onSegmentClick && "cursor-pointer hover:brightness-110"
+              )}
+            />
+          );
+        })}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+        {segments.map((s) => (
+          <button
+            key={s.name}
+            onClick={onSegmentClick ? () => onSegmentClick(s.name) : undefined}
+            className={clsx(
+              "flex items-center gap-1.5 text-[11px] text-muted",
+              onSegmentClick && "hover:text-ink"
+            )}
+          >
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: `rgb(var(${s.cssVar}))` }} />
+            {s.name} <span className="font-semibold text-ink">{s.value.toLocaleString()}</span>
+            <span>({total ? Math.round((s.value / total) * 100) : 0}%)</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // Interactive multi-series area/line chart used across every desk. Hover shows a
