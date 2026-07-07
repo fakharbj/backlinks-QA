@@ -4315,56 +4315,85 @@ function TasksDesk({
 }
 
 // ── Shared: GSC-style chart, CSV export, help tips ──────────────────────────
-// One self-scaled "you vs team average" comparison row: two proportional bars
-// (scaled to the larger of the two values) + a delta chip. Used in the User
-// Dashboard team benchmark so quality metrics aren't dwarfed by raw volume.
-function BenchmarkRow({
-  label,
-  you,
-  team,
-  suffix = "",
-  integer = false,
-  higherIsBetter = true
-}: {
-  label: string;
-  you: number;
-  team: number;
-  suffix?: string;
-  integer?: boolean;
-  higherIsBetter?: boolean;
-}) {
-  const max = Math.max(you, team, 1);
-  const delta = you - team;
-  const good = higherIsBetter ? delta >= 0 : delta <= 0;
+// Interactive team benchmark: the FULL per-person distribution (not just an
+// average) on a metric you pick, ranked, with this person highlighted and the
+// team-average marker drawn in. Switch metric = flexible analysis; hover a row
+// for its exact value. Shows the active metric + the timeframe it covers.
+type BenchMember = { user_label: string; links: number; indexed: number; avg_score: number | null; qualified_rate: number; is_current: boolean };
+const _BENCH_METRICS: Array<{ key: string; label: string; suffix?: string; integer?: boolean; get: (m: BenchMember) => number }> = [
+  { key: "links", label: "Links built", integer: true, get: (m) => m.links },
+  { key: "qualified_rate", label: "Qualified %", suffix: "%", get: (m) => m.qualified_rate },
+  { key: "avg_score", label: "Avg QA score", get: (m) => m.avg_score ?? 0 },
+  { key: "indexed", label: "Indexed links", integer: true, get: (m) => m.indexed }
+];
+function TeamDistribution({ members, caption }: { members: BenchMember[]; caption: string }) {
+  const [metricKey, setMetricKey] = useState("links");
+  const [hover, setHover] = useState<string | null>(null);
+  const metric = _BENCH_METRICS.find((m) => m.key === metricKey) || _BENCH_METRICS[0];
   const fmt = (v: number) =>
-    integer ? `${Math.round(v).toLocaleString()}${suffix}` : `${Math.round(v * 10) / 10}${suffix}`;
+    metric.integer ? `${Math.round(v).toLocaleString()}${metric.suffix || ""}` : `${Math.round(v * 10) / 10}${metric.suffix || ""}`;
+  const rows = [...members].sort((a, b) => metric.get(b) - metric.get(a));
+  const max = Math.max(1, ...rows.map((m) => metric.get(m)));
+  const avg = rows.length ? rows.reduce((s, m) => s + metric.get(m), 0) / rows.length : 0;
+  const curIdx = rows.findIndex((m) => m.is_current);
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="font-medium text-ink">{label}</span>
-        <span
-          className={clsx(
-            "rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
-            Math.abs(delta) < 0.05 ? "bg-field text-muted" : good ? "bg-ocean/10 text-ocean" : "bg-danger/10 text-danger"
-          )}
-          title="Difference from the team average"
-        >
-          {Math.abs(delta) < 0.05 ? "= team avg" : `${delta > 0 ? "+" : ""}${fmt(delta)} vs team`}
+    <div className="pt-2">
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        {_BENCH_METRICS.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => setMetricKey(m.key)}
+            className={clsx(
+              "h-7 rounded-full border px-2.5 text-xs font-medium transition",
+              metricKey === m.key ? "border-ocean bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:bg-field"
+            )}
+          >
+            {m.label}
+          </button>
+        ))}
+        <span className="ml-auto text-[11px] text-muted">
+          {caption}{curIdx >= 0 ? ` · you rank #${curIdx + 1} of ${rows.length}` : ""}
         </span>
       </div>
-      <div className="flex items-center gap-2">
-        <span className="w-16 shrink-0 text-[11px] text-muted">You</span>
-        <div className="h-2 flex-1 overflow-hidden rounded-full bg-field">
-          <div className="h-2 rounded-full bg-ocean" style={{ width: `${(you / max) * 100}%` }} />
+      {/* A "Team average" reference row on top, then every member ranked. */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 rounded px-1 py-0.5">
+          <span className="w-24 shrink-0 truncate text-[11px] font-medium text-ember">Team average</span>
+          <div className="h-3 flex-1 overflow-hidden rounded-full bg-field">
+            <div className="h-3 rounded-full border border-dashed border-ember bg-ember/20" style={{ width: `${Math.max(2, (avg / max) * 100)}%` }} />
+          </div>
+          <span className="w-14 shrink-0 text-right text-[11px] font-semibold tabular-nums text-ember">{fmt(avg)}</span>
         </div>
-        <span className="w-14 shrink-0 text-right text-[11px] font-semibold text-ink tabular-nums">{fmt(you)}</span>
+        {rows.map((m) => {
+          const v = metric.get(m);
+          return (
+            <div
+              key={m.user_label}
+              className={clsx("flex items-center gap-2 rounded px-1 py-0.5", hover === m.user_label && "bg-field")}
+              onMouseEnter={() => setHover(m.user_label)}
+              onMouseLeave={() => setHover(null)}
+              title={`${m.user_label} — ${metric.label}: ${fmt(v)}`}
+            >
+              <span className={clsx("w-24 shrink-0 truncate text-[11px]", m.is_current ? "font-semibold text-ocean" : "text-muted")}>
+                {m.is_current ? `${m.user_label} (you)` : m.user_label}
+              </span>
+              <div className="h-3 flex-1 overflow-hidden rounded-full bg-field">
+                <div
+                  className={clsx("h-3 rounded-full", m.is_current ? "bg-ocean" : "bg-muted/40")}
+                  style={{ width: `${Math.max(2, (v / max) * 100)}%` }}
+                />
+              </div>
+              <span className={clsx("w-14 shrink-0 text-right text-[11px] tabular-nums", m.is_current ? "font-semibold text-ink" : "text-muted")}>
+                {fmt(v)}
+              </span>
+            </div>
+          );
+        })}
       </div>
-      <div className="flex items-center gap-2">
-        <span className="w-16 shrink-0 text-[11px] text-muted">Team avg</span>
-        <div className="h-2 flex-1 overflow-hidden rounded-full bg-field">
-          <div className="h-2 rounded-full bg-muted/40" style={{ width: `${(team / max) * 100}%` }} />
-        </div>
-        <span className="w-14 shrink-0 text-right text-[11px] text-muted tabular-nums">{fmt(team)}</span>
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-ocean" /> You</span>
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-muted/40" /> Teammate</span>
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm border border-dashed border-ember bg-ember/20" /> Team average</span>
       </div>
     </div>
   );
@@ -4855,6 +4884,7 @@ function UserDashboard({
     team: {
       rank: number | null; of: number; avg_links: number; avg_indexed: number;
       avg_score: number | null; avg_qualified_rate: number | null; top_links: number; this_user_links: number;
+      members?: Array<{ user_label: string; links: number; indexed: number; avg_score: number | null; qualified_rate: number; is_current: boolean }>;
     } | null;
     weekly: Array<{ week: string; links: number; indexed: number; pass: number; fail: number; new_domains: number }>;
     plan_weekly: Array<{ week: string; target: number; done: number }>;
@@ -5235,18 +5265,18 @@ function UserDashboard({
                 </span>
               </div>
               <p className="pt-1 text-xs text-muted">
-                How this person compares to the team average on each dimension. Each row is
-                scaled on its own, so quality metrics aren&apos;t drowned out by raw volume.
+                Where this person sits in the whole team on the metric you pick — the full
+                distribution, not just the average (so a high performer above the average is
+                actually visible). Switch metric to analyze a different dimension.
               </p>
-              <div className="grid gap-x-6 gap-y-3 pt-3 sm:grid-cols-2">
-                <BenchmarkRow label="Qualified %" you={d.links.qualified_rate ?? 0} team={d.team.avg_qualified_rate ?? 0} suffix="%" />
-                <BenchmarkRow label="Avg QA score" you={d.links.avg_score ?? 0} team={d.team.avg_score ?? 0} />
-                <BenchmarkRow label="Indexed %"
-                  you={num(d.links.links) ? (num(d.links.indexed) / num(d.links.links)) * 100 : 0}
-                  team={d.team.avg_links ? (d.team.avg_indexed / d.team.avg_links) * 100 : 0}
-                  suffix="%" />
-                <BenchmarkRow label="Links built (volume)" you={num(d.links.links)} team={d.team.avg_links} integer />
-              </div>
+              {d.team.members && d.team.members.length ? (
+                <TeamDistribution
+                  members={d.team.members}
+                  caption={`${fmtChartLabel(d.from, true)} → ${fmtChartLabel(d.to, true)}`}
+                />
+              ) : (
+                <p className="pt-3 text-sm text-muted">Not enough team data for a comparison yet.</p>
+              )}
             </section>
           ) : null}
 

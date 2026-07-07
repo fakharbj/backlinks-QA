@@ -444,6 +444,22 @@ async def user_dashboard(
             "avg_qualified_rate": round(sum(rates) / len(rates), 1) if rates else None,
             "top_links": ranked_sorted[0].get("links") or 0,
             "this_user_links": current_links.get("links", 0),
+            # Full per-member distribution (capped) so the UI can show everyone —
+            # not just the average — with this person highlighted. Enables a
+            # flexible, interactive benchmark chart across several metrics.
+            "members": [
+                {
+                    "user_label": r.get("user_label"),
+                    "links": r.get("links") or 0,
+                    "indexed": r.get("indexed") or 0,
+                    "avg_score": r.get("avg_score"),
+                    "qualified_rate": (
+                        round(100.0 * (r.get("pass") or 0) / r["links"], 1) if r.get("links") else 0.0
+                    ),
+                    "is_current": (r.get("user_label") or "").lower() == user_label.lower(),
+                }
+                for r in ranked_sorted[:50]
+            ],
         }
 
     return {
