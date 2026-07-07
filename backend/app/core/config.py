@@ -207,6 +207,14 @@ class Settings(BaseSettings):
     CRAWL_BATCH_SIZE_HTTP: int = 100
     CRAWL_BATCH_SIZE_RENDER: int = 20
     DEFAULT_RECHECK_INTERVAL_HOURS: int = 24
+    # A crawl/recheck job (and its ops batch) is finalized only when its tasks all
+    # report back (processed >= total). If some Celery tasks are lost (worker
+    # recycle/OOM, time-limit kill), the job — and the batch mirroring it — hang in
+    # 'running' forever. `reconcile_stale_crawl_jobs` (beat, every 5 min) closes out
+    # any PENDING/RUNNING job with no progress for this many minutes. 20 min is well
+    # beyond the 600s task hard limit + render-batch runtime, so it can't race a
+    # live task; raise it if healthy-but-backlogged jobs get finalized early.
+    CRAWL_JOB_STALE_MINUTES: int = 20
 
     # ── Retention (days) ─────────────────────────────────────────────────────
     RETENTION_HISTORY_DAYS: int = 365

@@ -147,15 +147,21 @@ async def _crawl_batch_async(ids: list[str], job_id: str | None, *, with_browser
             CRAWL_TOTAL.labels(mode="raw", outcome="error").inc()
             continue
         try:
-            fire_alerts = not (artifact.render_recommended and not with_browser and settings.RENDER_ENABLED)  # noqa: E501
+            escalate = artifact.render_recommended and not with_browser and settings.RENDER_ENABLED  # noqa: E501
+            fire_alerts = not escalate
             notif_ids = await _persist_one(record.id, artifact, job_id, fire_alerts)
             external_notifications.extend(notif_ids)
-            if artifact.render_recommended and not with_browser and settings.RENDER_ENABLED:
-                render_ids.append(record.id)
-            succeeded += 1
             CRAWL_TOTAL.labels(
                 mode="rendered" if artifact.rendered else "raw", outcome="ok"
             ).inc()
+            if escalate:
+                # Hand off to the render pool: this record is NOT final in the HTTP
+                # pass, so it is counted (processed + succeeded) by the render pass
+                # ONLY — counting it here double-counts job/batch progress (the
+                # over-count bug, batch #B-4: done 4306 > total 3777).
+                render_ids.append(record.id)
+                continue
+            succeeded += 1
         except Exception as exc:  # noqa: BLE001 - isolate one bad record
             failed += 1
             log.error("persist_failed", backlink_id=str(record.id), error=repr(exc))
@@ -173,9 +179,12 @@ async def _crawl_batch_async(ids: list[str], job_id: str | None, *, with_browser
         for nid in external_notifications:
             dispatch_notification.apply_async(args=[str(nid)], queue="alerts")
 
-    # 6) Job counters.
+    # 6) Job counters. Escalated records are counted by the render pass, not here,
+    #    so each record increments job.processed exactly once (HTTP pass for
+    #    non-escalated, render pass for escalated) — no over-count.
     if job_id:
-        await _update_job(uuid.UUID(job_id), len(records), succeeded, failed)
+        processed = len(records) - len(render_ids)
+        await _update_job(uuid.UUID(job_id), processed, succeeded, failed)
 
     return {"processed": len(records), "succeeded": succeeded, "failed": failed}
 
@@ -303,9 +312,13 @@ async def _update_job(job_id: uuid.UUID, processed: int, succeeded: int, failed:
         if job:
             batch_id = job.batch_id
             batch_done = job.processed >= job.total
+            # Never surface done>total in the UI. The de-dup fix above prevents
+            # over-count going forward; this clamps any residual/historical drift.
+            done = min(job.processed, job.total) if job.total else job.processed
             batch_totals = {
-                "total": job.total, "done": job.processed,
-                "ok": job.succeeded, "failed": job.failed,
+                "total": job.total, "done": done,
+                "ok": min(job.succeeded, job.total) if job.total else job.succeeded,
+                "failed": job.failed,
             }
     # Mirror progress onto the operations batch (fail-open; separate session).
     if batch_id is not None:

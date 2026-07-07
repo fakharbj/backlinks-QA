@@ -72,6 +72,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.maintenance.dispatch_due_rechecks",
         "schedule": 300.0,  # every 5 minutes
     },
+    "reconcile-stale-crawl-jobs": {
+        "task": "tasks.maintenance.reconcile_stale_crawl_jobs",
+        "schedule": 300.0,  # every 5 min — close out jobs whose worker tasks were lost
+    },
     # NOTE: the dashboard reads backlink_records live (app/services/dashboard_service.py),
     # so there is no materialized view to refresh anymore — that job was removed.
     "ensure-partitions": {

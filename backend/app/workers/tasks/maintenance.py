@@ -11,7 +11,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import OperationalError
 
 from app.core.config import settings
@@ -83,6 +83,93 @@ async def _dispatch_due_rechecks_async(limit: int) -> dict:
     return {"queued": queued, "jobs": len(jobs)}
 
 
+async def _reconcile_stale_crawl_jobs_async(stale_minutes: int) -> dict:
+    """Close out crawl/recheck jobs whose worker tasks were lost.
+
+    A job (and its ops batch) is finalized by ``crawl._update_job`` ONLY when
+    ``processed >= total``. If Celery tasks are lost (worker recycle/OOM,
+    time-limit kill), that never happens, so the job — and the batch mirroring it —
+    hang in 'running' forever (e.g. batch #B-7 stuck at 714/880). This sweep finds
+    jobs with no progress (``crawl_jobs.updated_at``) for ``stale_minutes`` and
+    finalizes them honestly: an incomplete job becomes PARTIAL showing its REAL
+    progress; the un-checked links keep their recheck lease and are picked up on a
+    later cycle. Fail-open per job so one bad row can't wedge the sweep.
+    """
+    from app.services import batch_service
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=stale_minutes)
+    finalized: list[dict] = []
+
+    async with session_scope() as s:
+        # Anchor staleness on the last progress tick (updated_at bumps on every
+        # _update_job); created_at is the fallback for a job that never ticked.
+        last_progress = func.coalesce(CrawlJob.updated_at, CrawlJob.created_at)
+        jobs = (
+            await s.execute(
+                select(CrawlJob)
+                .where(
+                    CrawlJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+                    last_progress < cutoff,
+                )
+                .order_by(CrawlJob.created_at.asc())
+                .limit(500)
+            )
+        ).scalars().all()
+        for job in jobs:
+            incomplete = bool(job.total) and job.processed < job.total
+            job.status = JobStatus.PARTIAL if (job.failed or incomplete) else JobStatus.COMPLETED
+            job.finished_at = now
+            missing = max(0, (job.total or 0) - (job.processed or 0))
+            note = (
+                f"auto-finalized: no progress for >= {stale_minutes} min "
+                f"({job.processed}/{job.total} checked; {missing} link(s) had lost "
+                "worker tasks — re-checked on the next cycle)"
+            )
+            job.error = ((job.error or "").strip() + " | " + note).strip(" |")
+            finalized.append({
+                "batch_id": str(job.batch_id) if job.batch_id else None,
+                "total": int(job.total or 0),
+                "processed": int(job.processed or 0),
+                "succeeded": int(job.succeeded or 0),
+                "failed": int(job.failed or 0),
+                "incomplete": incomplete,
+                "missing": missing,
+            })
+
+    # Mirror onto + close the linked ops batch (fail-open, separate sessions).
+    for item in finalized:
+        bid_s = item["batch_id"]
+        if not bid_s:
+            continue
+        bid = uuid.UUID(bid_s)
+        total = item["total"]
+        await batch_service.update(
+            bid,
+            totals={
+                "total": total,
+                "done": min(item["processed"], total) if total else item["processed"],
+                "ok": item["succeeded"],
+                "failed": item["failed"],
+            },
+        )
+        if item["incomplete"] or item["failed"]:
+            await batch_service.add_log(
+                bid,
+                f"Auto-finalized: {item['missing']} link(s) weren't checked because "
+                "their worker tasks were lost. Marked partial — they'll be re-checked "
+                "on the next recheck cycle.",
+                level="warn",
+            )
+            await batch_service.finish(bid, status="partial")
+        else:
+            await batch_service.finish(bid)
+
+    if finalized:
+        log.info("reconcile_stale_crawl_jobs", reconciled=len(finalized))
+    return {"reconciled": len(finalized)}
+
+
 async def _ensure_partitions_async(months_forward: int) -> dict:
     await init_db.ensure_future_partitions(engine, months_forward=months_forward)
     return {"months_forward": months_forward}
@@ -117,6 +204,21 @@ async def _retention_cleanup_async() -> dict:
 )
 def dispatch_due_rechecks(self, limit: int = 5000) -> dict:
     return run_async(_dispatch_due_rechecks_async(limit))
+
+
+@celery_app.task(
+    name="tasks.maintenance.reconcile_stale_crawl_jobs",
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+)
+def reconcile_stale_crawl_jobs(self, stale_minutes: int | None = None) -> dict:
+    """Finalize crawl/recheck jobs (and their batches) stuck 'running' because
+    some worker tasks were lost and never advanced the counters."""
+    minutes = stale_minutes if stale_minutes is not None else settings.CRAWL_JOB_STALE_MINUTES
+    return run_async(_reconcile_stale_crawl_jobs_async(minutes))
 
 
 @celery_app.task(

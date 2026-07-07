@@ -6563,7 +6563,9 @@ function ItemBadge({ map, value, title }: { map: Record<string, { label: string;
 
 function BatchProgress({ totals }: { totals: Record<string, number> }) {
   const total = Number(totals.total || 0);
-  const done = Number(totals.done ?? totals.ok ?? 0);
+  const doneRaw = Number(totals.done ?? totals.ok ?? 0);
+  // Never show done>total (e.g. a historical render-double-counted batch).
+  const done = total ? Math.min(doneRaw, total) : doneRaw;
   const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
   return (
     <div className="flex items-center gap-2">
