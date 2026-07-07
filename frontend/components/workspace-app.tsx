@@ -11608,6 +11608,36 @@ function ConflictsDesk({
   });
   const groups = conflictsRaw.data?.items || conflictsRaw.data?.list || [];
 
+  // ── Selectable filter options ──
+  // Users: authoritative workspace roster (incl. laid-off with real work), so the
+  // User filter is populated even before any group is expanded.
+  const people = useQuery({
+    queryKey: ["conflict-people", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Array<{ user_label: string; active: boolean }>>("/workforce/people", { token })
+  });
+  const userOpts = useMemo(
+    () => (people.data || []).map((p) => ({ value: p.user_label, label: p.active ? p.user_label : `${p.user_label} (laid off)` })),
+    [people.data]
+  );
+  // Target domain + source page: distinct values from the loaded groups' members
+  // (allowCustom stays on, so anything not on-page can still be typed).
+  const { targetDomainOpts, sourcePageOpts } = useMemo(() => {
+    const td = new Set<string>();
+    const sp = new Set<string>();
+    for (const g of groups) {
+      for (const m of g.members || []) {
+        const d = (m.target_domain || m.target_url || "").trim();
+        if (d) td.add(d);
+        const s = (m.source_page_url || "").trim();
+        if (s) sp.add(s);
+      }
+    }
+    const mk = (set: Set<string>) =>
+      [...set].sort((a, b) => a.localeCompare(b)).map((v) => ({ value: v, label: v }));
+    return { targetDomainOpts: mk(td), sourcePageOpts: mk(sp) };
+  }, [groups]);
+
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["conflicts"] });
     queryClient.invalidateQueries({ queryKey: ["conflict-summary"] });
@@ -11727,9 +11757,9 @@ function ConflictsDesk({
             placeholder="Min sim %"
             className="h-9 w-28 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
           />
-          <FilterMultiSelect label="Target domain" options={[]} selected={targetDomains} onChange={setTargetDomains} allowCustom />
-          <FilterMultiSelect label="Source page" options={[]} selected={sourcePages} onChange={setSourcePages} allowCustom />
-          <FilterMultiSelect label="User" options={[]} selected={userF} onChange={setUserF} allowCustom />
+          <FilterMultiSelect label="Target domain" options={targetDomainOpts} selected={targetDomains} onChange={setTargetDomains} allowCustom />
+          <FilterMultiSelect label="Source page" options={sourcePageOpts} selected={sourcePages} onChange={setSourcePages} allowCustom />
+          <FilterMultiSelect label="User" options={userOpts} selected={userF} onChange={setUserF} allowCustom />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}

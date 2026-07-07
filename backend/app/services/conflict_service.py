@@ -527,7 +527,8 @@ async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
             sim_sum += float(avg_sim) * n
             sim_n += n
 
-    # Trend: duplicate groups first found per week (last 12 weeks) for the chart.
+    # Trend: bucket each group by when its LINKS were actually created (earliest
+    # member placement/creation date), not when the duplicate was detected/imported.
     from sqlalchemy import text as _text
 
     weekly = [
@@ -535,11 +536,21 @@ async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
         for r in (
             await db.execute(
                 _text(
-                    "SELECT to_char(date_trunc('week', detected_at), 'YYYY-MM-DD') AS week, "
-                    "count(*) AS new_groups "
-                    "FROM backlink_conflicts "
-                    "WHERE workspace_id = :ws AND detected_at >= now() - interval '84 days' "
-                    "GROUP BY 1 ORDER BY 1"
+                    """
+                    SELECT to_char(date_trunc('week', g.first_seen), 'YYYY-MM-DD') AS week,
+                           count(*) AS new_groups
+                    FROM (
+                        SELECT c.id,
+                               min(coalesce(b.placement_date, b.created_at)) AS first_seen
+                        FROM backlink_conflicts c
+                        JOIN backlink_conflict_members mm ON mm.conflict_id = c.id
+                        JOIN backlink_records b ON b.id = mm.backlink_id
+                        WHERE c.workspace_id = :ws
+                        GROUP BY c.id
+                    ) g
+                    WHERE g.first_seen >= now() - interval '365 days'
+                    GROUP BY 1 ORDER BY 1
+                    """
                 ),
                 {"ws": ctx.workspace_id},
             )
