@@ -112,10 +112,12 @@ def field_matrix(members: list[dict]) -> list[dict]:
     """
     out: list[dict] = []
     for name, getter in _MATRIX_FIELDS:
-        seen: list[Any] = []
+        cells: list[Any] = []       # one value PER member, aligned to `members` order
+        seen: list[Any] = []        # distinct sample (for all_same / distinct count)
         for m in members:
             v = getter(m)
             v = v if v not in ("",) else None
+            cells.append(v)
             if v not in seen:
                 seen.append(v)
         out.append(
@@ -124,6 +126,7 @@ def field_matrix(members: list[dict]) -> list[dict]:
                 "all_same": len(seen) <= 1,
                 "distinct": len(seen),
                 "values": seen[:6],
+                "cells": cells,   # <-- each member's actual value, for the compare grid
             }
         )
     return out
@@ -863,7 +866,10 @@ async def get_detail(db: AsyncSession, ctx: AuthContext, conflict_id: uuid.UUID)
     )
     base.update(
         {
-            "field_matrix": facts["matrix"],
+            # Matrix aligned to the SHOWN members (so each column's cells match the
+            # member rendered above it); facts["matrix"] over all members drives the
+            # similarity/reason above.
+            "field_matrix": field_matrix(shown),
             "suggested_keep": base["first_member_id"],
             "actions": actions,
             "total_members": total_members,

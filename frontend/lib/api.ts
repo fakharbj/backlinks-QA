@@ -69,6 +69,7 @@ export type ConflictFieldMatrixRow = {
   all_same: boolean;
   distinct: number;
   values: Array<unknown>;
+  cells?: Array<unknown>; // each member's actual value, aligned to members order
 };
 
 export type ConflictAction = {

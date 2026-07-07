@@ -12130,7 +12130,8 @@ function ConflictComparisonModal({
                         {row.field.replaceAll("_", " ")}
                       </td>
                       {members.map((m, i) => {
-                        const val = (row.values || [])[i];
+                        // Each member's actual value (aligned), not the distinct sample.
+                        const val = (row.cells || row.values || [])[i];
                         const text = val == null || val === "" ? "—" : String(val);
                         return (
                           <td
