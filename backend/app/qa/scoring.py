@@ -27,6 +27,13 @@ _LABEL_CAPS: dict[IssueLabel, int] = {
     IssueLabel.CAPTCHA_DETECTED: 25,
 }
 
+# Issue codes that must NOT move the score: we could not actually read/verify the
+# page (e.g. RBT-03 = source blocked in robots.txt), so there is no evidence to
+# score against. These route to NEEDS_MANUAL_REVIEW (see classification) and keep
+# a neutral score rather than a penalising one — an unchecked link is not a bad
+# link. (Bot/WAF/CAPTCHA keep their existing review + cap behaviour.)
+_UNSCORED_CODES: set[str] = {"RBT-03"}
+
 
 def _issue_delta(iss: Issue, ruleset: ResolvedRuleset) -> tuple[int, tuple[str, str] | None, bool]:
     """Signed score delta for one issue plus its explainability facts.
@@ -57,8 +64,11 @@ def score_issues(
         ScoreStep(code="START", severity=Severity.INFO, delta=0, note="Baseline score")
     ]
 
-    # 1) Per-issue deltas (override or severity deduction).
+    # 1) Per-issue deltas (override or severity deduction). "Unverifiable" issues
+    #    (we couldn't read the page) never move the score — they only route to review.
     for iss in issues:
+        if iss.code in _UNSCORED_CODES:
+            continue
         delta, po, from_ruleset = _issue_delta(iss, rs)
         if delta:
             pkey = po[0] if po else None
@@ -109,6 +119,8 @@ def score_issues(
     cap_value: int | None = None
     cap_code: str | None = None
     for iss in issues:
+        if iss.code in _UNSCORED_CODES:
+            continue
         candidate = iss.severity.cap
         label_cap = _LABEL_CAPS.get(iss.label)
         for c in (candidate, label_cap):

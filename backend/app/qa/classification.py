@@ -24,6 +24,10 @@ _REVIEW_LABELS = {
 _TRANSIENT_ERRORS = (FetchError.TIMEOUT, FetchError.CONNECTION, FetchError.UNKNOWN)
 _TRANSIENT_STATUSES = {429, 503, 504}
 _CONFLICT_CODES = {"MR-05", "XR-05"}
+# Issues that mean "we could not actually read/verify the link" (as opposed to a
+# confirmed defect) → route to NEEDS_MANUAL_REVIEW, never a confident FAIL.
+# RBT-03 = source page disallowed in robots.txt (crawlers, incl. ours, are blocked).
+_REVIEW_CODES = {"RBT-03"}
 
 
 def classify(
@@ -44,7 +48,10 @@ def classify(
     det = artifact.detection
 
     definite_critical = any(
-        i.severity is Severity.CRITICAL and i.label not in _REVIEW_LABELS for i in issues
+        i.severity is Severity.CRITICAL
+        and i.label not in _REVIEW_LABELS
+        and i.code not in _REVIEW_CODES
+        for i in issues
     )
 
     non_html_200 = (
@@ -65,6 +72,7 @@ def classify(
         or bool(labels & _REVIEW_LABELS)
         or non_html_200
         or any(i.code in _CONFLICT_CODES for i in issues)
+        or any(i.code in _REVIEW_CODES for i in issues)
     )
     transient = (
         artifact.fetch_error in _TRANSIENT_ERRORS

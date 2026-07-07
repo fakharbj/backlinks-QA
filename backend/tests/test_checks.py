@@ -116,12 +116,15 @@ def test_x_robots_noindex_is_fail():
     assert "X_ROBOTS_NOINDEX" in labels(result)
 
 
-def test_robots_blocked_is_fail():
+def test_robots_blocked_routes_to_review_unscored():
+    # Source disallowed in robots.txt = we (and crawlers) couldn't read the link,
+    # so it's "needs review", not a confident FAIL, and it is NOT scored down.
     art, _ = clean()
     art.robots.source_allowed = False
     result = evaluate(art)
-    assert result.status is OverallStatus.FAIL
+    assert result.status is OverallStatus.NEEDS_MANUAL_REVIEW
     assert "ROBOTS_BLOCKED" in labels(result)
+    assert result.score >= 80  # unchecked ≠ bad: no penalty for a page we couldn't read
 
 
 def test_soft_404_is_fail():
