@@ -27,10 +27,25 @@ def _open_registration_for_tests():
 
 @pytest.fixture(scope="session")
 def live_stack():
+    import os
+
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.core.config import settings
     from app.db.init_db import init_models
+
+    # SAFETY GUARD — never write throwaway test accounts into a real database.
+    # These integration tests register workspaces/users/projects via the API and
+    # do NOT clean up, so running them against the production DB (name
+    # ``linksentinel``) silently pollutes it. Only run when DATABASE_URL points at
+    # an isolated ``*_test`` database, unless explicitly overridden.
+    _dbname = str(settings.DATABASE_URL).rsplit("/", 1)[-1].split("?")[0]
+    if not _dbname.endswith("_test") and os.getenv("LINKSENTINEL_TEST_ALLOW_NONTEST_DB") != "1":
+        pytest.skip(
+            f"refusing to run DB-writing integration tests against non-'_test' database "
+            f"'{_dbname}' (point DATABASE_URL at a *_test DB, or set "
+            f"LINKSENTINEL_TEST_ALLOW_NONTEST_DB=1 to override)"
+        )
 
     # Redis reachability (sync ping → simplest skip signal).
     try:
