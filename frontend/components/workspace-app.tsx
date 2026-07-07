@@ -12321,7 +12321,9 @@ function ConflictComparisonModal({
   });
 
   const d = detail.data;
-  const members = (d?.members || []).slice(0, 10);
+  // Show every returned record (the API already caps huge groups); the table
+  // scrolls horizontally rather than hiding columns.
+  const members = d?.members || [];
   const extraMembers = (d?.total_members || d?.member_count || 0) - members.length;
 
   return (
@@ -12448,18 +12450,26 @@ function ConflictComparisonModal({
                       <thead>
                         <tr className="border-b border-line bg-field">
                           <th className="sticky left-0 z-10 bg-field px-3 py-2 text-left text-xs font-semibold uppercase text-muted">Field</th>
-                          {members.map((m) => (
+                          {members.map((m, mi) => (
                             <th key={m.backlink_id}
-                              className={clsx("px-3 py-2 text-left align-top", d.suggested_keep === m.backlink_id && "bg-ember/10")}>
+                              className={clsx("min-w-[160px] px-3 py-2 text-left align-top", d.suggested_keep === m.backlink_id && "bg-ember/10")}>
                               <div className="flex items-center gap-1.5">
                                 {d.suggested_keep === m.backlink_id ? (
                                   <span title="Suggested keep — the best record to retain">
                                     <Star className="h-3.5 w-3.5 fill-ember text-ember" />
                                   </span>
                                 ) : null}
-                                <span className="text-xs font-semibold text-ink">
-                                  {m.assigned_user_label || m.project_name || "record"}
-                                </span>
+                                <span className="text-xs font-semibold text-ink">Record {mi + 1}</span>
+                                {d.suggested_keep === m.backlink_id ? (
+                                  <span className="rounded-full bg-ember/15 px-1.5 text-[10px] font-semibold text-ember">keep</span>
+                                ) : null}
+                              </div>
+                              {/* Distinguishing sub-line so identical-user columns are tellable apart. */}
+                              <div className="mt-0.5 truncate text-[11px] text-muted" title={m.assigned_user_label || m.project_name || ""}>
+                                {m.assigned_user_label || m.project_name || "—"}
+                              </div>
+                              <div className="text-[11px] text-muted tabular-nums">
+                                {m.placement_date ? fmtChartLabel(String(m.placement_date), true) : "no date"}
                               </div>
                               <button
                                 onClick={() => {
@@ -12517,7 +12527,7 @@ function ConflictComparisonModal({
               );
             })()}
             {extraMembers > 0 ? (
-              <p className="text-xs text-muted">+ {extraMembers} more record(s) in this group (not shown — comparison is capped at 10 columns).</p>
+              <p className="text-xs text-muted">+ {extraMembers} more record(s) in this very large group (not shown — export the group for the complete list).</p>
             ) : null}
 
             {/* Action history */}
