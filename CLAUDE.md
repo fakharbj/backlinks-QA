@@ -373,6 +373,33 @@ column picker, and three save scopes. Deployed; DB data untouched (additive
 columns only). NOTE (pre-existing, out of scope): sheet write-back still
 assumes headers on row 1.
 
+**Enterprise Polish phase shipped + deployed** (migrations `0031`→`0036`, 208
+tests) — 13 brief areas as Tranches A–I, each committed + prod-deployed:
+**A** all date types across the pipeline (`0031`). **B** spam transparency +
+scoring-engine fixes. **C** Source Domains enterprise + Rules Engine + server
+exports (`0033`). **D** Analytics/Dashboard KPI boxes + connected filters.
+**E** Duplicate management — side-by-side compare, similarity, filters, bulk +
+**durable audit** (`0034`,`0035`: `backlink_conflict_actions` has NO FK so the
+log outlives a collapsed group; `list_actions`/endpoint workspace-scoped, never
+`get_detail`). **F** User Dashboard redesign — full KPI vocabulary, team
+benchmark, `date_type` (created/checked/sheet), per-link-type bars,
+sortable/exportable projects. **G** Batch **delete-with-rollback**
+(`batch_rollback_service`: reverts rows a batch CREATED via
+`backlink_records.import_id` — set on INSERT only, so refreshed rows are kept;
+domain batches revert catalog-only imported rows; approve/revert serialize on a
+pg advisory lock `batch:<id>`; revert refused while `status='running'`; conflict
+groups re-detected after revert) + **QA execution settings** (`qa_settings_service`,
+`qa_execution` Setting KV → `dataclasses.replace(CrawlConfig…)` in the staged
+worker; `GET/PUT /qa-settings`) + real-time/never-empty logs. **H** **Gmail
+tracking** (`0036`: `gmail_accounts`+`gmail_assignments`, assignment-history
+layer, NO OAuth; `/gmail` router; Team-desk "Gmail accounts" tab). **I**
+**exports-everywhere** (`GET /backlinks/export` streams the FULL filtered set,
+CSV/XLSX, keyset-paged, 50k cap — fixes the old 200-row cap; competitor CSV uses
+shared `downloadCsv`) + **spam consistency** (`domain_spam` via the per-page
+`source_domains` lookup → shared `SpamTag` in Backlinks grid/drawer + competitor
+grid). NOTE: DA/PA/AS/Spam show "—" until a metrics check runs
+(`RAPIDAPI_KEY`/`SEMRUSH_RAPIDAPI_ENDPOINT`).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
