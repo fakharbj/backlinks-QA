@@ -326,8 +326,37 @@ async def item_counts(db: AsyncSession, batch_id: uuid.UUID) -> dict:
     return {"total": total, "by_state": by_state, "by_presence": by_presence}
 
 
+# DA/PA/Spam/AS thresholds → (metrics JSON field, operator). Values live in
+# item.payload['metrics']; a min/max on an unchecked item (no metric) excludes it.
+_ITEM_THRESHOLDS: dict[str, tuple[str, str]] = {
+    "da_min": ("da", ">="), "da_max": ("da", "<="),
+    "pa_min": ("pa", ">="), "pa_max": ("pa", "<="),
+    "spam_min": ("spam_score", ">="), "spam_max": ("spam_score", "<="),
+    "as_min": ("semrush_as", ">="), "as_max": ("semrush_as", "<="),
+}
+
+
+def _apply_thresholds(stmt, thresholds: dict | None):
+    if not thresholds:
+        return stmt
+    from sqlalchemy import Integer, cast
+
+    for key, (field, op) in _ITEM_THRESHOLDS.items():
+        raw = thresholds.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            continue
+        col = cast(BatchItem.payload["metrics"][field].astext, Integer)
+        stmt = stmt.where(col >= val) if op == ">=" else stmt.where(col <= val)
+    return stmt
+
+
 def _filtered_items_stmt(
-    batch_id: uuid.UUID, *, state: str | None, presence: str | None, q: str | None
+    batch_id: uuid.UUID, *, state: str | None, presence: str | None, q: str | None,
+    thresholds: dict | None = None,
 ):
     stmt = select(BatchItem).where(BatchItem.batch_id == batch_id)
     if state:
@@ -340,7 +369,7 @@ def _filtered_items_stmt(
             stmt = stmt.where(BatchItem.presence.in_(wanted))
     if q:
         stmt = stmt.where(BatchItem.label.ilike(f"%{q.strip()}%"))
-    return stmt
+    return _apply_thresholds(stmt, thresholds)
 
 
 async def list_items(
@@ -351,12 +380,13 @@ async def list_items(
     state: str | None = None,
     presence: str | None = None,
     q: str | None = None,
+    thresholds: dict | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> dict:
     batch = await load_batch(db, ctx, batch_id)
     stmt = (
-        _filtered_items_stmt(batch.id, state=state, presence=presence, q=q)
+        _filtered_items_stmt(batch.id, state=state, presence=presence, q=q, thresholds=thresholds)
         .order_by(BatchItem.created_at.asc(), BatchItem.id.asc())
         .limit(max(1, min(limit, 500)))
         .offset(max(0, offset))
@@ -391,16 +421,19 @@ async def _select_items(
     state: str | None = None,
     presence: str | None = None,
     q: str | None = None,
+    thresholds: dict | None = None,
     allowed_states: tuple[str, ...] = _OPEN_STATES,
 ) -> list[BatchItem]:
     """Resolve an action's target set: explicit ids, or everything matching the
-    filter. Terminal items (approved/rejected) are never re-targeted."""
+    filter (incl. DA/PA/Spam/AS thresholds). Terminal items are never re-targeted."""
     if item_ids:
         stmt = select(BatchItem).where(
             BatchItem.batch_id == batch.id, BatchItem.id.in_(item_ids[:20000])
         )
     else:
-        stmt = _filtered_items_stmt(batch.id, state=state, presence=presence, q=q)
+        stmt = _filtered_items_stmt(
+            batch.id, state=state, presence=presence, q=q, thresholds=thresholds
+        )
     stmt = stmt.where(BatchItem.state.in_(allowed_states))
     return list((await db.execute(stmt)).scalars().all())
 
@@ -463,6 +496,7 @@ async def check_domain_items(
     state: str | None = None,
     presence: str | None = None,
     q: str | None = None,
+    thresholds: dict | None = None,
 ) -> dict:
     """Fetch DA/PA/Spam (Moz), AS/traffic (Semrush) and age for staged domains,
     INLINE like /source-domains/fetch-metrics, capped per call. Results land in
@@ -472,7 +506,8 @@ async def check_domain_items(
         raise ValidationAppError("Metric checks apply to domain-import batches")
     items = await _select_items(
         db, batch, item_ids=item_ids, state=state or "pending,failed,checked",
-        presence=presence, q=q, allowed_states=("pending", "failed", "checked"),
+        presence=presence, q=q, thresholds=thresholds,
+        allowed_states=("pending", "failed", "checked"),
     )
     cap = max(1, settings.BATCH_DOMAIN_CHECK_CAP)
     todo, remaining = items[:cap], max(0, len(items) - cap)
@@ -522,6 +557,7 @@ async def approve_items(
     state: str | None = None,
     presence: str | None = None,
     q: str | None = None,
+    thresholds: dict | None = None,
 ) -> dict:
     """Approve staged items into the production tables.
 
@@ -537,7 +573,7 @@ async def approve_items(
     )
     items = await _select_items(
         db, batch, item_ids=item_ids, state=state, presence=presence, q=q,
-        allowed_states=("pending", "checked"),
+        thresholds=thresholds, allowed_states=("pending", "checked"),
     )
     if not items:
         return {"approved": 0, "message": "Nothing to approve (only pending/checked items can be approved)"}
@@ -669,11 +705,12 @@ async def reject_items(
     state: str | None = None,
     presence: str | None = None,
     q: str | None = None,
+    thresholds: dict | None = None,
 ) -> dict:
     batch = await load_batch(db, ctx, batch_id, review_only=True)
     items = await _select_items(
         db, batch, item_ids=item_ids, state=state, presence=presence, q=q,
-        allowed_states=_OPEN_STATES,
+        thresholds=thresholds, allowed_states=_OPEN_STATES,
     )
     now = _now()
     for it in items:
@@ -691,3 +728,43 @@ async def reject_items(
     _refresh_review_progress(batch, counts)
     await db.flush()
     return {"rejected": len(items)}
+
+
+async def export_items(
+    db: AsyncSession,
+    ctx: AuthContext,
+    batch_id: uuid.UUID,
+    *,
+    state: str | None = None,
+    presence: str | None = None,
+    q: str | None = None,
+    thresholds: dict | None = None,
+) -> tuple[list[str], list[list]]:
+    """The FULL filtered set of a batch's staged items (honoring DA/PA/Spam/AS
+    thresholds) as (headers, rows) — for CSV/XLSX export straight from the queue,
+    without approving. Domain batches export metrics; link batches export QA facts."""
+    batch = await load_batch(db, ctx, batch_id)
+    stmt = _filtered_items_stmt(
+        batch.id, state=state, presence=presence, q=q, thresholds=thresholds
+    ).order_by(BatchItem.created_at.asc(), BatchItem.id.asc())
+    items = (await db.execute(stmt)).scalars().all()
+    if batch.kind == "domain_import" or batch.kind == "competitor_import":
+        headers = ["Domain", "Presence", "State", "DA", "PA", "AS", "Spam", "Age (days)"]
+        rows = []
+        for it in items:
+            m = (it.payload or {}).get("metrics") or {}
+            rows.append([
+                it.label, it.presence, it.state,
+                m.get("da"), m.get("pa"), m.get("semrush_as"), m.get("spam_score"),
+                m.get("domain_age_days"),
+            ])
+    else:
+        headers = ["Source URL", "Presence", "State", "QA status", "Score", "HTTP", "Rel"]
+        rows = []
+        for it in items:
+            qa = (it.payload or {}).get("qa") or {}
+            rows.append([
+                it.label, it.presence, it.state,
+                qa.get("status"), qa.get("score"), qa.get("http_status"), qa.get("rel"),
+            ])
+    return headers, rows

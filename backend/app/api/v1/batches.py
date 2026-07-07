@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -53,12 +54,25 @@ class BatchLogOut(BaseModel):
 
 class ItemSelection(BaseModel):
     """Target items either explicitly (``item_ids``) or by the same filters the
-    items list uses (state/presence/search) — 'approve everything I filtered'."""
+    items list uses (state/presence/search + DA/PA/Spam/AS thresholds) —
+    'approve/export everything I filtered'."""
 
     item_ids: list[uuid.UUID] | None = Field(default=None, max_length=20000)
     state: str | None = None      # comma list: pending,checked,failed
     presence: str | None = None   # comma list: new,existing,duplicate
     q: str | None = Field(default=None, max_length=300)
+    da_min: int | None = None
+    da_max: int | None = None
+    pa_min: int | None = None
+    pa_max: int | None = None
+    spam_min: int | None = None
+    spam_max: int | None = None
+    as_min: int | None = None
+    as_max: int | None = None
+
+    def thresholds(self) -> dict:
+        return {k: getattr(self, k) for k in
+                ("da_min", "da_max", "pa_min", "pa_max", "spam_min", "spam_max", "as_min", "as_max")}
 
 
 class CheckRequest(ItemSelection):
@@ -188,13 +202,63 @@ async def list_batch_items(
     state: str | None = Query(None, max_length=120),
     presence: str | None = Query(None, max_length=120),
     q: str | None = Query(None, max_length=300),
+    da_min: int | None = Query(None),
+    da_max: int | None = Query(None),
+    pa_min: int | None = Query(None),
+    pa_max: int | None = Query(None),
+    spam_min: int | None = Query(None),
+    spam_max: int | None = Query(None),
+    as_min: int | None = Query(None),
+    as_max: int | None = Query(None),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    """The staged rows of a review batch with live counts — filters mirror the
-    UI chips (comma lists) plus substring search over the URL/domain."""
+    """The staged rows of a review batch with live counts — filters mirror the UI
+    chips (comma lists) + substring search + DA/PA/Spam/AS thresholds."""
+    thresholds = {"da_min": da_min, "da_max": da_max, "pa_min": pa_min, "pa_max": pa_max,
+                  "spam_min": spam_min, "spam_max": spam_max, "as_min": as_min, "as_max": as_max}
     return await batch_review_service.list_items(
-        db, ctx, batch_id, state=state, presence=presence, q=q, limit=limit, offset=offset
+        db, ctx, batch_id, state=state, presence=presence, q=q, thresholds=thresholds,
+        limit=limit, offset=offset,
+    )
+
+
+@router.get("/{batch_id}/items/export")
+async def export_batch_items(
+    batch_id: uuid.UUID,
+    ctx: AuthCtx,
+    db: ReadSession,
+    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    state: str | None = Query(None, max_length=120),
+    presence: str | None = Query(None, max_length=120),
+    q: str | None = Query(None, max_length=300),
+    da_min: int | None = Query(None),
+    da_max: int | None = Query(None),
+    pa_min: int | None = Query(None),
+    pa_max: int | None = Query(None),
+    spam_min: int | None = Query(None),
+    spam_max: int | None = Query(None),
+    as_min: int | None = Query(None),
+    as_max: int | None = Query(None),
+) -> StreamingResponse:
+    """Export the FULL filtered set of a batch's staged rows (honoring DA/PA/Spam/AS
+    thresholds) as CSV or XLSX — pull the best candidates straight from the queue."""
+    from app.services import source_domain_service
+
+    thresholds = {"da_min": da_min, "da_max": da_max, "pa_min": pa_min, "pa_max": pa_max,
+                  "spam_min": spam_min, "spam_max": spam_max, "as_min": as_min, "as_max": as_max}
+    headers, rows = await batch_review_service.export_items(
+        db, ctx, batch_id, state=state, presence=presence, q=q, thresholds=thresholds
+    )
+    if format == "xlsx":
+        data = source_domain_service.build_xlsx(headers, rows, title="Batch items")
+        media, ext = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+    else:
+        data = source_domain_service.build_csv(headers, rows)
+        media, ext = ("text/csv; charset=utf-8", "csv")
+    return StreamingResponse(
+        iter([data]), media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="batch-items.{ext}"'},
     )
 
 
@@ -215,7 +279,7 @@ async def check_batch_items(
         ids = await batch_review_service.begin_link_check(
             db, ctx, batch_id, item_ids=payload.item_ids,
             state=payload.state, presence=payload.presence, q=payload.q,
-        )
+        )  # (link QA has no metric thresholds)
         # Chunk size honors this workspace's QA execution settings.
         from app.services import qa_settings_service
 
@@ -232,6 +296,7 @@ async def check_batch_items(
     result = await batch_review_service.check_domain_items(
         db, ctx, batch_id, item_ids=payload.item_ids, providers=providers,
         state=payload.state, presence=payload.presence, q=payload.q,
+        thresholds=payload.thresholds(),
     )
     await db.commit()
     return {**result, "mode": "metrics"}
@@ -249,6 +314,7 @@ async def approve_batch_items(
     result = await batch_review_service.approve_items(
         db, ctx, batch_id, item_ids=payload.item_ids,
         state=payload.state, presence=payload.presence, q=payload.q,
+        thresholds=payload.thresholds(),
     )
     await audit_service.record(
         db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
@@ -271,6 +337,7 @@ async def reject_batch_items(
     result = await batch_review_service.reject_items(
         db, ctx, batch_id, item_ids=payload.item_ids,
         state=payload.state, presence=payload.presence, q=payload.q,
+        thresholds=payload.thresholds(),
     )
     await db.commit()
     return result

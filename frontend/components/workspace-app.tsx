@@ -6212,6 +6212,11 @@ function BatchDetails({
   const [stateF, setStateF] = useState<string[]>([]);
   const [presenceF, setPresenceF] = useState<string[]>([]);
   const [search, setSearch] = useState("");
+  // DA/PA/Spam/AS thresholds for domain queues (filter the survivors to promote/export).
+  const [daMin, setDaMin] = useState("");
+  const [paMin, setPaMin] = useState("");
+  const [spamMax, setSpamMax] = useState("");
+  const [asMin, setAsMin] = useState("");
   const [limit, setLimit] = useState(200);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -6225,17 +6230,27 @@ function BatchDetails({
       q.state.data && (q.state.data.status === "running" || q.state.data.status === "pending") ? 2500 : false
   });
   const b = batch.data;
-  const isReview = b?.kind === "link_review" || b?.kind === "domain_import";
+  const isReview = b?.kind === "link_review" || b?.kind === "domain_import" || b?.kind === "competitor_import";
   const isLinks = b?.kind === "link_review";
+  const isDomains = b?.kind === "domain_import" || b?.kind === "competitor_import";
+  // Threshold query params shared by the item list + export (only set ones sent).
+  const thrParams = (p: URLSearchParams) => {
+    if (daMin.trim()) p.set("da_min", daMin.trim());
+    if (paMin.trim()) p.set("pa_min", paMin.trim());
+    if (spamMax.trim()) p.set("spam_max", spamMax.trim());
+    if (asMin.trim()) p.set("as_min", asMin.trim());
+    return p;
+  };
 
   const itemsQ = useQuery({
-    queryKey: ["batch-items", token, batchId, stateF.join(","), presenceF.join(","), search, limit],
+    queryKey: ["batch-items", token, batchId, stateF.join(","), presenceF.join(","), search, daMin, paMin, spamMax, asMin, limit],
     enabled: Boolean(token) && Boolean(isReview),
     queryFn: () => {
       const p = new URLSearchParams({ limit: String(limit) });
       if (stateF.length) p.set("state", stateF.join(","));
       if (presenceF.length) p.set("presence", presenceF.join(","));
       if (search.trim()) p.set("q", search.trim());
+      thrParams(p);
       return api<BatchItemsPage>(`/batches/${batchId}/items?${p.toString()}`, { token });
     },
     refetchInterval: (q) =>
@@ -6275,7 +6290,11 @@ function BatchDetails({
       : {
           state: stateF.length ? stateF.join(",") : undefined,
           presence: presenceF.length ? presenceF.join(",") : undefined,
-          q: search.trim() || undefined
+          q: search.trim() || undefined,
+          da_min: daMin.trim() ? Number(daMin) : undefined,
+          pa_min: paMin.trim() ? Number(paMin) : undefined,
+          spam_max: spamMax.trim() ? Number(spamMax) : undefined,
+          as_min: asMin.trim() ? Number(asMin) : undefined
         };
 
   const runCheck = useMutation({
@@ -6626,37 +6645,39 @@ function BatchDetails({
           </div>
           {b.status !== "running" ? (
             <div className="flex items-center gap-3">
-              {isReview ? (
-                <button
-                  onClick={() => {
-                    // Export the staged rows straight from the queue (no need to approve first).
-                    if (b.kind === "domain_import") {
-                      downloadCsv(
-                        `domain-import-B-${b.seq}.csv`,
-                        ["Domain", "Presence", "State", "DA", "PA", "AS", "Spam", "Age (days)"],
-                        items.map((it) => {
-                          const m = (it.payload?.metrics || {}) as Record<string, number | null | undefined>;
-                          return [it.label, it.presence, it.state, m.da ?? "", m.pa ?? "", m.semrush_as ?? "", m.spam_score ?? "", m.domain_age_days ?? ""];
-                        })
-                      );
-                    } else {
-                      downloadCsv(
-                        `link-import-B-${b.seq}.csv`,
-                        ["Source URL", "Presence", "State", "QA status", "Score", "HTTP", "Rel"],
-                        items.map((it) => {
-                          const qa = (it.payload?.qa || {}) as Record<string, unknown>;
-                          return [it.label, it.presence, it.state, (qa.status as string) ?? "", (qa.score as number) ?? "", (qa.http_status as number) ?? "", (qa.rel as string) ?? ""];
-                        })
-                      );
-                    }
-                    onNotice(`Exported ${items.length} staged item(s).`);
-                  }}
-                  title="Download the staged rows in this queue as CSV (without approving them)"
-                  className="flex items-center gap-1.5 text-xs font-medium text-ink hover:underline"
-                >
-                  <Download className="h-3.5 w-3.5" /> Export items
-                </button>
-              ) : null}
+              {isReview ? (() => {
+                // Server-side export of the FULL filtered set (honors state/presence/
+                // search + DA/PA/Spam/AS thresholds) straight from the queue.
+                const doExport = async (fmt: "csv" | "xlsx") => {
+                  try {
+                    const p = new URLSearchParams({ format: fmt });
+                    if (stateF.length) p.set("state", stateF.join(","));
+                    if (presenceF.length) p.set("presence", presenceF.join(","));
+                    if (search.trim()) p.set("q", search.trim());
+                    thrParams(p);
+                    const res = await fetch(`${API_BASE}/batches/${batchId}/items/export?${p.toString()}`, {
+                      headers: token ? { Authorization: `Bearer ${token}` } : {}
+                    });
+                    if (!res.ok) throw new Error(`Export failed (${res.status})`);
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url; a.download = `batch-B-${b.seq}.${fmt}`;
+                    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                    onNotice("Exported the filtered items.");
+                  } catch (e) { onNotice(e instanceof Error ? e.message : "Export failed"); }
+                };
+                return (
+                  <span className="flex items-center gap-2">
+                    <button onClick={() => doExport("csv")} title="Download the filtered staged rows as CSV" className="flex items-center gap-1.5 text-xs font-medium text-ink hover:underline">
+                      <Download className="h-3.5 w-3.5" /> CSV
+                    </button>
+                    <button onClick={() => doExport("xlsx")} title="Download the filtered staged rows as Excel" className="text-xs font-medium text-ink hover:underline">
+                      Excel
+                    </button>
+                  </span>
+                );
+              })() : null}
               <button
                 onClick={() => { setRevertTyped(""); setRevertOpen(true); }}
                 title="Delete this batch AND remove the rows it created (reversible cleanup)"
@@ -6821,6 +6842,23 @@ function BatchDetails({
               className="ml-auto h-8 w-56 rounded-lg border border-line bg-panel px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
             />
           </div>
+          {isDomains ? (
+            <div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-2 text-xs">
+              <span className="font-semibold uppercase tracking-wide text-muted">Filter by metrics</span>
+              <label className="flex items-center gap-1">DA ≥
+                <input type="number" value={daMin} onChange={(e) => setDaMin(e.target.value)} className="h-7 w-16 rounded-md border border-line bg-panel px-1.5" /></label>
+              <label className="flex items-center gap-1">PA ≥
+                <input type="number" value={paMin} onChange={(e) => setPaMin(e.target.value)} className="h-7 w-16 rounded-md border border-line bg-panel px-1.5" /></label>
+              <label className="flex items-center gap-1">Spam ≤
+                <input type="number" value={spamMax} onChange={(e) => setSpamMax(e.target.value)} className="h-7 w-16 rounded-md border border-line bg-panel px-1.5" /></label>
+              <label className="flex items-center gap-1">AS ≥
+                <input type="number" value={asMin} onChange={(e) => setAsMin(e.target.value)} className="h-7 w-16 rounded-md border border-line bg-panel px-1.5" /></label>
+              {(daMin || paMin || spamMax || asMin) ? (
+                <button onClick={() => { setDaMin(""); setPaMin(""); setSpamMax(""); setAsMin(""); }} className="text-muted hover:text-ink hover:underline">clear</button>
+              ) : null}
+              <span className="text-muted">— Check DA/PA, Approve and Export all honor these filters.</span>
+            </div>
+          ) : null}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="bg-field text-xs uppercase text-muted">
