@@ -27,7 +27,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 import httpx
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -530,6 +530,11 @@ async def approve_items(
     with ``origin='imported'`` carrying any fetched metrics.
     """
     batch = await load_batch(db, ctx, batch_id, review_only=True)
+    # Serialize against a concurrent delete-and-revert of the same batch (which
+    # takes the same lock) so an approval can't race a revert and orphan rows.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"batch:{batch_id}"}
+    )
     items = await _select_items(
         db, batch, item_ids=item_ids, state=state, presence=presence, q=q,
         allowed_states=("pending", "checked"),

@@ -123,23 +123,28 @@ async def get_batch(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Batch
     return _out(b, pending)
 
 
+@router.get("/{batch_id}/rollback-preview")
+async def rollback_preview(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> dict:
+    """What a *revert* delete would remove — drives the typed-name confirm dialog
+    (created links, catalog domains) vs what stays (refreshed links, in-use domains)."""
+    from app.services import batch_rollback_service
+
+    return await batch_rollback_service.preview(db, ctx, batch_id)
+
+
 @router.delete("/{batch_id}")
 async def delete_batch(
     batch_id: uuid.UUID, db: DbSession,
+    revert: bool = Query(False),
     ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
 ) -> dict:
-    """Remove one run from history (admin housekeeping; logs + staged items go
-    with it — approved data stays where it was imported)."""
-    from sqlalchemy import delete as sa_delete
+    """Delete one run. Default (``revert=false``) is admin housekeeping — logs +
+    staged items go with it, approved data stays. ``revert=true`` also removes the
+    rows this batch CREATED (links it inserted, catalog-only imported domains),
+    leaving refreshed/in-use rows and all crawl history intact. Audited either way."""
+    from app.services import batch_rollback_service
 
-    b = await db.get(Batch, batch_id)
-    if b is None or b.workspace_id != ctx.workspace_id:
-        raise NotFoundError("Batch not found")
-    await db.execute(sa_delete(BatchItem).where(BatchItem.batch_id == batch_id))
-    await db.execute(sa_delete(BatchLog).where(BatchLog.batch_id == batch_id))
-    await db.delete(b)
-    await db.commit()
-    return {"message": f"Batch #B-{b.seq} removed from history"}
+    return await batch_rollback_service.delete_batch(db, ctx, batch_id, revert=revert)
 
 
 @router.get("/{batch_id}/logs", response_model=list[BatchLogOut])
@@ -148,6 +153,21 @@ async def get_batch_logs(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> 
     if b is None or b.workspace_id != ctx.workspace_id:
         raise NotFoundError("Batch not found")
     logs = await batch_service.get_logs(db, batch_id)
+    if not logs:
+        # Never show an empty log panel: synthesize a line from the batch itself.
+        kind = batch_review_service.BATCH_KIND_LABEL.get(b.kind, b.kind) if hasattr(
+            batch_review_service, "BATCH_KIND_LABEL"
+        ) else b.kind
+        step = (b.meta or {}).get("current_step")
+        msg = f"{kind} — status: {b.status}."
+        if step:
+            msg += f" {step}"
+        return [
+            BatchLogOut(
+                level="info", message=msg, row_ref=None, data={},
+                created_at=(b.started_at or b.created_at).isoformat(),
+            )
+        ]
     return [
         BatchLogOut(
             level=r.level, message=r.message, row_ref=r.row_ref, data=r.data or {},
@@ -196,11 +216,15 @@ async def check_batch_items(
             db, ctx, batch_id, item_ids=payload.item_ids,
             state=payload.state, presence=payload.presence, q=payload.q,
         )
+        # Chunk size honors this workspace's QA execution settings.
+        from app.services import qa_settings_service
+
+        qa_cfg = await qa_settings_service.get_effective(db, ctx.workspace_id)
         await db.commit()
         if ids:
             from app.workers.dispatch import enqueue_staged_check
 
-            enqueue_staged_check(batch_id, ids)
+            enqueue_staged_check(batch_id, ids, chunk_size=qa_cfg.get("chunk_size"))
         return {"queued": len(ids), "mode": "qa"}
     providers = {
         p.strip() for p in (payload.providers or "").split(",") if p.strip() in ("moz", "semrush")

@@ -49,13 +49,18 @@ def enqueue_render(backlink_id: uuid.UUID, *, job_id: uuid.UUID | None = None) -
     )
 
 
-def enqueue_staged_check(batch_id: uuid.UUID, item_ids: Sequence[uuid.UUID]) -> int:
-    """Queue isolated QA checks for review-batch items (0029) on the qa queue."""
+def enqueue_staged_check(
+    batch_id: uuid.UUID, item_ids: Sequence[uuid.UUID], *, chunk_size: int | None = None
+) -> int:
+    """Queue isolated QA checks for review-batch items (0029) on the qa queue.
+    ``chunk_size`` (from the workspace's QA execution settings) overrides the
+    deploy-wide ``BATCH_QA_CHUNK_SIZE`` default."""
     from app.workers.tasks.staging import check_staged_links
 
     ids = [str(i) for i in item_ids]
+    size = max(1, int(chunk_size or settings.BATCH_QA_CHUNK_SIZE))
     queued = 0
-    for chunk in _chunks(ids, max(1, settings.BATCH_QA_CHUNK_SIZE)):
+    for chunk in _chunks(ids, size):
         check_staged_links.apply_async(args=[str(batch_id), list(chunk)], queue="qa")
         queued += len(chunk)
     return queued

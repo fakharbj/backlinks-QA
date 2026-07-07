@@ -10,6 +10,7 @@ knowledge base stays untouched until the user approves the items.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
 from datetime import datetime, timezone
 
@@ -24,7 +25,7 @@ from app.db.session import session_scope
 from app.models.batch import Batch, BatchItem
 from app.qa import evaluate
 from app.qa.types import QAPolicy
-from app.services import batch_service
+from app.services import batch_service, qa_settings_service
 from app.workers.celery_app import celery_app
 from app.workers.runtime import RedisRobotsCache, get_browser, make_rate_limiter, run_async
 
@@ -94,7 +95,8 @@ async def _check_staged_links_async(batch_id_str: str, item_ids: list[str]) -> d
     batch_id = uuid.UUID(batch_id_str)
     uuids = [uuid.UUID(i) for i in item_ids]
 
-    # 1) Load the staged rows in a short session (no session during network IO).
+    # 1) Load the staged rows + the batch's workspace-scoped QA settings in a
+    #    short session (no session held during network IO).
     async with session_scope() as s:
         items = list(
             (
@@ -105,14 +107,38 @@ async def _check_staged_links_async(batch_id_str: str, item_ids: list[str]) -> d
                 )
             ).scalars().all()
         )
+        batch_row = await s.get(Batch, batch_id)
+        qa_cfg = (
+            await qa_settings_service.get_effective(s, batch_row.workspace_id)
+            if batch_row is not None
+            else qa_settings_service.defaults()
+        )
     if not items:
         return {"processed": 0}
 
-    # 2) Same engine as production crawls; browser renders JS pages inline when
-    #    the render pool is enabled.
-    browser = get_browser() if settings.RENDER_ENABLED else None
-    config = CrawlConfig.from_settings()
-    limiter = make_rate_limiter(settings.CRAWL_DEFAULT_RATE_PER_SEC, settings.CRAWL_DEFAULT_BURST)
+    # Real-time log the moment the check starts so the batch is never "empty".
+    await batch_service.add_log(
+        batch_id,
+        f"Starting QA on {len(items)} staged link(s) — "
+        f"timeout {qa_cfg['total_timeout']:g}s, "
+        f"render {'on' if qa_cfg['render_enabled'] else 'off'}, "
+        f"rate {qa_cfg['rate_per_sec']:g}/s per domain.",
+    )
+
+    # 2) Same engine as production crawls, with this workspace's QA overrides
+    #    applied on top of the config defaults; browser renders JS pages inline
+    #    when render is enabled.
+    browser = get_browser() if qa_cfg["render_enabled"] else None
+    config = dataclasses.replace(
+        CrawlConfig.from_settings(),
+        connect_timeout=qa_cfg["connect_timeout"],
+        read_timeout=qa_cfg["read_timeout"],
+        total_timeout=qa_cfg["total_timeout"],
+        render_enabled=qa_cfg["render_enabled"],
+        render_timeout_ms=qa_cfg["render_timeout_ms"],
+        render_wait_until=qa_cfg["render_wait_until"],
+    )
+    limiter = make_rate_limiter(qa_cfg["rate_per_sec"], qa_cfg["burst"])
     engine = CrawlEngine(
         config, robots_cache=RedisRobotsCache(), browser=browser, rate_limiter=limiter
     )
@@ -163,10 +189,26 @@ async def _check_staged_links_async(batch_id_str: str, item_ids: list[str]) -> d
         # 4) Batch progress: back to "review" once nothing is left checking.
         batch = await s.get(Batch, batch_id)
         if batch is not None:
+            # Derive counters from the terminal item states (NOT +=) so a Celery
+            # redelivery of this task can't double-count (acks_late + autoretry).
+            checked_total = (
+                await s.execute(
+                    select(func.count()).select_from(BatchItem).where(
+                        BatchItem.batch_id == batch_id, BatchItem.state == "checked"
+                    )
+                )
+            ).scalar_one()
+            failed_total = (
+                await s.execute(
+                    select(func.count()).select_from(BatchItem).where(
+                        BatchItem.batch_id == batch_id, BatchItem.state == "failed"
+                    )
+                )
+            ).scalar_one()
             counters = dict(batch.counters or {})
-            counters["checked"] = int(counters.get("checked", 0)) + ok
-            if failed:
-                counters["check_failed"] = int(counters.get("check_failed", 0)) + failed
+            counters["checked"] = int(checked_total)
+            if failed_total:
+                counters["check_failed"] = int(failed_total)
             batch.counters = counters
             still_checking = (
                 await s.execute(

@@ -10,8 +10,10 @@ from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require_
 from app.core.rbac import Role
 from app.core.security import encrypt_secret
 from app.models.audit import AuditLog
+from app.models.enums import AuditAction
 from app.models.settings import Setting
 from app.schemas.common import Message
+from app.services import audit_service, qa_settings_service
 
 router = APIRouter(tags=["settings"])
 
@@ -78,6 +80,34 @@ async def upsert_setting(
         existing.is_secret = payload.is_secret
     await db.commit()
     return Message(message="Setting saved")
+
+
+class QaSettingsIn(BaseModel):
+    overrides: dict
+
+
+@router.get("/qa-settings")
+async def get_qa_settings(ctx: AuthCtx, db: ReadSession) -> dict:
+    """Effective QA execution knobs (config defaults + this workspace's overrides)
+    with per-knob default/min/max metadata for the admin editor."""
+    return await qa_settings_service.describe(db, ctx.workspace_id)
+
+
+@router.put("/qa-settings")
+async def put_qa_settings(
+    payload: QaSettingsIn, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Save QA execution overrides (admin). Unknown keys ignored; each value is
+    coerced + clamped to its safe range; a null value clears that override."""
+    result = await qa_settings_service.save(db, ctx.workspace_id, payload.overrides or {})
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id,
+        workspace_id=ctx.workspace_id, entity_type="qa_settings", entity_id=ctx.workspace_id,
+        summary="Updated QA execution settings",
+    )
+    await db.commit()
+    return result
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])

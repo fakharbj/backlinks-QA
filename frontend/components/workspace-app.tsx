@@ -6190,7 +6190,13 @@ function BatchDetails({
     queryKey: ["batch-logs", token, batchId],
     enabled: Boolean(token),
     queryFn: () => api<BatchLog[]>(`/batches/${batchId}/logs`, { token }),
-    refetchInterval: b?.status === "running" ? 4000 : false
+    // Live-tail while the run is active OR any item is still being checked.
+    refetchInterval: (q) => {
+      void q;
+      return b?.status === "running" || (itemsQ.data?.items || []).some((it) => it.state === "checking")
+        ? 3000
+        : false;
+    }
   });
   const rowErrors = useQuery({
     queryKey: ["import-errors", token, errorImportId],
@@ -6275,6 +6281,38 @@ function BatchDetails({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  // ── Delete & revert (rollback) ──────────────────────────────────────────
+  type RollbackPreview = {
+    seq: number; kind: string; revertable: boolean;
+    created_links: number; refreshed_kept: number;
+    domains_removable: number; domains_kept: number;
+  };
+  const [revertOpen, setRevertOpen] = useState(false);
+  const [revertTyped, setRevertTyped] = useState("");
+  const [logLevel, setLogLevel] = useState<"all" | "info" | "warn" | "error">("all");
+  const rollbackPreview = useQuery({
+    queryKey: ["batch-rollback-preview", token, batchId],
+    enabled: Boolean(token) && revertOpen,
+    queryFn: () => api<RollbackPreview>(`/batches/${batchId}/rollback-preview`, { token })
+  });
+  const deleteBatchRevert = useMutation({
+    mutationFn: () =>
+      api<{ message: string; reverted_links: number; reverted_domains: number }>(
+        `/batches/${batchId}?revert=true`,
+        { token, method: "DELETE" }
+      ),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      setRevertOpen(false);
+      setRevertTyped("");
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["source-domains"] });
+      onBack();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const revertConfirmWord = `B-${b?.seq ?? ""}`;
 
   const items = itemsQ.data?.items || [];
   const counts = itemsQ.data?.counts;
@@ -6453,6 +6491,76 @@ function BatchDetails({
 
   return (
     <section className="space-y-4">
+      {/* Delete & revert confirmation */}
+      {revertOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={() => setRevertOpen(false)}>
+          <div className="w-full max-w-lg rounded-2xl border border-line bg-panel p-5 shadow-pop" onClick={(e) => e.stopPropagation()}>
+            <h3 className="flex items-center gap-2 text-base font-semibold text-danger">
+              <Trash2 className="h-4 w-4" /> Delete &amp; revert batch #B-{b.seq}
+            </h3>
+            {rollbackPreview.isLoading ? (
+              <p className="py-6 text-center text-sm text-muted"><Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> Working out what would be removed…</p>
+            ) : rollbackPreview.data ? (
+              (() => {
+                const pv = rollbackPreview.data;
+                const nothing = pv.created_links === 0 && pv.domains_removable === 0;
+                return (
+                  <>
+                    <p className="mt-2 text-sm text-muted">
+                      This removes the rows this batch <b className="text-ink">created</b> and then deletes the run. Refreshed rows, in-use domains, and all crawl history stay. This cannot be undone.
+                    </p>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                      <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5">
+                        <div className="text-2xl font-bold text-danger">{pv.created_links}</div>
+                        <div className="text-[11px] font-semibold uppercase text-muted">Links removed</div>
+                      </div>
+                      {pv.kind === "domain_import" ? (
+                        <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5">
+                          <div className="text-2xl font-bold text-danger">{pv.domains_removable}</div>
+                          <div className="text-[11px] font-semibold uppercase text-muted">Catalog domains removed</div>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-line bg-field/60 p-2.5">
+                          <div className="text-2xl font-bold text-ink">{pv.refreshed_kept}</div>
+                          <div className="text-[11px] font-semibold uppercase text-muted">Refreshed links kept</div>
+                        </div>
+                      )}
+                    </div>
+                    {pv.kind === "domain_import" && pv.domains_kept > 0 ? (
+                      <p className="mt-2 text-xs text-muted">{pv.domains_kept} domain(s) in use by links will be kept.</p>
+                    ) : null}
+                    {nothing ? (
+                      <p className="mt-3 rounded-lg bg-field/70 p-2 text-xs text-muted">This batch created nothing to revert — deleting it just removes the run from history.</p>
+                    ) : (
+                      <div className="mt-3">
+                        <label className="text-xs font-medium text-muted">Type <b className="text-ink">{revertConfirmWord}</b> to confirm</label>
+                        <input
+                          value={revertTyped}
+                          onChange={(e) => setRevertTyped(e.target.value)}
+                          placeholder={revertConfirmWord}
+                          className="mt-1 h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm"
+                        />
+                      </div>
+                    )}
+                    <div className="mt-4 flex justify-end gap-2">
+                      <button onClick={() => setRevertOpen(false)} className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-ink hover:bg-field">Cancel</button>
+                      <button
+                        onClick={() => deleteBatchRevert.mutate()}
+                        disabled={deleteBatchRevert.isPending || (!nothing && revertTyped.trim().toUpperCase() !== revertConfirmWord.toUpperCase())}
+                        className="rounded-lg bg-danger px-3 py-1.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
+                      >
+                        {deleteBatchRevert.isPending ? "Deleting…" : nothing ? "Delete batch" : "Delete & revert"}
+                      </button>
+                    </div>
+                  </>
+                );
+              })()
+            ) : (
+              <p className="py-6 text-center text-sm text-danger">Could not load the rollback preview.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
       {/* Header */}
       <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -6472,15 +6580,25 @@ function BatchDetails({
             ) : null}
           </div>
           {b.status !== "running" ? (
-            <button
-              onClick={() => {
-                if (window.confirm(`Remove batch #B-${b.seq} and its history? Approved data stays where it was imported. (Admin only)`))
-                  deleteBatch.mutate();
-              }}
-              className="flex items-center gap-1.5 text-xs font-medium text-danger hover:underline"
-            >
-              <Trash2 className="h-3.5 w-3.5" /> Remove from history
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => { setRevertTyped(""); setRevertOpen(true); }}
+                title="Delete this batch AND remove the rows it created (reversible cleanup)"
+                className="flex items-center gap-1.5 text-xs font-medium text-danger hover:underline"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Delete &amp; revert
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm(`Remove batch #B-${b.seq} from history? Approved data stays where it was imported. (Admin only)`))
+                    deleteBatch.mutate();
+                }}
+                title="Remove only the run from history — approved data stays"
+                className="text-xs font-medium text-muted hover:text-ink hover:underline"
+              >
+                Remove from history
+              </button>
+            </div>
           ) : null}
         </div>
         <p className="mt-1 truncate text-sm text-muted" title={b.label || ""}>{b.label || "—"}</p>
@@ -6717,9 +6835,30 @@ function BatchDetails({
 
       {/* Logs */}
       <div className="rounded-xl border border-line bg-panel shadow-card">
-        <SectionTitle title="Run log" />
-        <div className="space-y-1 p-3">
-          {(logs.data || []).map((l, i) => (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+            Run log
+            {(b?.status === "running" || (itemsQ.data?.items || []).some((it) => it.state === "checking")) ? (
+              <span className="flex items-center gap-1 rounded-full bg-ocean/10 px-2 py-0.5 text-[10px] font-semibold text-ocean">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ocean" /> LIVE
+              </span>
+            ) : null}
+            <span className="text-[11px] font-normal text-muted">{(logs.data || []).length} entr{(logs.data || []).length === 1 ? "y" : "ies"}</span>
+          </h3>
+          <span className="inline-flex rounded-lg border border-line bg-field/40 p-0.5 text-[11px] font-medium">
+            {(["all", "info", "warn", "error"] as const).map((lv) => (
+              <button
+                key={lv}
+                onClick={() => setLogLevel(lv)}
+                className={clsx("rounded-md px-2 py-0.5 capitalize transition", logLevel === lv ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+              >
+                {lv}
+              </button>
+            ))}
+          </span>
+        </div>
+        <div className="max-h-[420px] space-y-1 overflow-y-auto p-3">
+          {(logs.data || []).filter((l) => logLevel === "all" || l.level === logLevel).map((l, i) => (
             <div key={i} className="flex items-start gap-2 text-xs">
               <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-ocean")} />
               <span className="whitespace-nowrap text-muted">{formatDate(l.created_at)}</span>
@@ -6736,6 +6875,9 @@ function BatchDetails({
           ))}
           {logs.isLoading ? <div className="text-xs text-muted">Loading logs…</div> : null}
           {!logs.isLoading && !(logs.data || []).length ? <div className="text-xs text-muted">No log entries for this run.</div> : null}
+          {!logs.isLoading && (logs.data || []).length > 0 && !(logs.data || []).filter((l) => logLevel === "all" || l.level === logLevel).length ? (
+            <div className="text-xs text-muted">No {logLevel} entries.</div>
+          ) : null}
           {errorImportId ? (
             <div className="mt-3 rounded-lg border border-line bg-panel p-2">
               <div className="mb-1.5 flex items-center justify-between">
@@ -10858,6 +11000,147 @@ function BrandingCard({
   );
 }
 
+const QA_KNOB_META: Record<string, { label: string; help: string; group: string }> = {
+  chunk_size: { label: "Links per task", help: "How many staged links each QA worker task checks at once. Higher = fewer tasks, more parallel load.", group: "Throughput" },
+  rate_per_sec: { label: "Requests/sec per domain", help: "Politeness: how fast we hit a single source site. Lower is gentler.", group: "Throughput" },
+  burst: { label: "Burst per domain", help: "How many requests can fire back-to-back before rate limiting kicks in.", group: "Throughput" },
+  connect_timeout: { label: "Connect timeout (s)", help: "How long to wait to open a connection before giving up.", group: "Timeouts" },
+  read_timeout: { label: "Read timeout (s)", help: "How long to wait for the page body once connected.", group: "Timeouts" },
+  total_timeout: { label: "Total timeout (s)", help: "Overall cap for one page fetch (connect + read + redirects).", group: "Timeouts" },
+  render_enabled: { label: "Render JS pages", help: "Use the headless browser for JavaScript-only pages during QA.", group: "Rendering" },
+  render_timeout_ms: { label: "Render timeout (ms)", help: "How long the browser waits for a JS page to settle.", group: "Rendering" },
+  render_wait_until: { label: "Render wait-until", help: "When the browser considers a page 'loaded' (networkidle is strictest).", group: "Rendering" }
+};
+
+function QaSettingsCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  type QaMeta = { default: number | boolean | string; min: number | null; max: number | null; kind: string; overridden: boolean };
+  type QaSettings = { effective: Record<string, number | boolean | string>; meta: Record<string, QaMeta>; wait_until_choices: string[] };
+  const [draft, setDraft] = useState<Record<string, string | boolean>>({});
+  const q = useQuery({
+    queryKey: ["qa-settings", token],
+    enabled: Boolean(token),
+    queryFn: () => api<QaSettings>("/qa-settings", { token })
+  });
+  const save = useMutation({
+    mutationFn: (overrides: Record<string, unknown>) =>
+      api<QaSettings>("/qa-settings", { token, method: "PUT", body: JSON.stringify({ overrides }) }),
+    onSuccess: () => {
+      onNotice("QA execution settings saved");
+      setDraft({});
+      queryClient.invalidateQueries({ queryKey: ["qa-settings"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const d = q.data;
+  if (!d) {
+    return (
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="QA execution settings" />
+        <div className="p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      </section>
+    );
+  }
+  const val = (k: string) => (k in draft ? draft[k] : d.effective[k]);
+  const keys = Object.keys(QA_KNOB_META).filter((k) => k in d.meta);
+  const groups = Array.from(new Set(keys.map((k) => QA_KNOB_META[k].group)));
+  const onSave = () => {
+    // Send only knobs the user touched; "" clears an override back to default.
+    const overrides: Record<string, unknown> = {};
+    for (const k of Object.keys(draft)) {
+      const v = draft[k];
+      overrides[k] = v === "" ? null : v;
+    }
+    save.mutate(overrides);
+  };
+  const resetOne = (k: string) => save.mutate({ [k]: null });
+
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-4">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+          QA execution settings
+          <HelpTip text="Advanced controls for how QA checks run in this workspace: throughput, timeouts and rendering. Unset knobs use the platform default. Admin only." />
+        </h3>
+        <button
+          onClick={onSave}
+          disabled={save.isPending || !Object.keys(draft).length}
+          className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+        >
+          {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+          Save changes
+        </button>
+      </div>
+      <div className="space-y-4 p-4">
+        {groups.map((g) => (
+          <div key={g}>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">{g}</p>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {keys.filter((k) => QA_KNOB_META[k].group === g).map((k) => {
+                const meta = d.meta[k];
+                const changed = k in draft;
+                return (
+                  <div key={k} className="rounded-lg border border-line bg-field/40 p-2.5">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="flex items-center gap-1 text-xs font-medium text-ink">
+                        {QA_KNOB_META[k].label}
+                        <HelpTip text={QA_KNOB_META[k].help} />
+                      </span>
+                      {meta.overridden ? (
+                        <button onClick={() => resetOne(k)} title="Reset to platform default" className="text-[10px] font-semibold text-plum hover:underline">
+                          custom · reset
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-muted">default</span>
+                      )}
+                    </div>
+                    <div className="mt-1.5">
+                      {meta.kind === "bool" ? (
+                        <label className="flex items-center gap-2 text-sm text-ink">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(val(k))}
+                            onChange={(e) => setDraft((x) => ({ ...x, [k]: e.target.checked }))}
+                            className="h-4 w-4 rounded border-line"
+                          />
+                          {Boolean(val(k)) ? "Enabled" : "Disabled"}
+                        </label>
+                      ) : meta.kind === "enum" ? (
+                        <select
+                          value={String(val(k))}
+                          onChange={(e) => setDraft((x) => ({ ...x, [k]: e.target.value }))}
+                          className="h-8 w-full rounded-lg border border-line bg-panel px-2 text-sm"
+                        >
+                          {d.wait_until_choices.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      ) : (
+                        <input
+                          type="number"
+                          value={String(val(k) ?? "")}
+                          min={meta.min ?? undefined}
+                          max={meta.max ?? undefined}
+                          step={meta.kind === "float" ? 0.1 : 1}
+                          onChange={(e) => setDraft((x) => ({ ...x, [k]: e.target.value }))}
+                          className={clsx("h-8 w-full rounded-lg border bg-panel px-2 text-sm", changed ? "border-ocean" : "border-line")}
+                        />
+                      )}
+                    </div>
+                    <div className="mt-1 text-[10px] text-muted">
+                      default {String(meta.default)}
+                      {meta.min != null ? ` · ${meta.min}–${meta.max}` : ""}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function SettingsDesk({
   token,
   projectId,
@@ -10960,6 +11243,7 @@ function SettingsDesk({
     <section className="space-y-5">
       <BrandingCard token={token} projectId={projectId} onNotice={onNotice} />
       <LinkTypesCard token={token} onNotice={onNotice} />
+      <QaSettingsCard token={token} onNotice={onNotice} />
       {!projectId ? (
         <div className="rounded-xl border border-line bg-panel shadow-card">
           <Empty label="Select a project (top‑left) to manage its main domains and QA policy." />
