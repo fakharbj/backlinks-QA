@@ -305,6 +305,82 @@ async def stage_domain_import(
     return batch
 
 
+async def stage_competitor_domains(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    project_id: uuid.UUID,
+    domains: list[str],
+    label: str,
+    extra_log: str | None = None,
+) -> Batch | None:
+    """Stage a competitor upload's registrable domains as a ``competitor_import``
+    review batch (one ``domain`` item each), so the Batch Details view shows the
+    list, supports DA/PA/AS/Spam checks, and can approve the worthwhile ones into
+    the Source Domains catalog (origin='competitor'). Presence = new vs already in
+    the catalog. Fail-open: returns None on any error (never blocks the upload)."""
+    uniq = sorted({(d or "").strip().lower() for d in domains if d and d.strip()})
+    if not uniq:
+        return None
+    try:
+        batch = Batch(
+            workspace_id=ctx.workspace_id,
+            kind="competitor_import",
+            status="review",
+            project_id=project_id,
+            label=label,
+            started_by=ctx.user.id,
+            totals={"total": len(uniq), "done": 0},
+            counters={},
+            meta={},
+        )
+        db.add(batch)
+        await db.flush()
+
+        existing: set[str] = set()
+        for i in range(0, len(uniq), 500):
+            chunk = uniq[i : i + 500]
+            found = await db.execute(
+                select(SourceDomain.domain_key).where(
+                    SourceDomain.workspace_id == ctx.workspace_id,
+                    SourceDomain.domain_key.in_(chunk),
+                )
+            )
+            existing.update(d for (d,) in found.all())
+
+        counts = {"new": 0, "existing": 0}
+        for domain in uniq:
+            presence = "existing" if domain in existing else "new"
+            counts[presence] += 1
+            db.add(
+                BatchItem(
+                    workspace_id=ctx.workspace_id,
+                    batch_id=batch.id,
+                    kind="domain",
+                    label=domain,
+                    key_hash=_sha(domain),
+                    presence=presence,
+                    state="pending",
+                    payload={},
+                )
+            )
+        batch.counters = counts
+        if extra_log:
+            db.add(_log(batch.id, extra_log))
+        db.add(
+            _log(
+                batch.id,
+                f"Staged {len(uniq)} competitor domain(s) for review — {counts['new']} not in "
+                f"your Source Domains catalog, {counts['existing']} already there. Check "
+                f"DA/PA/AS/Spam, then approve the ones worth keeping.",
+            )
+        )
+        await db.flush()
+        return batch
+    except Exception:  # noqa: BLE001 — staging is a bonus; never break the upload
+        return None
+
+
 # ── Reading items ────────────────────────────────────────────────────────────
 
 
@@ -621,7 +697,11 @@ async def approve_items(
             from app.workers.dispatch import enqueue_backlinks
 
             enqueue_backlinks(new_ids)
-    else:  # domain_import
+    else:  # domain_import / competitor_import
+        # Competitor-promoted domains carry origin='competitor' (imported-list ones
+        # stay 'imported'); the recompute orphan-sweep preserves both, so a curated
+        # catalog row survives even with zero of our own backlinks on it.
+        promote_origin = "competitor" if batch.kind == "competitor_import" else "imported"
         inserted = 0
         for it in items:
             m = it.payload.get("metrics") or {}
@@ -629,7 +709,7 @@ async def approve_items(
                 "workspace_id": ctx.workspace_id,
                 "domain_key": it.label,
                 "grouping": "registrable",
-                "origin": "imported",
+                "origin": promote_origin,
                 "backlink_count": 0, "indexed_count": 0, "not_indexed_count": 0,
                 "uncertain_count": 0, "unchecked_count": 0, "dofollow_count": 0,
                 "nofollow_count": 0, "duplicate_count": 0, "project_count": 0,

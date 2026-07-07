@@ -240,24 +240,22 @@ async def ingest(
     sheet.domain_count = counts["domains"]
     await db.flush()
 
-    # Operations trail with the CORRECT split (fail-open).
-    batch_id = await batch_service.start(
-        "competitor_import", ctx.workspace_id, project_id=project_id,
-        label=f"Competitor upload — {display_name}", started_by=ctx.user.id, total=len(parsed),
-    )
-    await batch_service.update(
-        batch_id,
-        totals={"total": len(parsed), "done": len(parsed), "ok": len(parsed)},
-        counters_inc={"new_links": new_links, "already_there": existing_links},
-    )
-    await batch_service.add_log(
-        batch_id,
+    # Stage the upload's domains as a competitor_import REVIEW batch so the Batch
+    # Details view shows the domain list, supports DA/PA/AS/Spam checks, and can
+    # approve the worthwhile ones into the Source Domains catalog (origin=competitor).
+    # Fail-open: a staging hiccup never blocks the upload itself.
+    from app.services import batch_review_service
+
+    upload_log = (
         f"“{display_name}”: {len(parsed)} links pasted — {new_links} NEW, "
         f"{existing_links} already uploaded before, across {len(upload_domains)} domain(s) "
         f"({sheet.new_domains} domain(s) first seen in this upload). "
-        f"Project now compares against {counts['new']} open opportunity domain(s).",
+        f"Project now compares against {counts['new']} open opportunity domain(s)."
     )
-    await batch_service.finish(batch_id)
+    await batch_review_service.stage_competitor_domains(
+        db, ctx, project_id=project_id, domains=list(upload_domains),
+        label=f"Competitor upload — {display_name}", extra_log=upload_log,
+    )
     return sheet
 
 

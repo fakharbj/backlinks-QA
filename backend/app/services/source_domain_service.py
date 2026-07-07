@@ -314,7 +314,7 @@ def _build_filters(
     clauses: list[ColumnElement] = [SourceDomain.workspace_id == ctx.workspace_id]
     if search and search.strip():
         clauses.append(SourceDomain.domain_key.ilike(f"%{search.strip()}%"))
-    if origin in ("derived", "imported"):
+    if origin in ("derived", "imported", "competitor"):
         clauses.append(SourceDomain.origin == origin)
 
     for param, (field, op) in _RANGE_PARAMS.items():
