@@ -89,17 +89,41 @@ def _coalesce(a: Any, b: Any) -> Any:
 
 # The comparable fields, in a stable display order. Each entry maps a logical
 # field name to a callable pulling its value from a member dict.
+def _eff_status(m: dict):
+    return m.get("override_status") or m.get("status")
+
+
+def _as_day(v):
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return v
+
+
+# Every comparable field, shown as its own row in the compare grid. Field KEYS
+# for target_url_normalized/anchor/rel/project_id/assigned_user_label/link_type
+# are load-bearing (see _SIMILARITY_WEIGHTS) — do not rename them.
 _MATRIX_FIELDS: tuple[tuple[str, Any], ...] = (
+    ("source_page_url", lambda m: m.get("source_page_url")),
     ("source_domain", lambda m: m.get("source_domain")),
     ("target_url_normalized", lambda m: m.get("target_url_normalized")),
     ("target_domain", lambda m: m.get("target_domain")),
     ("anchor", lambda m: _coalesce(m.get("current_anchor_text"), m.get("expected_anchor_text"))),
     ("rel", lambda m: _coalesce(m.get("current_rel"), m.get("expected_rel"))),
-    ("project_id", lambda m: str(m["project_id"]) if m.get("project_id") else None),
-    ("assigned_user_label", lambda m: m.get("assigned_user_label")),
     ("link_type", lambda m: m.get("link_type")),
+    ("assigned_user_label", lambda m: m.get("assigned_user_label")),
+    # value = friendly project name (fallback to id); same-project members still
+    # collapse to one distinct value, so similarity is unaffected.
+    ("project_id", lambda m: m.get("project_name") or (str(m["project_id"]) if m.get("project_id") else None)),
+    ("status", _eff_status),
+    ("score", lambda m: m.get("score")),
+    ("index_status", lambda m: m.get("index_status")),
+    ("duplicate_status", lambda m: m.get("duplicate_status")),
     ("placement_date", lambda m: m.get("placement_date").isoformat()
      if isinstance(m.get("placement_date"), (date, datetime)) else m.get("placement_date")),
+    ("created_at", lambda m: _as_day(m.get("created_at"))),
+    ("last_checked_at", lambda m: _as_day(m.get("last_checked_at"))),
 )
 
 

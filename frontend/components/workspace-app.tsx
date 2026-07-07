@@ -74,6 +74,7 @@ import {
   CompetitorSummary,
   ConflictAction,
   ConflictDetail,
+  ConflictFieldMatrixRow,
   ConflictGroup,
   ConflictSummary,
   Dashboard,
@@ -12108,6 +12109,7 @@ function ConflictComparisonModal({
 }) {
   const queryClient = useQueryClient();
   const [reassignTo, setReassignTo] = useState("");
+  const [diffOnly, setDiffOnly] = useState(false);
 
   const detail = useQuery({
     queryKey: ["conflict-detail", token, conflictId],
@@ -12256,67 +12258,106 @@ function ConflictComparisonModal({
               </div>
             </div>
 
-            {/* Side-by-side comparison: one column per member, one row per field */}
-            <div className="overflow-x-auto rounded-xl border border-line">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-line bg-field">
-                    <th className="sticky left-0 z-10 bg-field px-3 py-2 text-left text-xs font-semibold uppercase text-muted">Field</th>
-                    {members.map((m) => (
-                      <th key={m.backlink_id} className="px-3 py-2 text-left align-top">
-                        <div className="flex items-center gap-1.5">
-                          {d.suggested_keep === m.backlink_id ? (
-                            <span title="Suggested keep — the best record to retain">
-                              <Star className="h-3.5 w-3.5 fill-ember text-ember" />
-                            </span>
-                          ) : null}
-                          <span className="text-xs font-semibold text-ink">
-                            {m.assigned_user_label || m.project_name || "record"}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => {
-                            if (!window.confirm(`Keep this record and DELETE the other ${members.length - 1} in this group? This cannot be undone.`)) return;
-                            keepOne.mutate(m.backlink_id);
-                          }}
-                          className="mt-1.5 flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-danger transition hover:bg-danger/10"
-                        >
-                          <Trash2 className="h-3 w-3" /> Keep this one
-                        </button>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(d.field_matrix || []).map((row) => (
-                    <tr key={row.field} className="border-b border-line last:border-0">
-                      <td className="sticky left-0 z-10 bg-panel px-3 py-2 text-xs font-medium capitalize text-muted">
-                        {row.field.replaceAll("_", " ")}
-                      </td>
-                      {members.map((m, i) => {
-                        // Each member's actual value (aligned), not the distinct sample.
-                        const val = (row.cells || row.values || [])[i];
-                        const text = val == null || val === "" ? "—" : String(val);
-                        return (
-                          <td
-                            key={m.backlink_id}
-                            className={clsx(
-                              "px-3 py-2 align-top text-xs",
-                              row.all_same ? "text-muted" : "bg-ember/5 font-medium text-ink"
-                            )}
-                          >
-                            <span className="block max-w-[220px] truncate" title={text}>{text}</span>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                  {!(d.field_matrix || []).length ? (
-                    <tr><td colSpan={members.length + 1} className="p-4 text-center text-xs text-muted">No comparable fields.</td></tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
+            {/* Side-by-side comparison: one column per member, one row per field.
+                Fields where the records disagree are highlighted; each cell that
+                differs from the suggested-keep record gets a stronger tint. */}
+            {(() => {
+              const rows = d.field_matrix || [];
+              const diffCount = rows.filter((r) => !r.all_same).length;
+              const shownRows = diffOnly ? rows.filter((r) => !r.all_same) : rows;
+              const keepIdx = Math.max(0, members.findIndex((m) => m.backlink_id === d.suggested_keep));
+              const cellOf = (row: ConflictFieldMatrixRow, i: number) => (row.cells || row.values || [])[i];
+              return (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-muted">
+                      {members.length} record{members.length === 1 ? "" : "s"} ·{" "}
+                      <span className={diffCount ? "font-semibold text-ember" : "text-muted"}>
+                        {diffCount} field{diffCount === 1 ? "" : "s"} differ
+                      </span>
+                    </span>
+                    <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-muted">
+                      <input type="checkbox" checked={diffOnly} onChange={(e) => setDiffOnly(e.target.checked)}
+                        className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]" />
+                      Show differences only
+                    </label>
+                    <span className="inline-flex items-center gap-1 text-muted">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm bg-ember/25" /> differs from ★ keep
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-line">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-line bg-field">
+                          <th className="sticky left-0 z-10 bg-field px-3 py-2 text-left text-xs font-semibold uppercase text-muted">Field</th>
+                          {members.map((m) => (
+                            <th key={m.backlink_id}
+                              className={clsx("px-3 py-2 text-left align-top", d.suggested_keep === m.backlink_id && "bg-ember/10")}>
+                              <div className="flex items-center gap-1.5">
+                                {d.suggested_keep === m.backlink_id ? (
+                                  <span title="Suggested keep — the best record to retain">
+                                    <Star className="h-3.5 w-3.5 fill-ember text-ember" />
+                                  </span>
+                                ) : null}
+                                <span className="text-xs font-semibold text-ink">
+                                  {m.assigned_user_label || m.project_name || "record"}
+                                </span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  if (!window.confirm(`Keep this record and DELETE the other ${members.length - 1} in this group? This cannot be undone.`)) return;
+                                  keepOne.mutate(m.backlink_id);
+                                }}
+                                className="mt-1.5 flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-danger transition hover:bg-danger/10"
+                              >
+                                <Trash2 className="h-3 w-3" /> Keep this one
+                              </button>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shownRows.map((row) => {
+                          const keepVal = cellOf(row, keepIdx);
+                          return (
+                            <tr key={row.field} className="border-b border-line last:border-0">
+                              <td className="sticky left-0 z-10 bg-panel px-3 py-2 text-xs font-medium text-muted">
+                                <span className="flex items-center gap-1">
+                                  {compareFieldLabel(row.field)}
+                                  {!row.all_same ? <span className="text-[10px] font-semibold uppercase text-ember">differs</span> : null}
+                                </span>
+                              </td>
+                              {members.map((m, i) => {
+                                const val = cellOf(row, i);
+                                const text = val == null || val === "" ? "—" : String(val);
+                                const differs = !row.all_same && String(val ?? "") !== String(keepVal ?? "");
+                                return (
+                                  <td
+                                    key={m.backlink_id}
+                                    className={clsx(
+                                      "px-3 py-2 align-top text-xs",
+                                      differs ? "bg-ember/20 font-semibold text-ink" : row.all_same ? "text-muted" : "text-ink"
+                                    )}
+                                  >
+                                    <span className="block max-w-[240px] truncate" title={text}>{text}</span>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                        {!rows.length ? (
+                          <tr><td colSpan={members.length + 1} className="p-4 text-center text-xs text-muted">No comparable fields.</td></tr>
+                        ) : null}
+                        {rows.length && !shownRows.length ? (
+                          <tr><td colSpan={members.length + 1} className="p-4 text-center text-xs text-muted">All fields match across these records.</td></tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
             {extraMembers > 0 ? (
               <p className="text-xs text-muted">+ {extraMembers} more record(s) in this group (not shown — comparison is capped at 10 columns).</p>
             ) : null}
@@ -12558,6 +12599,27 @@ function issueDisplay(label: string | null | undefined): string {
   if (!label) return "-";
   return ISSUE_DISPLAY[label] || label.replaceAll("_", " ").toLowerCase();
 }
+
+// Human labels for the duplicate compare grid's field rows.
+const COMPARE_FIELD_LABELS: Record<string, string> = {
+  source_page_url: "Source page",
+  source_domain: "Source domain",
+  target_url_normalized: "Target URL",
+  target_domain: "Target domain",
+  anchor: "Anchor text",
+  rel: "Rel",
+  link_type: "Link type",
+  assigned_user_label: "User",
+  project_id: "Project",
+  status: "Status",
+  score: "Score",
+  index_status: "Index status",
+  duplicate_status: "Duplicate status",
+  placement_date: "Placement date (created)",
+  created_at: "First seen",
+  last_checked_at: "Last checked"
+};
+const compareFieldLabel = (f: string) => COMPARE_FIELD_LABELS[f] || f.replaceAll("_", " ");
 
 function IssueWord({ label, count }: { label: string | null; count: number }) {
   if (!label) return <span>{count ? `${count} issues` : "-"}</span>;
