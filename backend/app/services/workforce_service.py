@@ -517,13 +517,21 @@ async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
     return sorted(labels, key=str.lower)
 
 
-async def all_people(db: AsyncSession, ctx: AuthContext) -> list[dict]:
-    """Everyone with any history — for the User Dashboards grid (a VIEW, not a
-    planning picker), so laid-off people with real work still appear. Union of
-    employee-catalog labels (active OR inactive), task assignments and any
-    backlink assignee; each flagged ``active`` (False = laid off). TeamLead-scoped."""
+async def all_people(
+    db: AsyncSession, ctx: AuthContext, *, project_id: uuid.UUID | None = None
+) -> list[dict]:
+    """Everyone to show in the User Dashboards grid (a VIEW, not a planning picker),
+    so laid-off people with real work still appear. Each flagged ``active``
+    (False = laid off). TeamLead-scoped.
+
+    * Workspace scope (``project_id=None``): employee-catalog labels (active OR
+      inactive) ∪ task assignments ∪ any backlink assignee.
+    * Project scope: people who WORKED on the project (its backlink assignees +
+      task assignments) ∪ people ASSIGNED to it (project_members → their sheet
+      label) even if they never logged a link there."""
     from app.models.backlink import BacklinkRecord
     from app.models.employee import UserEmployeeMapping
+    from app.models.project import ProjectMember
 
     inactive = {
         (lbl or "").strip()
@@ -537,19 +545,42 @@ async def all_people(db: AsyncSession, ctx: AuthContext) -> list[dict]:
         ).scalars().all()
         if lbl and lbl.strip()
     }
+
     labels: set[str] = set()
-    for stmt in (
-        select(UserEmployeeMapping.sheet_user_label).where(
-            UserEmployeeMapping.workspace_id == ctx.workspace_id
-        ),
-        select(TaskAssignment.user_label).where(
-            TaskAssignment.workspace_id == ctx.workspace_id
-        ).distinct(),
-        select(BacklinkRecord.assigned_user_label).where(
-            BacklinkRecord.workspace_id == ctx.workspace_id
-        ).distinct(),
-    ):
+    if project_id is not None:
+        ctx.assert_project(project_id)
+        stmts = [
+            select(BacklinkRecord.assigned_user_label).where(
+                BacklinkRecord.workspace_id == ctx.workspace_id,
+                BacklinkRecord.project_id == project_id,
+            ).distinct(),
+            select(TaskAssignment.user_label).where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.project_id == project_id,
+            ).distinct(),
+            # Assigned to the project (member) but maybe never logged a link there.
+            select(UserEmployeeMapping.sheet_user_label)
+            .join(ProjectMember, ProjectMember.user_id == UserEmployeeMapping.user_id)
+            .where(
+                UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                ProjectMember.project_id == project_id,
+            ),
+        ]
+    else:
+        stmts = [
+            select(UserEmployeeMapping.sheet_user_label).where(
+                UserEmployeeMapping.workspace_id == ctx.workspace_id
+            ),
+            select(TaskAssignment.user_label).where(
+                TaskAssignment.workspace_id == ctx.workspace_id
+            ).distinct(),
+            select(BacklinkRecord.assigned_user_label).where(
+                BacklinkRecord.workspace_id == ctx.workspace_id
+            ).distinct(),
+        ]
+    for stmt in stmts:
         labels |= {lbl.strip() for lbl in (await db.execute(stmt)).scalars().all() if lbl and lbl.strip()}
+
     scope = await visible_labels(db, ctx)
     if scope is not None:
         labels &= scope

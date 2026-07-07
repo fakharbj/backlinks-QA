@@ -106,10 +106,13 @@ async def known_labels(ctx: AuthCtx, db: ReadSession) -> list[str]:
 
 
 @router.get("/people")
-async def all_people(ctx: AuthCtx, db: ReadSession) -> list[dict]:
-    """Everyone with any history (incl. laid-off), each flagged active — for the
-    User Dashboards VIEW grid, so people with real work always appear."""
-    return await workforce_service.all_people(db, ctx)
+async def all_people(
+    ctx: AuthCtx, db: ReadSession, project_id: uuid.UUID | None = None
+) -> list[dict]:
+    """Everyone to show in the User Dashboards grid (incl. laid-off), each flagged
+    active. In project scope: people who worked on it PLUS people assigned to it
+    (even if they never logged a link there)."""
+    return await workforce_service.all_people(db, ctx, project_id=project_id)
 
 
 # ── Weekly templates ("set the week up once") ────────────────────────────────

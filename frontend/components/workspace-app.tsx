@@ -4588,7 +4588,9 @@ function UserDashboard({
   onPlanWork?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [days, setDays] = useState("30");
+  // Default to All time — a person's dashboard should show their whole record,
+  // not just the last month, until the viewer narrows the timeframe.
+  const [days, setDays] = useState("3650");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [projFilter, setProjFilter] = useState(initialProjectId || "");
@@ -5651,9 +5653,12 @@ function UserDashboardsDesk({
   // The grid + finder list EVERYONE with history (incl. laid-off) — this is a
   // view, not a planning picker, so a laid-off person's work still shows.
   const people = useQuery({
-    queryKey: ["workforce-people", token],
+    queryKey: ["workforce-people", token, projectId],
     enabled: Boolean(token),
-    queryFn: () => api<Array<{ user_label: string; active: boolean }>>("/workforce/people", { token })
+    queryFn: () => api<Array<{ user_label: string; active: boolean }>>(
+      `/workforce/people${projectId ? `?project_id=${projectId}` : ""}`,
+      { token }
+    )
   });
 
   type DeskUser = {
@@ -5665,7 +5670,8 @@ function UserDashboardsDesk({
     queryKey: ["user-dashboards-team", token, projectId],
     enabled: Boolean(token) && !person,
     queryFn: () => {
-      const p = new URLSearchParams({ days: "30", compare: "false" });
+      // All-time counts for the cards (the grid shows total links per person).
+      const p = new URLSearchParams({ days: "3650", compare: "false" });
       if (projectId) p.set("project_id", projectId);
       return api<{ users: DeskUser[] }>(`/performance/users?${p.toString()}`, { token });
     }
@@ -5753,7 +5759,7 @@ function UserDashboardsDesk({
                       <span className="shrink-0 rounded-full bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted" title="Laid off — history kept, hidden from planning pickers">laid off</span>
                     ) : null}
                   </span>
-                  <span className="text-xs text-muted">{u.links} links · last 30 days</span>
+                  <span className="text-xs text-muted">{u.links} links · all time</span>
                   {rate != null ? (
                     <span className={clsx("w-fit rounded px-2 py-0.5 text-[11px] font-semibold",
                       rate >= 80 ? "bg-ocean/10 text-ocean" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
