@@ -8,13 +8,16 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  Copy,
   Download,
   Eye,
   EyeOff,
   FileSpreadsheet,
   Filter,
   Gauge,
+  GitCompare,
   Globe,
   History,
   Info,
@@ -37,6 +40,7 @@ import {
   Upload,
   UserPlus,
   Users,
+  X,
   XCircle
 } from "lucide-react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -68,6 +72,8 @@ import {
   CompetitorParent,
   CompetitorSheet,
   CompetitorSummary,
+  ConflictAction,
+  ConflictDetail,
   ConflictGroup,
   ConflictSummary,
   Dashboard,
@@ -10964,9 +10970,32 @@ function ConflictsDesk({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<string>("open");
-  // "New" = the group was first detected in the last 7 days (vs previously known).
-  const [ageFilter, setAgeFilter] = useState<"" | "new" | "old">("");
+  // ── Filters (whitelisted; all drive the list query) ──
+  const [scopeF, setScopeF] = useState<string[]>([]);
+  const [statusF, setStatusF] = useState<string[]>(["open"]);
+  const [minMembers, setMinMembers] = useState<string>("");
+  const [minSim, setMinSim] = useState<string>("");
+  const [targetDomain, setTargetDomain] = useState<string>("");
+  const [search, setSearch] = useState<string>("");
+  const [detectedFrom, setDetectedFrom] = useState<string>("");
+  const [detectedTo, setDetectedTo] = useState<string>("");
+  // Comparison view + bulk selection.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+
+  const query = useMemo(() => {
+    const p = new URLSearchParams();
+    scopeF.forEach((v) => p.append("scope", v));
+    statusF.forEach((v) => p.append("status", v));
+    if (minMembers.trim()) p.set("min_members", minMembers.trim());
+    if (minSim.trim()) p.set("min_similarity", minSim.trim());
+    if (targetDomain.trim()) p.set("target_domain", targetDomain.trim());
+    if (search.trim()) p.set("search", search.trim());
+    if (detectedFrom) p.set("detected_from", detectedFrom);
+    if (detectedTo) p.set("detected_to", detectedTo);
+    p.set("limit", "200");
+    return p.toString();
+  }, [scopeF, statusF, minMembers, minSim, targetDomain, search, detectedFrom, detectedTo]);
 
   const summary = useQuery({
     queryKey: ["conflict-summary", token],
@@ -10974,29 +11003,20 @@ function ConflictsDesk({
     queryFn: () => api<ConflictSummary>("/conflicts/summary", { token })
   });
   const conflictsRaw = useQuery({
-    queryKey: ["conflicts", token, statusFilter],
+    queryKey: ["conflicts", token, query],
     enabled: Boolean(token),
     queryFn: () =>
-      api<ConflictGroup[]>(
-        `/conflicts${statusFilter ? `?status=${statusFilter}` : ""}`,
+      api<{ items?: ConflictGroup[]; list?: ConflictGroup[]; total: number }>(
+        `/conflicts?${query}`,
         { token }
       )
   });
-  const weekAgo = Date.now() - 7 * 86400000;
-  const isNew = (g: ConflictGroup) => {
-    const t = g.detected_at || g.created_at;
-    return Boolean(t) && new Date(t as string).getTime() >= weekAgo;
-  };
-  const conflicts = {
-    ...conflictsRaw,
-    data: (conflictsRaw.data || []).filter((g) =>
-      ageFilter === "new" ? isNew(g) : ageFilter === "old" ? !isNew(g) : true
-    )
-  };
+  const groups = conflictsRaw.data?.items || conflictsRaw.data?.list || [];
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["conflicts"] });
     queryClient.invalidateQueries({ queryKey: ["conflict-summary"] });
+    queryClient.invalidateQueries({ queryKey: ["conflict-detail"] });
   };
   const rebuild = useMutation({
     mutationFn: () => api<ConflictSummary>("/conflicts/rebuild", { method: "POST", token }),
@@ -11019,26 +11039,60 @@ function ConflictsDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const bulk = useMutation({
+    mutationFn: (v: { ids: string[]; action: string }) =>
+      api<{ updated: number }>("/conflicts/bulk", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ conflict_ids: v.ids, action: v.action })
+      }),
+    onSuccess: (r, v) => {
+      onNotice(`${v.action} applied to ${r.updated} group(s)`);
+      setSelected([]);
+      refresh();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const toggleSel = (id: string) =>
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const allSelected = groups.length > 0 && selected.length === groups.length;
 
   const s = summary.data;
+  const scopeOpts = [
+    { value: "same_project", label: "Same project" },
+    { value: "cross_project", label: "Across projects" },
+    { value: "cross_user", label: "Across users" }
+  ];
+  const statusOpts = [
+    { value: "open", label: "Open" },
+    { value: "acknowledged", label: "Acknowledged" },
+    { value: "resolved", label: "Resolved" },
+    { value: "ignored", label: "Ignored" }
+  ];
+
   return (
     <section className="space-y-4">
       <div>
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
           Duplicates
-          <HelpTip text="Two or more records pointing at the same page. 'Same project' = the page appears twice in one project (remove the extras). 'Used by another project' or 'Added by another user' = coordinate so you don't pay twice for the same placement. 'New (7 days)' shows groups found recently; 'Previously found' shows older, already-known ones." />
+          <HelpTip text="Two or more records pointing at the same page. 'Same project' = the page appears twice in one project (remove the extras). 'Across projects' or 'Across users' = coordinate so you don't pay twice for the same placement. Open a group to compare the records field-by-field and keep the best one." />
         </h2>
-        <p className="text-sm text-muted">Every group shows why it's a duplicate and where the original lives.</p>
+        <p className="text-sm text-muted">Every group shows why it's a duplicate, how similar the records are, and where the original lives.</p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+
+      {/* ── KPI row ── */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Metric label="Duplicate groups" value={s?.total ?? 0} icon={Layers} tone="ink"
           help="Each group = one page URL that appears in more than one record." />
         <Metric label="Open" value={s?.open ?? 0} icon={AlertTriangle} tone="ember"
           help="Groups nobody has dealt with yet — review these first." />
-        <Metric label="Cross-project" value={s?.by_scope?.cross_project ?? 0} icon={Link2} tone="plum"
-          help="The same page is used by two different projects — you may be paying twice for one placement." />
         <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean"
           help="Groups someone reviewed and closed." />
+        <Metric label="Duplicate links" value={s?.total_duplicate_links ?? 0} icon={Copy} tone="plum"
+          help="Total redundant records = sum of (records in group − 1). Remove these to de-duplicate." />
+        <Metric label="Avg similarity" value={s?.avg_similarity != null ? `${Math.round(s.avg_similarity)}%` : "—"} icon={Gauge} tone="ink"
+          help="Average how alike the records inside each group are. 100% = identical rows." />
       </div>
 
       {(s?.weekly || []).length ? (
@@ -11056,54 +11110,106 @@ function ConflictsDesk({
         </section>
       ) : null}
 
+      {/* ── Filter bar ── */}
+      <section className="rounded-xl border border-line bg-panel p-3 shadow-card">
+        <div className="flex flex-wrap items-center gap-2">
+          <FilterMultiSelect label="Scope" options={scopeOpts} selected={scopeF} onChange={setScopeF} />
+          <FilterMultiSelect label="Status" options={statusOpts} selected={statusF} onChange={setStatusF} />
+          <input
+            type="number"
+            min={2}
+            value={minMembers}
+            onChange={(e) => setMinMembers(e.target.value)}
+            placeholder="Min records"
+            className="h-9 w-28 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+          />
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={minSim}
+            onChange={(e) => setMinSim(e.target.value)}
+            placeholder="Min sim %"
+            className="h-9 w-28 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+          />
+          <input
+            value={targetDomain}
+            onChange={(e) => setTargetDomain(e.target.value)}
+            placeholder="Target domain"
+            className="h-9 w-40 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+          />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search page / URL"
+            className="h-9 w-52 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+          />
+          <label className="flex items-center gap-1 text-xs text-muted">
+            From
+            <input type="date" value={detectedFrom} onChange={(e) => setDetectedFrom(e.target.value)}
+              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm focus:border-ocean focus:outline-none" />
+          </label>
+          <label className="flex items-center gap-1 text-xs text-muted">
+            To
+            <input type="date" value={detectedTo} onChange={(e) => setDetectedTo(e.target.value)}
+              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm focus:border-ocean focus:outline-none" />
+          </label>
+          {(scopeF.length || statusF.join() !== "open" || minMembers || minSim || targetDomain || search || detectedFrom || detectedTo) ? (
+            <button
+              onClick={() => {
+                setScopeF([]); setStatusF(["open"]); setMinMembers(""); setMinSim("");
+                setTargetDomain(""); setSearch(""); setDetectedFrom(""); setDetectedTo("");
+              }}
+              className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-muted transition hover:text-ink"
+            >
+              Reset
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      {/* ── Group list ── */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-ink">Duplicate &amp; conflict groups</h2>
-            <p className="mt-0.5 text-xs text-muted">
-              Backlinks pointing at the same page (matched by URL fingerprint), grouped for review.
-            </p>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-muted">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={() => setSelected(allSelected ? [] : groups.map((g) => g.id))}
+                className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+              />
+              {selected.length ? `${selected.length} selected` : "Select all"}
+            </label>
+            <span className="text-xs text-muted">{groups.length} group(s)</span>
           </div>
-          <div className="flex items-center gap-2">
-            <select
-              className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-            >
-              <option value="open">Open</option>
-              <option value="resolved">Resolved</option>
-              <option value="ignored">Ignored</option>
-              <option value="">All</option>
-            </select>
-            <button
-              onClick={() => setAgeFilter(ageFilter === "new" ? "" : "new")}
-              title="Duplicate groups first found in the last 7 days"
-              className={clsx(
-                "h-8 rounded-full border px-3 text-xs font-medium transition",
-                ageFilter === "new" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
-              )}
-            >
-              New (7 days)
-            </button>
-            <button
-              onClick={() => setAgeFilter(ageFilter === "old" ? "" : "old")}
-              title="Duplicate groups already known before the last 7 days"
-              className={clsx(
-                "h-8 rounded-full border px-3 text-xs font-medium transition",
-                ageFilter === "old" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
-              )}
-            >
-              Previously found
-            </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {selected.length ? (
+              <div className="flex items-center gap-1">
+                {(["resolve", "acknowledge", "ignore", "reopen"] as const).map((a) => (
+                  <button
+                    key={a}
+                    onClick={() => {
+                      if ((a === "ignore" || a === "resolve") && !window.confirm(`${a === "ignore" ? "Ignore" : "Resolve"} ${selected.length} group(s)?`)) return;
+                      bulk.mutate({ ids: selected, action: a });
+                    }}
+                    className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field"
+                  >
+                    {a[0].toUpperCase() + a.slice(1)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <ExportButton
-              disabled={!(conflicts.data || []).length}
+              disabled={!groups.length}
               onClick={() =>
                 downloadCsv(
                   "duplicate-groups.csv",
-                  ["Page URL", "Type", "Status", "Links in group", "First found"],
-                  (conflicts.data || []).map((g) => [
-                    g.canonical_url, g.scope, g.resolution_status, g.member_count,
-                    g.detected_at || g.created_at
+                  ["Page URL", "Scope", "Reason", "Similarity", "Records", "Status", "First found"],
+                  groups.map((g) => [
+                    g.canonical_url, g.scope, g.reason || "",
+                    g.similarity != null ? `${g.similarity}%` : "",
+                    g.member_count, g.resolution_status, g.detected_at || g.created_at
                   ])
                 )
               }
@@ -11113,112 +11219,369 @@ function ConflictsDesk({
               className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
             >
               {rebuild.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Scan for duplicates
+              Rebuild
             </button>
           </div>
         </div>
         <div className="divide-y divide-line">
-          {(conflicts.data || []).map((conflict) => (
+          {groups.map((g) => (
             <ConflictRow
-              key={conflict.id}
-              conflict={conflict}
-              onResolve={(status) => resolve.mutate({ id: conflict.id, status })}
+              key={g.id}
+              conflict={g}
+              selected={selected.includes(g.id)}
+              onToggleSelect={() => toggleSel(g.id)}
+              onOpen={() => setOpenId(g.id)}
             />
           ))}
-          {!conflicts.isLoading && !conflicts.data?.length ? (
-            <Empty label="No duplicate groups — every backlink is unique by fingerprint." />
+          {!conflictsRaw.isLoading && !groups.length ? (
+            <Empty label="No duplicate groups match these filters." />
           ) : null}
         </div>
       </section>
+
+      {openId ? (
+        <ConflictComparisonModal
+          conflictId={openId}
+          token={token}
+          onClose={() => setOpenId(null)}
+          onNotice={onNotice}
+          onChanged={refresh}
+        />
+      ) : null}
     </section>
+  );
+}
+
+const CONFLICT_SCOPE_LABEL: Record<string, string> = {
+  same_project: "Same project",
+  cross_project: "Across projects",
+  cross_user: "Across users"
+};
+
+function ScopeChip({ scope }: { scope: string }) {
+  const tone =
+    scope === "cross_project"
+      ? "border-plum/30 bg-plum/10 text-plum"
+      : scope === "cross_user"
+        ? "border-ember/30 bg-ember/10 text-ember"
+        : "border-line bg-field text-muted";
+  return (
+    <span className={clsx("rounded border px-2 py-0.5 text-[11px] font-semibold", tone)}>
+      {CONFLICT_SCOPE_LABEL[scope] || scope.replaceAll("_", " ")}
+    </span>
+  );
+}
+
+// Similarity meter — how alike the records in a group are (0-100).
+function SimilarityMeter({ value }: { value: number | null | undefined }) {
+  if (value == null) return <span className="text-xs text-muted">—</span>;
+  const v = Math.max(0, Math.min(100, value));
+  const cssVar = v >= 90 ? "--danger" : v >= 60 ? "--ember" : "--ocean";
+  return (
+    <span className="inline-flex items-center gap-1.5" title={`${v}% similar`}>
+      <span className="h-1.5 w-16 overflow-hidden rounded-full bg-field">
+        <span className="block h-full rounded-full" style={{ width: `${v}%`, background: `rgb(var(${cssVar}))` }} />
+      </span>
+      <span className="text-[11px] font-semibold text-ink">{v}%</span>
+    </span>
   );
 }
 
 function ConflictRow({
   conflict,
-  onResolve
+  selected,
+  onToggleSelect,
+  onOpen
 }: {
   conflict: ConflictGroup;
-  onResolve: (status: string) => void;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onOpen: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div className="p-4">
-      <div className="flex items-start justify-between gap-3">
-        <button onClick={() => setOpen(!open)} className="flex min-w-0 items-start gap-2 text-left">
-          {open ? (
-            <ChevronUp className="mt-1 h-4 w-4 shrink-0 text-muted" />
-          ) : (
-            <ChevronDown className="mt-1 h-4 w-4 shrink-0 text-muted" />
-          )}
+    <div className={clsx("flex items-center gap-3 p-4 transition hover:bg-field/40", selected && "bg-ocean/5")}>
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={onToggleSelect}
+        onClick={(e) => e.stopPropagation()}
+        className="h-4 w-4 shrink-0 accent-[rgb(var(--ocean))]"
+      />
+      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+        <GitCompare className="h-4 w-4 shrink-0 text-muted" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium text-ink">
+            {conflict.canonical_url || "(unknown URL)"}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+            <span className="rounded border border-line bg-field px-2 py-0.5 font-semibold">
+              {conflict.member_count} records
+            </span>
+            <ScopeChip scope={conflict.scope} />
+            {conflict.reason ? <span className="italic">{conflict.reason}</span> : null}
+          </div>
+        </div>
+        <div className="hidden shrink-0 sm:block">
+          <SimilarityMeter value={conflict.similarity} />
+        </div>
+        <span className="hidden shrink-0 text-xs text-muted md:block">
+          {formatDate(conflict.detected_at || conflict.created_at)}
+        </span>
+        <div className="shrink-0">
+          <Status value={conflict.resolution_status} />
+        </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted" />
+      </button>
+    </div>
+  );
+}
+
+// ── Comparison view: side-by-side field matrix + per-group actions ──
+function ConflictComparisonModal({
+  conflictId,
+  token,
+  onClose,
+  onNotice,
+  onChanged
+}: {
+  conflictId: string;
+  token: string | null;
+  onClose: () => void;
+  onNotice: (text: string) => void;
+  onChanged: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [reassignTo, setReassignTo] = useState("");
+
+  const detail = useQuery({
+    queryKey: ["conflict-detail", token, conflictId],
+    enabled: Boolean(token),
+    queryFn: () => api<ConflictDetail>(`/conflicts/${conflictId}`, { token })
+  });
+  const labels = useQuery({
+    queryKey: ["workforce-labels", token],
+    enabled: Boolean(token),
+    queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+
+  const afterAction = (msg: string) => {
+    onNotice(msg);
+    queryClient.invalidateQueries({ queryKey: ["conflict-detail", token, conflictId] });
+    onChanged();
+  };
+
+  const keepOne = useMutation({
+    mutationFn: (backlinkId: string) =>
+      api<{ deleted_count: number }>(`/conflicts/${conflictId}/keep-one`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ keep_backlink_id: backlinkId })
+      }),
+    onSuccess: (r) => {
+      afterAction(`Kept one record, removed ${r.deleted_count} duplicate(s)`);
+      onClose();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const reassign = useMutation({
+    mutationFn: (label: string) =>
+      api<{ changed: number; to_user_label: string }>(`/conflicts/${conflictId}/reassign`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ to_user_label: label })
+      }),
+    onSuccess: (r) => afterAction(`Reassigned ${r.changed} record(s) to ${r.to_user_label}`),
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const resolve = useMutation({
+    mutationFn: (status: string) =>
+      api<ConflictSummary>(`/conflicts/${conflictId}/resolve`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ resolution_status: status })
+      }),
+    onSuccess: (_r, status) => afterAction(`Group marked ${status}`),
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const d = detail.data;
+  const members = (d?.members || []).slice(0, 10);
+  const extraMembers = (d?.total_members || d?.member_count || 0) - members.length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm">
+      <div className="relative my-6 w-full max-w-6xl rounded-2xl border border-line bg-panel shadow-pop">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
           <div className="min-w-0">
-            <div className="truncate font-medium text-ink">
-              {conflict.canonical_url || "(unknown URL)"}
+            <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
+              <GitCompare className="h-4 w-4 text-ocean" /> Compare duplicate records
+            </h2>
+            <div className="mt-1 truncate text-sm text-muted" title={d?.canonical_url || ""}>
+              {d?.canonical_url || "(unknown URL)"}
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
-              <span className="rounded border border-line bg-field px-2 py-0.5 font-semibold">
-                {conflict.member_count} backlinks
-              </span>
-              <span className="rounded border border-plum/30 bg-plum/10 px-2 py-0.5 font-semibold text-plum">
-                {conflict.scope.replaceAll("_", " ")}
-              </span>
-              {conflict.fingerprint ? (
-                <span className="font-mono text-[11px]">{conflict.fingerprint.slice(0, 12)}…</span>
-              ) : null}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              {d ? <ScopeChip scope={d.scope} /> : null}
+              {d ? <SimilarityMeter value={d.similarity} /> : null}
+              {d?.reason ? <span className="italic text-muted">{d.reason}</span> : null}
+              {d ? <Status value={d.resolution_status} /> : null}
             </div>
           </div>
-        </button>
-        <div className="flex shrink-0 items-center gap-2">
-          <Status value={conflict.resolution_status} />
-          {conflict.resolution_status !== "resolved" ? (
-            <button
-              onClick={() => onResolve("resolved")}
-              className="rounded border border-line bg-panel px-2 py-1 text-xs font-medium text-ink transition hover:bg-field"
-            >
-              Resolve
-            </button>
-          ) : (
-            <button
-              onClick={() => onResolve("open")}
-              className="rounded border border-line bg-panel px-2 py-1 text-xs font-medium text-muted transition hover:bg-field"
-            >
-              Reopen
-            </button>
-          )}
+          <button onClick={onClose} className="shrink-0 rounded-lg border border-line p-1.5 text-muted transition hover:text-ink">
+            <X className="h-4 w-4" />
+          </button>
         </div>
+
+        {detail.isLoading ? (
+          <div className="p-10 text-center text-sm text-muted">Loading comparison…</div>
+        ) : !d ? (
+          <div className="p-10"><Empty label="Could not load this group." /></div>
+        ) : (
+          <div className="space-y-4 p-5">
+            {/* Group-level actions */}
+            <div className="flex flex-wrap items-center gap-2">
+              <ExportButton
+                onClick={() =>
+                  downloadCsv(
+                    `conflict-${conflictId}-members.csv`,
+                    ["Backlink", "Project", "User", "Target", "Anchor", "Rel", "Status", "Index", "Score", "Placed", "Created"],
+                    members.map((m) => [
+                      m.source_page_url, m.project_name, m.assigned_user_label, m.target_url,
+                      m.current_anchor_text, m.current_rel, m.status, m.index_status, m.score,
+                      m.placement_date, m.created_at
+                    ])
+                  )
+                }
+              />
+              <div className="flex items-center gap-1.5">
+                <SearchSelect
+                  value={reassignTo}
+                  onChange={setReassignTo}
+                  options={(labels.data || []).map((l) => ({ value: l }))}
+                  placeholder="Reassign all to…"
+                  allowCustom
+                  width="w-52"
+                />
+                <button
+                  disabled={!reassignTo || reassign.isPending}
+                  onClick={() => {
+                    if (!window.confirm(`Reassign every record in this group to "${reassignTo}"?`)) return;
+                    reassign.mutate(reassignTo);
+                  }}
+                  className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+                >
+                  Reassign
+                </button>
+              </div>
+              <div className="ml-auto flex items-center gap-1.5">
+                {d.resolution_status !== "acknowledged" ? (
+                  <button onClick={() => resolve.mutate("acknowledged")}
+                    className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field">
+                    Acknowledge
+                  </button>
+                ) : null}
+                {d.resolution_status !== "ignored" ? (
+                  <button onClick={() => { if (window.confirm("Ignore this group?")) resolve.mutate("ignored"); }}
+                    className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-muted transition hover:bg-field">
+                    Ignore
+                  </button>
+                ) : null}
+                {d.resolution_status !== "resolved" ? (
+                  <button onClick={() => resolve.mutate("resolved")}
+                    className="h-9 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+                    Resolve
+                  </button>
+                ) : (
+                  <button onClick={() => resolve.mutate("open")}
+                    className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-muted transition hover:bg-field">
+                    Reopen
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Side-by-side comparison: one column per member, one row per field */}
+            <div className="overflow-x-auto rounded-xl border border-line">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line bg-field">
+                    <th className="sticky left-0 z-10 bg-field px-3 py-2 text-left text-xs font-semibold uppercase text-muted">Field</th>
+                    {members.map((m) => (
+                      <th key={m.backlink_id} className="px-3 py-2 text-left align-top">
+                        <div className="flex items-center gap-1.5">
+                          {d.suggested_keep === m.backlink_id ? (
+                            <span title="Suggested keep — the best record to retain">
+                              <Star className="h-3.5 w-3.5 fill-ember text-ember" />
+                            </span>
+                          ) : null}
+                          <span className="text-xs font-semibold text-ink">
+                            {m.assigned_user_label || m.project_name || "record"}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (!window.confirm(`Keep this record and DELETE the other ${members.length - 1} in this group? This cannot be undone.`)) return;
+                            keepOne.mutate(m.backlink_id);
+                          }}
+                          className="mt-1.5 flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-danger transition hover:bg-danger/10"
+                        >
+                          <Trash2 className="h-3 w-3" /> Keep this one
+                        </button>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(d.field_matrix || []).map((row) => (
+                    <tr key={row.field} className="border-b border-line last:border-0">
+                      <td className="sticky left-0 z-10 bg-panel px-3 py-2 text-xs font-medium capitalize text-muted">
+                        {row.field.replaceAll("_", " ")}
+                      </td>
+                      {members.map((m, i) => {
+                        const val = (row.values || [])[i];
+                        const text = val == null || val === "" ? "—" : String(val);
+                        return (
+                          <td
+                            key={m.backlink_id}
+                            className={clsx(
+                              "px-3 py-2 align-top text-xs",
+                              row.all_same ? "text-muted" : "bg-ember/5 font-medium text-ink"
+                            )}
+                          >
+                            <span className="block max-w-[220px] truncate" title={text}>{text}</span>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                  {!(d.field_matrix || []).length ? (
+                    <tr><td colSpan={members.length + 1} className="p-4 text-center text-xs text-muted">No comparable fields.</td></tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            {extraMembers > 0 ? (
+              <p className="text-xs text-muted">+ {extraMembers} more record(s) in this group (not shown — comparison is capped at 10 columns).</p>
+            ) : null}
+
+            {/* Action history */}
+            {(d.actions || []).length ? (
+              <div className="rounded-xl border border-line bg-field/40 p-3">
+                <SectionTitle title="Action history" flush />
+                <ul className="mt-2 space-y-1 text-xs text-muted">
+                  {(d.actions || []).map((a: ConflictAction) => (
+                    <li key={a.id} className="flex items-center gap-2">
+                      <span className="font-medium text-ink">{a.action.replaceAll("_", " ")}</span>
+                      {a.note ? <span>· {a.note}</span> : null}
+                      <span className="ml-auto">{formatDate(a.created_at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
-      {open ? (
-        <div className="mt-3 overflow-x-auto rounded-md border border-line">
-          <table className="w-full text-sm">
-            <thead className="bg-field text-left text-xs uppercase text-muted">
-              <tr>
-                <Th>Project</Th>
-                <Th>Target</Th>
-                <Th>User</Th>
-                <Th>Type</Th>
-                <Th>Status</Th>
-                <Th>Score</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {conflict.members.map((m) => (
-                <tr key={m.backlink_id}>
-                  <Td>{m.project_name || "—"}</Td>
-                  <Td>
-                    <span className="block max-w-[280px] truncate" title={m.target_url}>
-                      {m.target_url}
-                    </span>
-                  </Td>
-                  <Td>{m.assigned_user_label || "—"}</Td>
-                  <Td>{m.link_type || "—"}</Td>
-                  <Td>{m.status ? <Status value={m.status} /> : "—"}</Td>
-                  <Td>{m.score ?? "—"}</Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
     </div>
   );
 }

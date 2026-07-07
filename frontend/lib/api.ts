@@ -27,6 +27,21 @@ export type ConflictMember = {
   score: number | null;
   assigned_user_label: string | null;
   link_type: string | null;
+  // ── Enriched comparison fields (0034) ──
+  source_domain?: string | null;
+  current_anchor_text?: string | null;
+  expected_anchor_text?: string | null;
+  current_rel?: string | null;
+  expected_rel?: string | null;
+  target_url_normalized?: string | null;
+  target_domain?: string | null;
+  index_status?: string | null;
+  duplicate_status?: string | null;
+  is_duplicate?: boolean | null;
+  placement_date?: string | null;
+  created_at?: string | null;
+  last_checked_at?: string | null;
+  override_status?: string | null;
 };
 
 export type ConflictGroup = {
@@ -39,7 +54,38 @@ export type ConflictGroup = {
   member_count: number;
   detected_at: string | null;
   created_at: string | null;
+  // ── Enterprise facts (0034) ──
+  reason?: string | null;
+  similarity?: number | null;
+  first_member_id?: string | null;
+  distinct_projects?: number | null;
+  distinct_users?: number | null;
+  distinct_targets?: number | null;
   members: ConflictMember[];
+};
+
+export type ConflictFieldMatrixRow = {
+  field: string;
+  all_same: boolean;
+  distinct: number;
+  values: Array<unknown>;
+};
+
+export type ConflictAction = {
+  id: string;
+  action: string;
+  payload: Record<string, unknown>;
+  actor_user_id: string | null;
+  note: string | null;
+  created_at: string | null;
+};
+
+export type ConflictDetail = ConflictGroup & {
+  field_matrix: ConflictFieldMatrixRow[];
+  suggested_keep: string | null;
+  actions: ConflictAction[];
+  total_members: number;
+  members_truncated: boolean;
 };
 
 export type ConflictSummary = {
@@ -47,6 +93,9 @@ export type ConflictSummary = {
   open: number;
   resolved: number;
   by_scope: Record<string, number>;
+  by_status?: Record<string, number>;
+  avg_similarity?: number | null;
+  total_duplicate_links?: number;
   weekly?: Array<{ week: string; new_groups: number }>;
 };
 

@@ -20,9 +20,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
+    Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,6 +41,13 @@ class BacklinkConflict(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         Index("ix_backlink_conflicts_workspace_status", "workspace_id", "resolution_status"),
         Index("ix_backlink_conflicts_canonical", "canonical_url_id"),
+        Index(
+            "ix_backlink_conflicts_ws_scope_status",
+            "workspace_id",
+            "scope",
+            "resolution_status",
+        ),
+        Index("ix_backlink_conflicts_detected", "workspace_id", "detected_at"),
     )
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
@@ -56,6 +66,17 @@ class BacklinkConflict(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ── Enterprise fact columns (all nullable; see migration 0034) ───────────
+    # Human-readable/derived explanation of why the group is a conflict.
+    reason: Mapped[str | None] = mapped_column(Text)
+    # 0-100 similarity of the members (NULL when not computed).
+    similarity: Mapped[int | None] = mapped_column(SmallInteger)
+    # The earliest/reference backlink in the group.
+    first_member_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # Distinct-count rollups across the group's members.
+    distinct_projects: Mapped[int | None] = mapped_column(SmallInteger)
+    distinct_users: Mapped[int | None] = mapped_column(SmallInteger)
+    distinct_targets: Mapped[int | None] = mapped_column(SmallInteger)
 
 
 class BacklinkConflictMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -74,3 +95,29 @@ class BacklinkConflictMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     backlink_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+
+
+class BacklinkConflictAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Append-only audit trail of reviewer actions on a conflict group.
+
+    One row per action (acknowledge / resolve / ignore / merge / etc.).
+    Workspace-scoped so tenants never see each other's history.
+    """
+
+    __tablename__ = "backlink_conflict_actions"
+    __table_args__ = (
+        Index("ix_conflict_actions_conflict", "conflict_id", "created_at"),
+        Index("ix_conflict_actions_workspace", "workspace_id", "created_at"),
+    )
+
+    # No FK to backlink_conflicts: this is an append-only AUDIT log that must
+    # OUTLIVE the group (keep-one/bulk can delete the group; its history stays).
+    conflict_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    # acknowledge | resolve | ignore | reopen | merge | ...
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    note: Mapped[str | None] = mapped_column(Text)

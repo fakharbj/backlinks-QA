@@ -11,7 +11,11 @@ from app.models.competitor import (  # noqa: F401
     CompetitorSheet,
     CompetitorSourceDomain,
 )
-from app.models.conflict import BacklinkConflict, BacklinkConflictMember  # noqa: F401
+from app.models.conflict import (  # noqa: F401
+    BacklinkConflict,
+    BacklinkConflictAction,
+    BacklinkConflictMember,
+)
 from app.models.crawl import BacklinkIssue, BacklinkHistory, CrawlJob, CrawlResult  # noqa: F401,E501
 from app.models.employee import EmployeeCode, UserEmployeeMapping  # noqa: F401
 from app.models.enums import (  # noqa: F401

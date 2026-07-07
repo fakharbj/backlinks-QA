@@ -1,31 +1,68 @@
 """Backlink conflict (duplicate group) endpoints (Phase 8, feature 9).
 
 Read views over the fingerprint-detected duplicate groups, a workspace re-scan,
-and a per-group resolution action. Listing is available to any authenticated
-member (project-scoped); mutating actions require EDIT_BACKLINKS.
+a per-group detail view, resolution + bulk actions, and a member CSV export.
+Listing/detail are available to any authenticated member (project-scoped, with
+cross-project groups exposed read-only to involved managers); mutating actions
+require EDIT_BACKLINKS.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends
+from starlette.responses import StreamingResponse
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
 from app.models.enums import AuditAction
-from app.schemas.conflict import ConflictOut, ConflictResolve, ConflictSummaryOut
+from app.schemas.conflict import (
+    ConflictBulk,
+    ConflictDetailOut,
+    ConflictKeepOne,
+    ConflictListOut,
+    ConflictOut,
+    ConflictReassign,
+    ConflictResolve,
+    ConflictSummaryOut,
+)
 from app.services import audit_service, conflict_service
 
 router = APIRouter(prefix="/conflicts", tags=["conflicts"])
 
 
-@router.get("", response_model=list[ConflictOut])
+@router.get("", response_model=ConflictListOut)
 async def list_conflicts(
-    ctx: AuthCtx, db: ReadSession, status: str | None = None
-) -> list[ConflictOut]:
-    rows = await conflict_service.list_conflicts(db, ctx, status=status)
-    return [ConflictOut(**row) for row in rows]
+    ctx: AuthCtx,
+    db: ReadSession,
+    scope: str | None = None,
+    status: str | None = None,
+    project_id: str | None = None,
+    user: str | None = None,
+    detected_from: date | None = None,
+    detected_to: date | None = None,
+    min_members: int | None = None,
+    min_similarity: int | None = None,
+    max_similarity: int | None = None,
+    target_domain: str | None = None,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> ConflictListOut:
+    res = await conflict_service.list_conflicts(
+        db, ctx, scope=scope, status=status, project_id=project_id, user=user,
+        detected_from=detected_from, detected_to=detected_to, min_members=min_members,
+        min_similarity=min_similarity, max_similarity=max_similarity,
+        target_domain=target_domain, search=search, limit=limit, offset=offset,
+    )
+    return ConflictListOut(
+        items=[ConflictOut(**row) for row in res["items"]],
+        total=res["total"], limit=res["limit"], offset=res["offset"],
+    )
 
 
 @router.get("/summary", response_model=ConflictSummaryOut)
@@ -60,6 +97,38 @@ async def rebuild_conflicts(
     return ConflictSummaryOut(**await conflict_service.summary(db, ctx))
 
 
+@router.get("/{conflict_id}", response_model=ConflictDetailOut)
+async def conflict_detail(
+    conflict_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
+) -> ConflictDetailOut:
+    return ConflictDetailOut(**await conflict_service.get_detail(db, ctx, conflict_id))
+
+
+@router.get("/{conflict_id}/actions")
+async def conflict_actions(
+    conflict_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
+) -> list[dict]:
+    # Workspace-scoped; readable even after the group collapsed (audit outlives it).
+    return await conflict_service.list_actions(db, ctx, conflict_id)
+
+
+@router.get("/{conflict_id}/members")
+async def export_conflict_members(
+    conflict_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
+) -> StreamingResponse:
+    headers, rows = await conflict_service.export_members(db, ctx, conflict_id)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(headers)
+    w.writerows(rows)
+    data = buf.getvalue()
+    safe = f"conflict-{conflict_id}".encode("ascii", "ignore").decode("ascii") or "conflict"
+    return StreamingResponse(
+        iter([data]), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.csv"'},
+    )
+
+
 @router.post("/{conflict_id}/resolve", response_model=ConflictSummaryOut)
 async def resolve_conflict(
     conflict_id: uuid.UUID, payload: ConflictResolve, db: DbSession,
@@ -73,3 +142,64 @@ async def resolve_conflict(
     )
     await db.commit()
     return ConflictSummaryOut(**await conflict_service.summary(db, ctx))
+
+
+@router.post("/{conflict_id}/keep-one")
+async def keep_one(
+    conflict_id: uuid.UUID, payload: ConflictKeepOne, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> dict:
+    result = await conflict_service.keep_one(db, ctx, conflict_id, payload.keep_backlink_id)
+    await audit_service.record(
+        db, action=AuditAction.DELETE, actor_user_id=ctx.user.id,
+        workspace_id=ctx.workspace_id, entity_type="conflict", entity_id=conflict_id,
+        summary=f"Kept one link, removed {result['deleted_count']} duplicate(s)",
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/{conflict_id}/delete-extras")
+async def delete_extras(
+    conflict_id: uuid.UUID, payload: ConflictKeepOne, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> dict:
+    # Alias of keep-one.
+    result = await conflict_service.keep_one(db, ctx, conflict_id, payload.keep_backlink_id)
+    await audit_service.record(
+        db, action=AuditAction.DELETE, actor_user_id=ctx.user.id,
+        workspace_id=ctx.workspace_id, entity_type="conflict", entity_id=conflict_id,
+        summary=f"Deleted {result['deleted_count']} extra duplicate(s)",
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/{conflict_id}/reassign")
+async def reassign_conflict(
+    conflict_id: uuid.UUID, payload: ConflictReassign, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> dict:
+    result = await conflict_service.reassign(db, ctx, conflict_id, payload.to_user_label)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id,
+        workspace_id=ctx.workspace_id, entity_type="conflict", entity_id=conflict_id,
+        summary=f"Reassigned {result['changed']} link(s) to {result['to_user_label']}",
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/bulk")
+async def bulk_conflicts(
+    payload: ConflictBulk, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> dict:
+    result = await conflict_service.bulk_status(db, ctx, payload.conflict_ids, payload.action)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id,
+        workspace_id=ctx.workspace_id, entity_type="conflict", entity_id=ctx.workspace_id,
+        summary=f"Bulk {payload.action}: {result['updated']} group(s)",
+    )
+    await db.commit()
+    return result
