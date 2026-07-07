@@ -518,20 +518,43 @@ async def _populate_facts(db: AsyncSession, conflict_ids: list[uuid.UUID]) -> No
 
 # ── Read: summary ────────────────────────────────────────────────────────────
 
-async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
-    rows = (
-        await db.execute(
-            select(
-                BacklinkConflict.resolution_status,
-                BacklinkConflict.scope,
-                func.count(),
-                func.sum(func.greatest(BacklinkConflict.member_count - 1, 0)),
-                func.avg(BacklinkConflict.similarity),
-            )
-            .where(BacklinkConflict.workspace_id == ctx.workspace_id)
-            .group_by(BacklinkConflict.resolution_status, BacklinkConflict.scope)
+async def summary(
+    db: AsyncSession,
+    ctx: AuthContext,
+    *,
+    created_from: date | datetime | None = None,
+    created_to: date | datetime | None = None,
+) -> dict:
+    # Optional date filter = the duplicate's real link CREATION day (earliest
+    # member placement/created), so KPI cards AND the weekly chart both reflect
+    # the range picked in the Duplicates desk — consistent with the list.
+    def _date_exists():
+        md = func.coalesce(BacklinkRecord.placement_date, func.date(BacklinkRecord.created_at))
+        dc = [BacklinkConflictMember.conflict_id == BacklinkConflict.id]
+        if created_from is not None:
+            dc.append(md >= created_from)
+        if created_to is not None:
+            dc.append(md <= created_to)
+        return exists(
+            select(BacklinkConflictMember.id)
+            .join(BacklinkRecord, BacklinkRecord.id == BacklinkConflictMember.backlink_id)
+            .where(*dc)
         )
-    ).all()
+
+    kpi_stmt = (
+        select(
+            BacklinkConflict.resolution_status,
+            BacklinkConflict.scope,
+            func.count(),
+            func.sum(func.greatest(BacklinkConflict.member_count - 1, 0)),
+            func.avg(BacklinkConflict.similarity),
+        )
+        .where(BacklinkConflict.workspace_id == ctx.workspace_id)
+    )
+    if created_from is not None or created_to is not None:
+        kpi_stmt = kpi_stmt.where(_date_exists())
+    kpi_stmt = kpi_stmt.group_by(BacklinkConflict.resolution_status, BacklinkConflict.scope)
+    rows = (await db.execute(kpi_stmt)).all()
     total = open_ = resolved = 0
     dup_links = 0
     sim_sum = 0.0
@@ -555,12 +578,23 @@ async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
     # member placement/creation date), not when the duplicate was detected/imported.
     from sqlalchemy import text as _text
 
+    wk_params: dict = {"ws": ctx.workspace_id}
+    if created_from is not None or created_to is not None:
+        wk_where = "g.first_seen IS NOT NULL"
+        if created_from is not None:
+            wk_where += " AND g.first_seen >= :cf"
+            wk_params["cf"] = created_from
+        if created_to is not None:
+            wk_where += " AND g.first_seen <= :ct"
+            wk_params["ct"] = created_to
+    else:
+        wk_where = "g.first_seen >= now() - interval '365 days'"
     weekly = [
         dict(r)
         for r in (
             await db.execute(
                 _text(
-                    """
+                    f"""
                     SELECT to_char(date_trunc('week', g.first_seen), 'YYYY-MM-DD') AS week,
                            count(*) AS new_groups
                     FROM (
@@ -572,11 +606,11 @@ async def summary(db: AsyncSession, ctx: AuthContext) -> dict:
                         WHERE c.workspace_id = :ws
                         GROUP BY c.id
                     ) g
-                    WHERE g.first_seen >= now() - interval '365 days'
+                    WHERE {wk_where}
                     GROUP BY 1 ORDER BY 1
                     """
                 ),
-                {"ws": ctx.workspace_id},
+                wk_params,
             )
         ).mappings().all()
     ]

@@ -71,8 +71,15 @@ async def list_conflicts(
 
 
 @router.get("/summary", response_model=ConflictSummaryOut)
-async def conflict_summary(ctx: AuthCtx, db: ReadSession) -> ConflictSummaryOut:
-    return ConflictSummaryOut(**await conflict_service.summary(db, ctx))
+async def conflict_summary(
+    ctx: AuthCtx,
+    db: ReadSession,
+    created_from: date | None = None,
+    created_to: date | None = None,
+) -> ConflictSummaryOut:
+    return ConflictSummaryOut(
+        **await conflict_service.summary(db, ctx, created_from=created_from, created_to=created_to)
+    )
 
 
 @router.post("/rebuild", response_model=ConflictSummaryOut)

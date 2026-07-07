@@ -11850,9 +11850,16 @@ function ConflictsDesk({
   }, [scopeF, statusF, minMembers, minSim, targetDomains, sourcePages, userF, search, createdFrom, createdTo]);
 
   const summary = useQuery({
-    queryKey: ["conflict-summary", token],
+    queryKey: ["conflict-summary", token, createdFrom, createdTo],
     enabled: Boolean(token),
-    queryFn: () => api<ConflictSummary>("/conflicts/summary", { token })
+    queryFn: () => {
+      // Date range drives the KPI cards + weekly chart too (not just the list).
+      const p = new URLSearchParams();
+      if (createdFrom) p.set("created_from", createdFrom);
+      if (createdTo) p.set("created_to", createdTo);
+      const qs = p.toString();
+      return api<ConflictSummary>(`/conflicts/summary${qs ? `?${qs}` : ""}`, { token });
+    }
   });
   const conflictsRaw = useQuery({
     queryKey: ["conflicts", token, query],
@@ -11979,8 +11986,16 @@ function ConflictsDesk({
 
       {(s?.weekly || []).length ? (
         <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
-            New duplicate groups per week
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+              New duplicate groups per week
+            </span>
+            <span className="text-[11px] text-muted">
+              by link creation date ·{" "}
+              {createdFrom || createdTo
+                ? `${createdFrom ? fmtChartLabel(createdFrom, true) : "start"} → ${createdTo ? fmtChartLabel(createdTo, true) : "now"}`
+                : "last 12 months"}
+            </span>
           </div>
           <TrendChart
             height={130}
