@@ -4567,6 +4567,9 @@ function UserDashboard({
   const [projFilter, setProjFilter] = useState(initialProjectId || "");
   const [ltFilter, setLtFilter] = useState("");
   const [historyStatus, setHistoryStatus] = useState("");
+  const [dateType, setDateType] = useState<"created" | "checked" | "sheet">("created");
+  const [projSort, setProjSort] = useState("links");
+  const [projSortDir, setProjSortDir] = useState<"asc" | "desc">("desc");
   const [dashTab, setDashTab] = useState<"overview" | "projects" | "calendar" | "rates">("overview");
 
   const projectsQ = useQuery({
@@ -4583,18 +4586,23 @@ function UserDashboard({
 
   const customReady = days !== "custom" || Boolean(customFrom && customTo);
   type DashPayload = {
-    from: string; to: string;
+    from: string; to: string; date_type?: string;
     links: Record<string, number | null>;
     plan: Record<string, number | null>;
     previous: { links: Record<string, number | null>; plan: Record<string, number | null> } | null;
     projects: Array<{ project_id: string; links: number; indexed: number; fail: number; project_new_domains: number; hours: number; target: number }>;
-    weekly: Array<{ week: string; links: number; indexed: number; fail: number; new_domains: number }>;
+    by_type: Array<{ link_type: string; links: number; pass: number; indexed: number }>;
+    team: {
+      rank: number | null; of: number; avg_links: number; avg_indexed: number;
+      avg_score: number | null; avg_qualified_rate: number | null; top_links: number; this_user_links: number;
+    } | null;
+    weekly: Array<{ week: string; links: number; indexed: number; pass: number; fail: number; new_domains: number }>;
     plan_weekly: Array<{ week: string; target: number; done: number }>;
     rates: { global: Array<{ link_type_name: string; links_per_hour: number }>; overrides: Array<{ link_type_name: string; links_per_hour: number }> };
     leaves: Array<{ id: string; start_date: string; end_date: string; reason: string | null; status: string }>;
   };
   const dash = useQuery({
-    queryKey: ["user-dashboard", token, userLabel, days, customFrom, customTo, projFilter, ltFilter],
+    queryKey: ["user-dashboard", token, userLabel, days, customFrom, customTo, projFilter, ltFilter, dateType],
     enabled: Boolean(token) && customReady,
     queryFn: () => {
       const p = new URLSearchParams({ user_label: userLabel, compare: "true" });
@@ -4604,6 +4612,7 @@ function UserDashboard({
       } else p.set("days", days);
       if (projFilter) p.set("project_id", projFilter);
       if (ltFilter) p.set("link_type", ltFilter);
+      if (dateType !== "created") p.set("date_type", dateType);
       return api<DashPayload>(`/performance/user-dashboard?${p.toString()}`, { token });
     }
   });
@@ -4772,6 +4781,10 @@ function UserDashboard({
   const pv = d?.previous;
   const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
   const open = (extra: Record<string, string>) => onOpenBacklinks({ user: userLabel, ...extra });
+  const onProjSort = (key: string) => {
+    if (projSort === key) setProjSortDir((x) => (x === "asc" ? "desc" : "asc"));
+    else { setProjSort(key); setProjSortDir(key === "project" ? "asc" : "desc"); }
+  };
 
   const historyRows = (history.data || []).filter((r) => {
     if (historyStatus === "excused") return r.excused;
@@ -4825,6 +4838,16 @@ function UserDashboard({
           placeholder="Link type: all"
           width="w-40"
         />
+        <select
+          value={dateType}
+          onChange={(e) => setDateType(e.target.value as "created" | "checked" | "sheet")}
+          title="Which link date the window and trends measure — when the link was created/imported, last QA-checked, or its sheet-created date"
+          className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+        >
+          <option value="created">By created date</option>
+          <option value="checked">By QA-check date</option>
+          <option value="sheet">By sheet date</option>
+        </select>
         <select value={days} onChange={(e) => setDays(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
           {TIMEFRAMES.map(([v, l]) => (
             <option key={v} value={v}>{l}</option>
@@ -4884,7 +4907,13 @@ function UserDashboard({
               help="Done ÷ target for the period, excusal-aware." />
           </div>
 
-          {/* Link production & quality — every card opens the exact rows */}
+          {dateType === "sheet" && num(d.links.links) === 0 ? (
+            <p className="rounded-lg border border-ember/40 bg-ember/10 p-2.5 text-xs text-ember">
+              No links have a <b>sheet date</b> in this window — many rows were imported without one. Switch “By sheet date” back to “By created date” to see this person&apos;s production.
+            </p>
+          ) : null}
+
+          {/* Link production — headline cards, each opens the exact rows */}
           <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-7">
             <Metric label="Links created" value={num(d.links.links)} icon={Link2} tone="ink"
               sub={pv ? `prev: ${num(pv.links.links)}` : undefined}
@@ -4895,19 +4924,75 @@ function UserDashboard({
             <Metric label="New domains (overall)" value={num(d.links.global_new_domains)} icon={Globe} tone="plum"
               sub={pv ? `prev: ${num(pv.links.global_new_domains)}` : undefined}
               help="First time the domain appears anywhere in the workspace." />
-            <Metric label="Indexed" value={num(d.links.indexed)} icon={CheckCircle2} tone="ocean"
-              sub={`${pct(num(d.links.indexed), num(d.links.links))} of created`}
+            <Metric label="Qualified" value={num(d.links.pass)} icon={CheckCircle2} tone="ocean"
+              sub={d.links.qualified_rate != null ? `${d.links.qualified_rate}% of created` : "pass QA"}
+              onClick={() => open({ status: "PASS" })} help="Links that passed QA with no blocking issue. Click to see them." />
+            <Metric label="Indexed" value={num(d.links.indexed)} icon={Activity} tone="ocean"
+              sub={d.links.indexed_rate != null ? `${d.links.indexed_rate}% of checked` : `${pct(num(d.links.indexed), num(d.links.links))} of created`}
               onClick={() => open({ index_status: "indexed" })} help="Links Google shows in its index. Click to see them." />
-            <Metric label="QA pending" value={num(d.links.qa_pending)} icon={History} tone="ember"
-              sub="need their first check"
-              onClick={() => open({ status: "PENDING" })} help="Links never QA-checked yet. Click to see them." />
             <Metric label="Not qualified" value={num(d.links.fail)} icon={XCircle} tone="danger"
               sub={pv ? `prev: ${num(pv.links.fail)}` : undefined}
               onClick={() => open({ status: "FAIL" })} help="Links with a serious problem. Click to see them." />
-            <Metric label="Duplicates" value={num(d.links.duplicates)} icon={Layers} tone="plum"
-              sub={pv ? `prev: ${num(pv.links.duplicates)}` : undefined}
-              onClick={() => open({ duplicate_status: "duplicate" })} help="Links whose page another record already uses. Click to see them." />
+            <Metric label="Avg score" value={d.links.avg_score != null ? String(d.links.avg_score) : "—"} icon={Gauge}
+              tone={d.links.avg_score == null ? "ink" : d.links.avg_score >= 70 ? "ocean" : d.links.avg_score >= 40 ? "ember" : "danger"}
+              sub={pv && pv.links.avg_score != null ? `prev: ${pv.links.avg_score}` : "0–100 quality score"}
+              help="Average QA score across this person's scored links (blank when nothing is scored yet)." />
           </div>
+
+          {/* Full quality vocabulary — dense KPI row, matches Analytics */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+            <StatBox label="Qualified" value={num(d.links.pass)} tone="ocean" onClick={() => open({ status: "PASS" })} help="Passed QA. Click to see them." />
+            <StatBox label="Warning" value={num(d.links.warning)} tone="ember" onClick={() => open({ status: "WARNING" })} help="Passed with a minor issue. Click to see them." />
+            <StatBox label="Needs review" value={num(d.links.review)} tone="ember" onClick={() => open({ status: "NEEDS_MANUAL_REVIEW" })} help="A human needs to look (e.g. JS page / CAPTCHA). Click to see them." />
+            <StatBox label="Unknown" value={num(d.links.unknown)} tone="ink" onClick={() => open({ status: "UNKNOWN" })} help="QA could not reach a verdict. Click to see them." />
+            <StatBox label="QA pending" value={num(d.links.qa_pending)} tone="ember" onClick={() => open({ status: "PENDING" })} help="Never QA-checked yet. Click to see them." />
+            <StatBox label="Not indexed" value={num(d.links.not_indexed)} tone="danger" onClick={() => open({ index_status: "not_indexed" })} help="Google does not show these. Click to see them." />
+            <StatBox label="Index unchecked" value={num(d.links.index_unchecked)} tone="ink" help="Indexing not checked yet (domain-level count)." />
+            <StatBox label="Dofollow" value={num(d.links.dofollow)} tone="ocean" onClick={() => open({ rel: "dofollow" })} help="Links that pass SEO value. Click to see them." />
+            <StatBox label="Nofollow" value={num(d.links.nofollow)} tone="plum" onClick={() => open({ rel: "nofollow" })} help="Links marked nofollow. Click to see them." />
+            <StatBox label="Link missing" value={num(d.links.link_missing)} tone="danger" help="The backlink was not found on the page." />
+            <StatBox label="Duplicates" value={num(d.links.duplicates)} tone="plum" onClick={() => open({ duplicate_status: "duplicate" })} help="Another record already uses the page. Click to see them." />
+          </div>
+
+          {/* HTTP status of the source pages */}
+          <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+            <SectionTitle title="Source-page HTTP status" flush />
+            <div className="grid grid-cols-2 gap-2 pt-2 sm:grid-cols-4">
+              <Issue label="2xx OK" value={num(d.links.http_2xx)} help="Source page loaded normally." />
+              <Issue label="3xx redirect" value={num(d.links.http_3xx)} help="Source page redirects elsewhere." />
+              <Issue label="4xx broken" value={num(d.links.http_4xx)} onClick={() => open({ broken: "1" })} help="Page missing/blocked (404/403…). Click to see broken links." />
+              <Issue label="5xx server" value={num(d.links.http_5xx)} onClick={() => open({ broken: "1" })} help="Server error on the source site. Click to see broken links." />
+            </div>
+          </section>
+
+          {/* Team benchmark — how this person compares to the visible team */}
+          {d.team && d.team.of > 1 ? (
+            <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <SectionTitle title="Team benchmark" flush />
+                <span className="rounded-full bg-ocean/10 px-3 py-1 text-xs font-semibold text-ocean">
+                  Rank #{d.team.rank ?? "—"} of {d.team.of} by links
+                </span>
+              </div>
+              <div className="grid gap-4 pt-2 lg:grid-cols-2">
+                <BarCompare
+                  labels={["Links", "Indexed"]}
+                  a={[num(d.links.links), num(d.links.indexed)]}
+                  b={[d.team.avg_links, d.team.avg_indexed]}
+                  aName="This person"
+                  bName="Team average"
+                  aVar="--ocean"
+                  bVar="--line"
+                />
+                <div className="grid grid-cols-2 gap-2 self-center">
+                  <Issue label="Your qualified %" value={d.links.qualified_rate ?? 0} help="Your pass rate this period." />
+                  <Issue label="Team avg qualified %" value={d.team.avg_qualified_rate ?? 0} help="Average pass rate across the visible team." />
+                  <Issue label="Your avg score" value={d.links.avg_score ?? 0} help="Your average QA score." />
+                  <Issue label="Team avg score" value={d.team.avg_score ?? 0} help="Average QA score across the visible team." />
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           {/* Trends */}
           <div className="grid gap-4 lg:grid-cols-2">
@@ -4918,7 +5003,7 @@ function UserDashboard({
                   labels={d.weekly.map((w) => w.week)}
                   series={[
                     { name: "Links created", cssVar: "--ocean", values: d.weekly.map((w) => w.links) },
-                    { name: "New source domains", cssVar: "--plum", values: d.weekly.map((w) => w.new_domains) },
+                    { name: "Qualified", cssVar: "--plum", values: d.weekly.map((w) => w.pass) },
                     { name: "Indexed", cssVar: "--ember", values: d.weekly.map((w) => w.indexed) },
                     { name: "Not qualified", cssVar: "--danger", values: d.weekly.map((w) => w.fail) }
                   ]}
@@ -4938,25 +5023,83 @@ function UserDashboard({
               </div>
             </section>
           </div>
+
+          {/* Link types built by this person */}
+          {d.by_type.length ? (
+            <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <SectionTitle title="Link types built" flush />
+              <div className="space-y-1.5 pt-2">
+                {(() => {
+                  const maxType = Math.max(1, ...d.by_type.map((t) => t.links));
+                  return d.by_type.map((t) => (
+                    <button
+                      key={t.link_type}
+                      onClick={() => open(t.link_type === "(none)" ? { link_type: "(blanks)" } : { link_type: t.link_type })}
+                      title="Click to see these links"
+                      className="flex w-full items-center gap-2 text-left text-xs hover:opacity-80"
+                    >
+                      <span className="w-32 truncate font-medium text-ink">{linkTypeLabel(t.link_type)}</span>
+                      <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-field">
+                        <span className="block h-full rounded-full bg-ocean/70" style={{ width: `${Math.round((100 * t.links) / maxType)}%` }} />
+                      </span>
+                      <span className="w-24 text-right text-[11px] text-muted">{t.pass} qualified · {t.indexed} indexed</span>
+                      <span className="w-10 text-right font-semibold text-ink">{t.links}</span>
+                    </button>
+                  ));
+                })()}
+              </div>
+            </section>
+          ) : null}
         </>
       ) : null}
 
       {d && dashTab === "projects" ? (
         <>
-          {/* Per-project comparison */}
+          {/* Per-project comparison — sortable + exportable */}
           <section className="rounded-xl border border-line bg-panel shadow-card">
-            <SectionTitle title="Projects — this person, side by side" />
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+              <h3 className="text-sm font-semibold text-ink">
+                Projects — this person, side by side
+                <HelpTip text="Every project this person worked on (or was planned for) in the window. Click a row to focus the whole dashboard on that project; click a header to sort." />
+              </h3>
+              <ExportButton
+                disabled={!d.projects.length}
+                onClick={() =>
+                  downloadCsv(
+                    `${userLabel}-projects.csv`,
+                    ["Project", "Hours", "Target", "Links", "Completion %", "Indexed", "Not qualified", "New domains"],
+                    d.projects.map((p) => [
+                      projectName(p.project_id), p.hours, p.target, p.links,
+                      p.target > 0 ? Math.round((100 * p.links) / p.target) : "",
+                      p.indexed, p.fail, p.project_new_domains
+                    ])
+                  )
+                }
+              />
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-field text-xs uppercase text-muted">
                   <tr>
-                    <Th>Project</Th><Th>Hours</Th><Th>Target</Th><Th>Links</Th><Th>Completion</Th>
-                    <Th>Indexed</Th><Th>Not qualified</Th><Th>New domains</Th>
+                    <SortTh label="Project" sortKey="project" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="Hours" sortKey="hours" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="Target" sortKey="target" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="Links" sortKey="links" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="Completion" sortKey="completion" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="Indexed" sortKey="indexed" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="Not qualified" sortKey="fail" sort={projSort} dir={projSortDir} onSort={onProjSort} />
+                    <SortTh label="New domains" sortKey="new_domains" sort={projSort} dir={projSortDir} onSort={onProjSort} />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line">
-                  {d.projects.map((p) => {
+                  {sortRows(d.projects, projSort, projSortDir, (p, k) => {
+                    if (k === "project") return projectName(p.project_id);
+                    if (k === "completion") return p.target > 0 ? (100 * p.links) / p.target : null;
+                    if (k === "new_domains") return p.project_new_domains;
+                    return (p as unknown as Record<string, number>)[k];
+                  }).map((p) => {
                     const cpl = p.target > 0 ? Math.round((100 * p.links) / p.target) : null;
+                    const maxLinks = Math.max(1, ...d.projects.map((x) => x.links));
                     return (
                       <tr
                         key={p.project_id}
@@ -4967,7 +5110,14 @@ function UserDashboard({
                         <Td><span className="font-medium text-ocean hover:underline">{projectName(p.project_id)}</span></Td>
                         <Td>{p.hours}h</Td>
                         <Td>{p.target}</Td>
-                        <Td>{p.links}</Td>
+                        <Td>
+                          <span className="flex items-center gap-2">
+                            <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-field sm:block">
+                              <span className="block h-full rounded-full bg-ocean/70" style={{ width: `${Math.round((100 * p.links) / maxLinks)}%` }} />
+                            </span>
+                            {p.links}
+                          </span>
+                        </Td>
                         <Td>
                           {cpl == null ? "—" : (
                             <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",

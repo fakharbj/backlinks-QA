@@ -98,15 +98,28 @@ async def user_dashboard(
     date_to: datetime | None = None,
     project_id: uuid.UUID | None = None,
     link_type: str | None = None,
+    date_type: str = "created",
     compare: bool = True,
 ) -> dict:
     """Everything an admin needs about ONE person in a single payload: hours &
     plan completion (excusal-aware, any window length), link production +
-    quality, per-project breakdown, weekly trends, rates, leave history —
-    plus the previous equal-length window for comparison."""
+    quality (full KPI vocabulary + HTTP buckets), per-project + per-link-type
+    breakdowns, weekly trends, a team-benchmark strip, rates, leave history —
+    plus the previous equal-length window for comparison.
+
+    ``date_type`` chooses which link date the window filters on (created /
+    QA-checked / sheet-created); plan & leave always use calendar days."""
     t1 = date_to or datetime.now(timezone.utc)
     t0 = date_from or (t1 - timedelta(days=max(1, min(days, 3660))))
     span = t1 - t0
+
+    # Whitelisted date column for the link window — never interpolate raw input.
+    _DATE_COL = {
+        "created": "b.created_at",
+        "checked": "b.last_checked_at",
+        "sheet": "b.sheet_created_date",
+    }
+    dcol = _DATE_COL.get(date_type, "b.created_at")
 
     where, params = _scope(ctx, project_id)
     params |= {"label": user_label}
@@ -118,14 +131,27 @@ async def user_dashboard(
 
     async def _link_stats(a: datetime, b: datetime) -> dict:
         p = dict(params) | {"t0": a, "t1": b}
+        # Full analytics KPI vocabulary so the dashboard row matches AnalyticsDesk.
         sql = _bind(
             f"""
             SELECT count(*) AS links,
                    count(*) FILTER (WHERE b.index_status = 'indexed')        AS indexed,
+                   count(*) FILTER (WHERE b.index_status = 'not_indexed')    AS not_indexed,
+                   count(*) FILTER (WHERE b.index_status IS NULL)            AS index_unchecked,
                    count(*) FILTER (WHERE {_EFF} = 'FAIL')                   AS fail,
                    count(*) FILTER (WHERE {_EFF} = 'PASS')                   AS pass,
+                   count(*) FILTER (WHERE {_EFF} = 'WARNING')                AS warning,
+                   count(*) FILTER (WHERE {_EFF} = 'UNKNOWN')                AS unknown,
+                   count(*) FILTER (WHERE {_EFF} = 'NEEDS_MANUAL_REVIEW')    AS review,
                    count(*) FILTER (WHERE {_EFF} = 'PENDING')                AS qa_pending,
                    count(*) FILTER (WHERE b.is_duplicate IS TRUE)            AS duplicates,
+                   count(*) FILTER (WHERE b.link_found IS FALSE)             AS link_missing,
+                   count(*) FILTER (WHERE b.current_rel = 'nofollow')        AS nofollow,
+                   count(*) FILTER (WHERE b.current_rel = 'dofollow')        AS dofollow,
+                   count(*) FILTER (WHERE b.http_status BETWEEN 200 AND 299) AS http_2xx,
+                   count(*) FILTER (WHERE b.http_status BETWEEN 300 AND 399) AS http_3xx,
+                   count(*) FILTER (WHERE b.http_status BETWEEN 400 AND 499) AS http_4xx,
+                   count(*) FILTER (WHERE b.http_status BETWEEN 500 AND 599) AS http_5xx,
                    round(avg(b.score) FILTER (WHERE b.score IS NOT NULL), 1) AS avg_score,
                    count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM backlink_records e
@@ -137,12 +163,17 @@ async def user_dashboard(
                          AND e.created_at < b.created_at))                   AS global_new_domains
             FROM backlink_records b
             WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
-              AND b.created_at >= :t0 AND b.created_at < :t1{lt_clause}
+              AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
             """,
             p,
         )
         row = (await db.execute(sql, p)).mappings().first() or {}
-        return {k: (float(v) if k == "avg_score" and v is not None else (int(v) if v is not None else (None if k == "avg_score" else 0))) for k, v in dict(row).items()}
+        out = {k: (float(v) if k == "avg_score" and v is not None else (int(v) if v is not None else (None if k == "avg_score" else 0))) for k, v in dict(row).items()}
+        # Derived rates (guard divide-by-zero → None renders as "—").
+        out["qualified_rate"] = round(100.0 * out["pass"] / out["links"], 1) if out.get("links") else None
+        idx_base = out["indexed"] + out["not_indexed"]
+        out["indexed_rate"] = round(100.0 * out["indexed"] / idx_base, 1) if idx_base else None
+        return out
 
     # Plan vs done — excusal-aware in SQL so ANY window length works (the
     # interactive day-report is capped at 92 days).
@@ -224,7 +255,7 @@ async def user_dashboard(
                      AND e.created_at < b.created_at))            AS project_new_domains
         FROM backlink_records b
         WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
-          AND b.created_at >= :t0 AND b.created_at < :t1{lt_clause}
+          AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
         GROUP BY 1 ORDER BY 2 DESC
         """,
         p2,
@@ -258,12 +289,13 @@ async def user_dashboard(
         projects_out.append({k: (float(x) if k == "hours" else (str(x) if k == "project_id" else int(x))) for k, x in v.items()})
     projects_out.sort(key=lambda r: (-r["links"], -r["hours"]))
 
-    # Weekly series (links / new domains / indexed / not qualified) + plan trend.
+    # Weekly series (links / new domains / indexed / qualified / not qualified) + plan trend.
     wk_sql = _bind(
         f"""
-        SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('week', {dcol}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
                count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
+               count(*) FILTER (WHERE {_EFF} = 'PASS')            AS pass,
                count(*) FILTER (WHERE {_EFF} = 'FAIL')            AS fail,
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
@@ -271,12 +303,29 @@ async def user_dashboard(
                      AND e.created_at < b.created_at))            AS new_domains
         FROM backlink_records b
         WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
-          AND b.created_at >= :t0 AND b.created_at < :t1{lt_clause}
+          AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
         GROUP BY 1 ORDER BY 1
         """,
         p2,
     )
     weekly = [dict(r) for r in (await db.execute(wk_sql, p2)).mappings().all()]
+
+    # Per-link-type distribution for THIS user (mirrors project_effort.by_type).
+    type_sql = _bind(
+        f"""
+        SELECT coalesce(nullif(b.link_type, ''), '(none)') AS link_type,
+               count(*) AS links,
+               count(*) FILTER (WHERE {_EFF} = 'PASS')            AS pass,
+               count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed
+        FROM backlink_records b
+        WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
+          AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
+        GROUP BY 1 ORDER BY 2 DESC
+        """,
+        p2,
+    )
+    by_type = [dict(r) for r in (await db.execute(type_sql, p2)).mappings().all()]
+
     plan_wk_sql = text(
         """
         WITH actuals AS (
@@ -349,14 +398,49 @@ async def user_dashboard(
         ).scalars().all()
     ]
 
+    # Team benchmark — reuse the tenant + TeamLead-scoped peer query (visible_labels
+    # already applied inside users()), then rank this person and average the peers.
+    team = None
+    try:
+        peers = (await users(db, ctx, days=days, date_from=t0, date_to=t1,
+                             project_id=project_id, compare=False))["users"]
+    except Exception:  # noqa: BLE001 — benchmark is best-effort, never blocks the dashboard
+        peers = []
+    ranked = [pr for pr in peers if pr.get("user_label") != "(unassigned)"]
+    if ranked:
+        ranked_sorted = sorted(ranked, key=lambda r: r.get("links") or 0, reverse=True)
+        of = len(ranked_sorted)
+        me = next((i for i, r in enumerate(ranked_sorted)
+                   if (r.get("user_label") or "").lower() == user_label.lower()), None)
+        n = of or 1
+        avg_links = round(sum((r.get("links") or 0) for r in ranked_sorted) / n, 1)
+        avg_indexed = round(sum((r.get("indexed") or 0) for r in ranked_sorted) / n, 1)
+        scored = [r.get("avg_score") for r in ranked_sorted if r.get("avg_score") is not None]
+        rates = [
+            (100.0 * (r.get("pass") or 0) / r["links"]) for r in ranked_sorted if r.get("links")
+        ]
+        team = {
+            "rank": (me + 1) if me is not None else None,
+            "of": of,
+            "avg_links": avg_links,
+            "avg_indexed": avg_indexed,
+            "avg_score": round(sum(scored) / len(scored), 1) if scored else None,
+            "avg_qualified_rate": round(sum(rates) / len(rates), 1) if rates else None,
+            "top_links": ranked_sorted[0].get("links") or 0,
+            "this_user_links": current_links.get("links", 0),
+        }
+
     return {
         "user_label": user_label,
         "from": t0.isoformat(),
         "to": t1.isoformat(),
+        "date_type": date_type,
         "links": current_links,
         "plan": current_plan,
         "previous": previous,
         "projects": projects_out,
+        "by_type": by_type,
+        "team": team,
         "weekly": weekly,
         "plan_weekly": plan_weekly,
         "rates": {"global": rates_global, "overrides": rates_override},

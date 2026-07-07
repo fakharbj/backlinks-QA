@@ -23,10 +23,12 @@ async def user_dashboard(
     date_to: datetime | None = Query(None),
     project_id: uuid.UUID | None = Query(None),
     link_type: str | None = Query(None, max_length=80),
+    date_type: str = Query("created", pattern="^(created|checked|sheet)$"),
     compare: bool = Query(True),
 ) -> dict:
     """The admin's one-page view of a person: hours, plan completion, links,
-    quality, per-project split, trends, rates and leave — scoped like every
+    quality (full KPI vocabulary + HTTP buckets), per-project & per-link-type
+    splits, a team benchmark, trends, rates and leave — scoped like every
     other people view (TeamLeads see their people; users see themselves)."""
     from app.services.workforce_service import visible_labels
 
@@ -37,7 +39,7 @@ async def user_dashboard(
         raise NotFoundError("User not found")
     return await performance_service.user_dashboard(
         db, ctx, user_label=user_label, days=days, date_from=date_from, date_to=date_to,
-        project_id=project_id, link_type=link_type, compare=compare,
+        project_id=project_id, link_type=link_type, date_type=date_type, compare=compare,
     )
 
 
