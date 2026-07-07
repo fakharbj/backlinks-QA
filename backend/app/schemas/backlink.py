@@ -192,6 +192,7 @@ class BacklinkFilters(BaseModel):
     # ── KPI drill-down filters (open Backlinks from an analytics/dashboard box) ──
     http_status: str | None = None       # exact status or comma-list ("200,301")
     broken: bool | None = None           # any 4xx/5xx (http_status >= 400)
+    http_class: str | None = None        # "4xx" and/or "5xx" (comma list) — split broken filter
     spam_min: int | None = Field(default=None, ge=0, le=100)  # source domain spam >= N
     orphaned: bool | None = None         # source domain has no source_domains row
     search: str | None = None

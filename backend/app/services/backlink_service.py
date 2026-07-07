@@ -140,6 +140,16 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
             stmt = stmt.where(BacklinkRecord.http_status.in_(codes))
     if f.broken:
         stmt = stmt.where(BacklinkRecord.http_status >= 400)
+    if f.http_class:
+        # "4xx" and/or "5xx" — individually selectable client errors vs server errors.
+        ranges = []
+        parts = {p.strip().lower() for p in _csv(f.http_class)}
+        if "4xx" in parts:
+            ranges.append(and_(BacklinkRecord.http_status >= 400, BacklinkRecord.http_status < 500))
+        if "5xx" in parts:
+            ranges.append(BacklinkRecord.http_status >= 500)
+        if ranges:
+            stmt = stmt.where(or_(*ranges) if len(ranges) > 1 else ranges[0])
     # spam_min / orphaned resolve against the source_domains aggregate row.
     # source_domains is unique per (workspace_id, domain_key) so the LEFT JOIN
     # never fans out the backlink rows (keyset/sort stay intact). Join once.
