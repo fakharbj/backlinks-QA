@@ -374,12 +374,14 @@ async def day_report(
     result = await db.execute(
         text(
             """
+            -- Attribute a link to its REAL creation/placement day (sheet-supplied),
+            -- falling back to import time only when the sheet gave no date.
             SELECT project_id, coalesce(nullif(assigned_user_label, ''), '(unassigned)') AS u,
-                   created_at::date AS d, count(*) AS n
+                   coalesce(placement_date, created_at::date) AS d, count(*) AS n
             FROM backlink_records
             WHERE workspace_id = :ws
-              AND created_at >= :f
-              AND created_at < CAST(:t AS date) + INTERVAL '1 day'
+              AND coalesce(placement_date, created_at) >= :f
+              AND coalesce(placement_date, created_at) < CAST(:t AS date) + INTERVAL '1 day'
             GROUP BY 1, 2, 3
             """
         ),

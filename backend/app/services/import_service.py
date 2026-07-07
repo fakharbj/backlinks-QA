@@ -43,7 +43,16 @@ _REL_ALIASES = {
     "nofollow": RelType.NOFOLLOW, "no-follow": RelType.NOFOLLOW,
     "sponsored": RelType.SPONSORED, "ugc": RelType.UGC, "": RelType.DOFOLLOW,
 }
-_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d")
+_DATE_FORMATS = (
+    "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d",
+    # Month-name formats used by the production sheets, e.g. "30-April-2026",
+    # "6 May 2026", "May 6, 2026", "30-Apr-2026" (full + abbreviated month).
+    "%d-%B-%Y", "%d %B %Y", "%B %d, %Y", "%B %d %Y",
+    "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%b %d %Y",
+    "%d.%m.%Y", "%Y.%m.%d",
+    # Two-digit years, e.g. "01-Nov-24", "1/12/26".
+    "%d-%b-%y", "%d-%B-%y", "%d/%m/%y", "%m/%d/%y", "%d %b %y",
+)
 
 
 async def create_import(

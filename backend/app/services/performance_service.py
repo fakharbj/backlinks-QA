@@ -26,6 +26,15 @@ from app.core.deps import AuthContext
 
 _EFF = "coalesce(b.override_status, b.status)"
 
+# The link's REAL creation/placement day — the date the backlink went live, as
+# supplied in the Google Sheet (``placement_date``). Performance, task-completion,
+# "new domain first-seen" and duplicate timing all attribute a link to THIS day,
+# NOT to ``created_at`` (which is merely when the row was imported). Falls back to
+# the import time only when the sheet gave no date, so no rows silently drop.
+_LINK_TS = "coalesce(b.placement_date, b.created_at)"       # timestamptz (window filters)
+_LINK_TS_E = "coalesce(e.placement_date, e.created_at)"     # same, for the "first ever" subquery
+_LINK_DAY_RAW = "coalesce(placement_date, created_at::date)"  # ::date (actuals CTEs, no alias)
+
 
 def _scope(ctx: AuthContext, project_id: uuid.UUID | None) -> tuple[str, dict]:
     clause = "b.workspace_id = :ws"
@@ -70,15 +79,15 @@ async def _window(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND e.created_at < b.created_at
+                     AND {_LINK_TS_E} < {_LINK_TS}
                ))                                                          AS project_new_domains,
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.workspace_id = b.workspace_id AND e.source_domain = b.source_domain
-                     AND e.created_at < b.created_at
+                     AND {_LINK_TS_E} < {_LINK_TS}
                ))                                                          AS global_new_domains
         FROM backlink_records b
-        WHERE {where} AND b.created_at >= :t0 AND b.created_at < :t1
+        WHERE {where} AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1
         GROUP BY 1
         ORDER BY links DESC
         """,
@@ -114,12 +123,16 @@ async def user_dashboard(
     span = t1 - t0
 
     # Whitelisted date column for the link window — never interpolate raw input.
+    # "created" is the REAL backlink creation/placement day (sheet-supplied), which
+    # is the default and what performance is measured on; "imported" is the raw
+    # upload time; "checked"/"sheet" expose the other axes.
     _DATE_COL = {
-        "created": "b.created_at",
+        "created": _LINK_TS,
+        "imported": "b.created_at",
         "checked": "b.last_checked_at",
         "sheet": "b.sheet_created_date",
     }
-    dcol = _DATE_COL.get(date_type, "b.created_at")
+    dcol = _DATE_COL.get(date_type, _LINK_TS)
 
     where, params = _scope(ctx, project_id)
     params |= {"label": user_label}
@@ -156,11 +169,11 @@ async def user_dashboard(
                    count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM backlink_records e
                        WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                         AND e.created_at < b.created_at))                   AS project_new_domains,
+                         AND {_LINK_TS_E} < {_LINK_TS}))                     AS project_new_domains,
                    count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM backlink_records e
                        WHERE e.workspace_id = b.workspace_id AND e.source_domain = b.source_domain
-                         AND e.created_at < b.created_at))                   AS global_new_domains
+                         AND {_LINK_TS_E} < {_LINK_TS}))                     AS global_new_domains
             FROM backlink_records b
             WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
               AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
@@ -189,10 +202,12 @@ async def user_dashboard(
         sql = text(
             f"""
             WITH actuals AS (
-                SELECT project_id, lower(assigned_user_label) AS u, created_at::date AS d, count(*) AS n
+                SELECT project_id, lower(assigned_user_label) AS u,
+                       {_LINK_DAY_RAW} AS d, count(*) AS n
                 FROM backlink_records
-                WHERE workspace_id = :ws AND created_at >= :f
-                  AND created_at < CAST(:t AS date) + INTERVAL '1 day'
+                WHERE workspace_id = :ws
+                  AND coalesce(placement_date, created_at) >= :f
+                  AND coalesce(placement_date, created_at) < CAST(:t AS date) + INTERVAL '1 day'
                   AND lower(assigned_user_label) = lower(:label)
                 GROUP BY 1, 2, 3
             ),
@@ -252,7 +267,7 @@ async def user_dashboard(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND e.created_at < b.created_at))            AS project_new_domains
+                     AND {_LINK_TS_E} < {_LINK_TS}))              AS project_new_domains
         FROM backlink_records b
         WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
           AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
@@ -300,7 +315,7 @@ async def user_dashboard(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND e.created_at < b.created_at))            AS new_domains
+                     AND {_LINK_TS_E} < {_LINK_TS}))              AS new_domains
         FROM backlink_records b
         WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
           AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
@@ -329,10 +344,11 @@ async def user_dashboard(
     plan_wk_sql = text(
         """
         WITH actuals AS (
-            SELECT project_id, created_at::date AS d, count(*) AS n
+            SELECT project_id, coalesce(placement_date, created_at::date) AS d, count(*) AS n
             FROM backlink_records
             WHERE workspace_id = :ws AND lower(assigned_user_label) = lower(:label)
-              AND created_at >= :f AND created_at < CAST(:t AS date) + INTERVAL '1 day'
+              AND coalesce(placement_date, created_at) >= :f
+              AND coalesce(placement_date, created_at) < CAST(:t AS date) + INTERVAL '1 day'
             GROUP BY 1, 2
         )
         SELECT to_char(date_trunc('week', a.day), 'YYYY-MM-DD') AS week,
@@ -489,7 +505,7 @@ async def project_effort(
                    count(*) FILTER (WHERE b.is_duplicate IS TRUE)           AS duplicates
             FROM backlink_records b
             WHERE b.workspace_id = :ws AND b.project_id = :pid
-              AND b.created_at >= :t0 AND b.created_at < :t1{user_clause_b}{lt_clause}
+              AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1{user_clause_b}{lt_clause}
             GROUP BY 1
         ),
         plan AS (
@@ -538,7 +554,7 @@ async def project_effort(
         SELECT coalesce(nullif(b.link_type, ''), '(none)') AS link_type, count(*) AS links
         FROM backlink_records b
         WHERE b.workspace_id = :ws AND b.project_id = :pid
-          AND b.created_at >= :t0 AND b.created_at < :t1{user_clause_b}
+          AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1{user_clause_b}
         GROUP BY 1 ORDER BY 2 DESC
         """
     )
@@ -547,10 +563,10 @@ async def project_effort(
     trend_sql = text(
         f"""
         WITH actuals AS (
-            SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week, count(*) AS done
+            SELECT to_char(date_trunc('week', {_LINK_TS}), 'YYYY-MM-DD') AS week, count(*) AS done
             FROM backlink_records b
             WHERE b.workspace_id = :ws AND b.project_id = :pid
-              AND b.created_at >= :t0 AND b.created_at < :t1{user_clause_b}{lt_clause}
+              AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1{user_clause_b}{lt_clause}
             GROUP BY 1
         ),
         plan AS (
@@ -635,16 +651,16 @@ async def users(
     wparams |= {"t0": t0, "t1": t1}
     weekly_sql = _bind(
         f"""
-        SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('week', {_LINK_TS}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
                count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND e.created_at < b.created_at
+                     AND {_LINK_TS_E} < {_LINK_TS}
                )) AS new_domains
         FROM backlink_records b
-        WHERE {where} AND b.created_at >= :t0 AND b.created_at < :t1
+        WHERE {where} AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1
         GROUP BY 1 ORDER BY 1 ASC
         """,
         wparams,

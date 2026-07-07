@@ -169,6 +169,7 @@ export type ScoringParameter = {
 export type ScoringConfig = {
   scope: string;
   scope_ref_id: string | null;
+  link_type_id?: string | null;
   version: number;
   version_id: string | null;
   rules: Record<string, Record<string, number>>;
