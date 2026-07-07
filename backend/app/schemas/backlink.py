@@ -193,7 +193,13 @@ class BacklinkFilters(BaseModel):
     http_status: str | None = None       # exact status or comma-list ("200,301")
     broken: bool | None = None           # any 4xx/5xx (http_status >= 400)
     http_class: str | None = None        # "4xx" and/or "5xx" (comma list) — split broken filter
+    link_missing: bool | None = None     # link_found IS FALSE (matches analytics)
     spam_min: int | None = Field(default=None, ge=0, le=100)  # source domain spam >= N
+    # Source-domain authority floors — same vocabulary as analytics (sd.* join),
+    # so a KPI/analytics filter and the Backlinks list always agree.
+    da_min: int | None = Field(default=None, ge=0, le=100)
+    pa_min: int | None = Field(default=None, ge=0, le=100)
+    as_min: int | None = Field(default=None, ge=0, le=100)
     orphaned: bool | None = None         # source domain has no source_domains row
     search: str | None = None
     # Target-based lookup: matches the target URL or expected target (substring),

@@ -1307,21 +1307,21 @@ function Overview({
             <Issue label="Nofollow" value={stats?.issues.nofollow_count ?? 0}
               help="Links marked rel=nofollow — they pass less SEO value. Click to see them."
               onClick={() => onOpenBacklinks({ rel: "nofollow" })} />
-            <Issue label="Noindex" value={stats?.issues.noindex_count ?? 0}
+            <Issue label="Not indexable" value={stats?.issues.noindex_count ?? 0}
               help="Pages that tell Google not to index them — the link there helps very little. Click to see them."
-              onClick={() => onOpenBacklinks({ issue_label: "PAGE_NOINDEX" })} />
+              onClick={() => onOpenBacklinks({ indexability: "not_indexable" })} />
             <Issue label="Robots blocked" value={stats?.issues.robots_blocked_count ?? 0}
               help="Pages blocked by robots.txt — search engines can't even visit them. Click to see them."
-              onClick={() => onOpenBacklinks({ issue_label: "ROBOTS_BLOCKED" })} />
+              onClick={() => onOpenBacklinks({ robots_status: "blocked" })} />
             <Issue label="Canonical" value={stats?.issues.canonical_issue_count ?? 0}
               help="Pages that declare a different page as the 'real' one, weakening the link. Click to see them."
-              onClick={() => onOpenBacklinks({ issue_label: "CANONICAL_MISMATCH" })} />
+              onClick={() => onOpenBacklinks({ canonical_status: "mismatch,cross_domain" })} />
             <Issue label="Broken page" value={stats?.issues.broken_count ?? 0}
               help="Pages returning an error (404, 500…) — the link is effectively gone. Click to see them."
-              onClick={() => onOpenBacklinks({ issue_label: "SOURCE_404" })} />
+              onClick={() => onOpenBacklinks({ broken: "1" })} />
             <Issue label="Link missing" value={stats?.issues.link_missing_count ?? 0}
               help="The page loads fine, but your link is no longer on it. Click to see them."
-              onClick={() => onOpenBacklinks({ issue_label: "LINK_MISSING" })} />
+              onClick={() => onOpenBacklinks({ link_missing: "1" })} />
           </div>
         </section>
         <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
@@ -1539,6 +1539,13 @@ function Backlinks({
   const [httpClassF, setHttpClassF] = useState(
     () => fParam("http_class") || (fParam("broken") === "1" ? "4xx,5xx" : "")
   );
+  // Verdict-column deep-link filters (from dashboard "Issue Mix" cards) so a card
+  // drills into EXACTLY the rows it counted. No standalone UI control — they show
+  // in the active-filter count and clear with "Clear all".
+  const [indexabilityF, setIndexabilityF] = useState(() => fParam("indexability"));
+  const [robotsStatusF, setRobotsStatusF] = useState(() => fParam("robots_status"));
+  const [canonicalStatusF, setCanonicalStatusF] = useState(() => fParam("canonical_status"));
+  const [linkMissingF, setLinkMissingF] = useState(() => fParam("link_missing") === "1");
   const [spamMinF, setSpamMinF] = useState(() => fParam("spam_min"));
   const [orphanedF, setOrphanedF] = useState(() => fParam("orphaned") === "1");
   const [sort, setSort] = useState("score");
@@ -1637,11 +1644,15 @@ function Backlinks({
     setDateTo("");
     setHttpStatusF("");
     setHttpClassF("");
+    setIndexabilityF("");
+    setRobotsStatusF("");
+    setCanonicalStatusF("");
+    setLinkMissingF(false);
     setSpamMinF("");
     setOrphanedF(false);
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, spamMinF]
-    .filter(Boolean).length + (orphanedF ? 1 : 0);
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF]
+    .filter(Boolean).length + (orphanedF ? 1 : 0) + (linkMissingF ? 1 : 0);
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
   const toks = (v: string) => (v ? v.split(",") : []);
@@ -1682,6 +1693,10 @@ function Backlinks({
     if (targetF) params.set("target", targetF);
     if (httpStatusF) params.set("http_status", httpStatusF);
     if (httpClassF) params.set("http_class", httpClassF);
+    if (indexabilityF) params.set("indexability", indexabilityF);
+    if (robotsStatusF) params.set("robots_status", robotsStatusF);
+    if (canonicalStatusF) params.set("canonical_status", canonicalStatusF);
+    if (linkMissingF) params.set("link_missing", "true");
     if (spamMinF) params.set("spam_min", spamMinF);
     if (orphanedF) params.set("orphaned", "true");
     if (axis.from && dateFrom) params.set(axis.from, dateFrom);
@@ -1689,7 +1704,7 @@ function Backlinks({
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, spamMinF, orphanedF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -1735,6 +1750,10 @@ function Backlinks({
     target: targetF || null,
     http_status: httpStatusF || null,
     http_class: httpClassF || null,
+    indexability: indexabilityF || null,
+    robots_status: robotsStatusF || null,
+    canonical_status: canonicalStatusF || null,
+    link_missing: linkMissingF ? true : null,
     spam_min: spamMinF ? Number(spamMinF) : null,
     orphaned: orphanedF ? true : null,
     ...(axis.from && dateFrom ? { [axis.from]: dateFrom } : {}),
@@ -13731,10 +13750,13 @@ function AnalyticsDesk({
   // to a different /backlinks name (spam→spam_min, nofollow→rel) are translated.
   const backlinkParams = () => {
     const map: Record<string, string> = {};
+    // Keys the Backlinks list accepts verbatim — kept 1:1 with the analytics
+    // filter vocabulary so the "Matching links" list always equals the summary.
     [
       "status", "index_status", "duplicate_status", "rel", "link_type",
       "source_domain", "assigned_user_label", "project_id",
-      "http_status", "broken", "orphaned"
+      "http_status", "http_class", "broken", "orphaned",
+      "link_missing", "da_min", "pa_min", "as_min", "search"
     ].forEach((k) => {
       if (filters[k]) map[k] = filters[k];
     });

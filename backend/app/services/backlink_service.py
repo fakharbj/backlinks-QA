@@ -98,7 +98,11 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
     if f.robots_status:
         stmt = stmt.where(BacklinkRecord.robots_status == f.robots_status)
     if f.canonical_status:
-        stmt = stmt.where(BacklinkRecord.canonical_status == f.canonical_status)
+        # Multi-value (comma list), so the dashboard "Canonical issue" card
+        # (mismatch,cross_domain) drills to the exact same rows it counted.
+        clause = _multi_clause(BacklinkRecord.canonical_status, f.canonical_status)
+        if clause is not None:
+            stmt = stmt.where(clause)
     if f.vendor_id:
         stmt = stmt.where(BacklinkRecord.vendor_id == f.vendor_id)
     if f.campaign_id:
@@ -150,10 +154,18 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
             ranges.append(BacklinkRecord.http_status >= 500)
         if ranges:
             stmt = stmt.where(or_(*ranges) if len(ranges) > 1 else ranges[0])
-    # spam_min / orphaned resolve against the source_domains aggregate row.
-    # source_domains is unique per (workspace_id, domain_key) so the LEFT JOIN
-    # never fans out the backlink rows (keyset/sort stay intact). Join once.
-    if f.spam_min is not None or f.orphaned:
+    if f.link_missing:
+        # link_found IS FALSE — identical to the analytics "Missing" metric.
+        stmt = stmt.where(BacklinkRecord.link_found.is_(False))
+    # spam_min / da_min / pa_min / as_min / orphaned resolve against the
+    # source_domains aggregate row. source_domains is unique per
+    # (workspace_id, domain_key) so the LEFT JOIN never fans out the backlink
+    # rows (keyset/sort stay intact). Join once, share the same vocabulary as
+    # analytics so a KPI/analytics filter and this list always agree.
+    if (
+        f.spam_min is not None or f.orphaned
+        or f.da_min is not None or f.pa_min is not None or f.as_min is not None
+    ):
         stmt = stmt.outerjoin(
             SourceDomain,
             and_(
@@ -163,6 +175,12 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
         )
         if f.spam_min is not None:
             stmt = stmt.where(SourceDomain.spam_score >= f.spam_min)
+        if f.da_min is not None:
+            stmt = stmt.where(SourceDomain.da >= f.da_min)
+        if f.pa_min is not None:
+            stmt = stmt.where(SourceDomain.pa >= f.pa_min)
+        if f.as_min is not None:
+            stmt = stmt.where(SourceDomain.semrush_as >= f.as_min)
         if f.orphaned:
             # orphaned = the source domain has no source_domains aggregate row.
             stmt = stmt.where(SourceDomain.id.is_(None))
