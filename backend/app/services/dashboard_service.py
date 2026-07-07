@@ -319,11 +319,18 @@ async def _trends_uncached(
     first_scope = (
         "e.project_id = b.project_id" if project_id is not None else "e.workspace_id = b.workspace_id"
     )
+    # A link is "the first ever from its domain" when no OTHER link from that domain
+    # is earlier. Ties matter: a bulk import gives every row the SAME created_at
+    # (Postgres now() is constant within a transaction), so a bare `<` on created_at
+    # would count EVERY link of a same-day domain as new — inflating the count above
+    # the distinct-domain total. Order by the real creation (placement) date, then a
+    # unique id tiebreaker, so exactly ONE link per domain qualifies.
     new_domain = (
         "b.source_domain IS NOT NULL AND NOT EXISTS ("
         "SELECT 1 FROM backlink_records e "
         f"WHERE {first_scope} AND e.source_domain = b.source_domain "
-        "AND e.created_at < b.created_at)"
+        "AND (coalesce(e.placement_date, e.created_at), e.id) "
+        "  < (coalesce(b.placement_date, b.created_at), b.id))"
     )
 
     sql, _ = _bind(

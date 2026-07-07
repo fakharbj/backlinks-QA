@@ -79,12 +79,12 @@ async def _window(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND {_LINK_TS_E} < {_LINK_TS}
+                     AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)
                ))                                                          AS project_new_domains,
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.workspace_id = b.workspace_id AND e.source_domain = b.source_domain
-                     AND {_LINK_TS_E} < {_LINK_TS}
+                     AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)
                ))                                                          AS global_new_domains
         FROM backlink_records b
         WHERE {where} AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1
@@ -169,11 +169,11 @@ async def user_dashboard(
                    count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM backlink_records e
                        WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                         AND {_LINK_TS_E} < {_LINK_TS}))                     AS project_new_domains,
+                         AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)))                     AS project_new_domains,
                    count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM backlink_records e
                        WHERE e.workspace_id = b.workspace_id AND e.source_domain = b.source_domain
-                         AND {_LINK_TS_E} < {_LINK_TS}))                     AS global_new_domains
+                         AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)))                     AS global_new_domains
             FROM backlink_records b
             WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
               AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
@@ -267,7 +267,7 @@ async def user_dashboard(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND {_LINK_TS_E} < {_LINK_TS}))              AS project_new_domains
+                     AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)))              AS project_new_domains
         FROM backlink_records b
         WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
           AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
@@ -315,7 +315,7 @@ async def user_dashboard(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND {_LINK_TS_E} < {_LINK_TS}))              AS new_domains
+                     AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)))              AS new_domains
         FROM backlink_records b
         WHERE {where} AND lower(b.assigned_user_label) = lower(:label)
           AND {dcol} >= :t0 AND {dcol} < :t1{lt_clause}
@@ -657,7 +657,7 @@ async def users(
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (
                    SELECT 1 FROM backlink_records e
                    WHERE e.project_id = b.project_id AND e.source_domain = b.source_domain
-                     AND {_LINK_TS_E} < {_LINK_TS}
+                     AND ({_LINK_TS_E}, e.id) < ({_LINK_TS}, b.id)
                )) AS new_domains
         FROM backlink_records b
         WHERE {where} AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1
