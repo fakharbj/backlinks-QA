@@ -95,6 +95,15 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_backlink_records_qa_completed", "qa_completed_at"),
         Index("ix_backlink_records_placement", "placement_date"),
         Index("ix_backlink_records_sheet_created", "sheet_created_date"),
+        # Performance (0040): per-user filtering by lowercased label, and covering
+        # indexes that make the "first-ever backlink from this domain" EXISTS
+        # subqueries (performance/user-dashboard/day-report) an index-only scan
+        # instead of a per-row bitmap over the whole workspace.
+        Index("ix_blr_ws_userlower", "workspace_id", text("lower(assigned_user_label)")),
+        Index("ix_blr_ws_domain", "workspace_id", "source_domain",
+              postgresql_include=["placement_date", "created_at", "id"]),
+        Index("ix_blr_proj_domain", "project_id", "source_domain",
+              postgresql_include=["placement_date", "created_at", "id"]),
         CheckConstraint("score >= 0 AND score <= 100", name="score_range"),
     )
 
