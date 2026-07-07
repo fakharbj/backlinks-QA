@@ -11890,6 +11890,13 @@ function ConflictRow({
   onToggleSelect: () => void;
   onOpen: () => void;
 }) {
+  // Distinct users behind this group (drives the "Across users" scope + the User filter).
+  const users = Array.from(
+    new Set((conflict.members || []).map((m) => (m.assigned_user_label || "").trim()).filter(Boolean))
+  );
+  const targetDomains = Array.from(
+    new Set((conflict.members || []).map((m) => (m.target_domain || "").trim()).filter(Boolean))
+  );
   return (
     <div className={clsx("flex items-center gap-3 p-4 transition hover:bg-field/40", selected && "bg-ocean/5")}>
       <input
@@ -11910,6 +11917,20 @@ function ConflictRow({
               {conflict.member_count} records
             </span>
             <ScopeChip scope={conflict.scope} />
+            {users.length ? (
+              <span
+                className="flex items-center gap-1 rounded-full bg-ocean/10 px-2 py-0.5 font-medium text-ocean"
+                title={`Users: ${users.join(", ")}`}
+              >
+                <Users className="h-3 w-3" />
+                {users.length === 1 ? users[0] : `${users[0]} +${users.length - 1}`}
+              </span>
+            ) : null}
+            {targetDomains.length === 1 ? (
+              <span className="rounded-full bg-plum/10 px-2 py-0.5 font-medium text-plum" title={`Target: ${targetDomains[0]}`}>
+                {targetDomains[0]}
+              </span>
+            ) : null}
             {conflict.reason ? <span className="italic">{conflict.reason}</span> : null}
           </div>
         </div>
