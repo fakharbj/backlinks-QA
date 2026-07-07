@@ -117,6 +117,24 @@ _ORPHAN = text(
     """
 )
 
+# Discovery date = earliest a domain entered the catalog. For rows with backlinks
+# that's the earliest backlink placement/creation date; only lowers, never raises
+# (so an imported/promoted row's added-date survives unless an earlier link exists).
+_DISCOVERY = text(
+    """
+    UPDATE source_domains sd
+       SET discovery_date = LEAST(coalesce(sd.discovery_date, sd.created_at), agg.first_seen)
+      FROM (
+        SELECT source_domain, min(coalesce(placement_date, created_at)) AS first_seen
+          FROM backlink_records
+         WHERE workspace_id = :ws AND source_domain IS NOT NULL
+         GROUP BY source_domain
+      ) agg
+     WHERE sd.workspace_id = :ws AND sd.domain_key = agg.source_domain
+       AND (sd.discovery_date IS NULL OR agg.first_seen < sd.discovery_date);
+    """
+)
+
 # ── Computed SQL expressions (percentages over the stored backlink_count) ─────
 # NULLIF avoids divide-by-zero → NULL for zero-backlink catalog rows, which
 # coalesce()es to 0.0. These are reused by list sort, stats, filters and rules.
@@ -213,6 +231,7 @@ async def recompute(db: AsyncSession, workspace_id: uuid.UUID) -> int:
     await db.execute(_DIST, params)
     await db.execute(_LINK, params)
     await db.execute(_ORPHAN, params)
+    await db.execute(_DISCOVERY, params)
     await db.flush()
     return int(
         (

@@ -42,6 +42,8 @@ class SourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_source_domains_ws_spam", "workspace_id", "spam_score"),
         Index("ix_source_domains_ws_as", "workspace_id", "semrush_as"),
         Index("ix_source_domains_ws_qualified", "workspace_id", "qualified_count"),
+        # Company dashboard "new source domains" buckets on discovery date (0041).
+        Index("ix_source_domains_ws_discovery", "workspace_id", "discovery_date"),
     )
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
@@ -67,6 +69,10 @@ class SourceDomain(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     project_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     user_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_recomputed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When this domain first entered the catalog by ANY path (earliest backlink
+    # placement, or the import/competitor-promotion date). The dashboard's
+    # "new source domains" bucket key. Kept current by recompute + promotion.
+    discovery_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── QA-outcome counters (0033) — STORED, refreshed by recompute ───────────
     # Buckets use the EFFECTIVE status (coalesce(override_status, status));

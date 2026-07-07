@@ -367,13 +367,50 @@ async def _trends_uncached(
     )
     weekly = [dict(r) for r in (await db.execute(weekly_sql, params)).mappings().all()]
 
+    new_domains = head.get("new_domains", 0)
+    prev_domains = head.get("prev_domains", 0)
+    # GLOBAL (company) scope: "new source domains" = catalog additions by discovery
+    # date (earliest of first-backlink placement or import/competitor-promotion),
+    # so imported/promoted domains count too — not just backlink first-appearances.
+    # Project scope stays on "first backlink for this project" above (source_domains
+    # is workspace-scoped, and that already matches the project rule).
+    if project_id is None:
+        dsql, _ = _bind(
+            """
+            SELECT count(*) FILTER (WHERE discovery_date >= :t0)                     AS nd,
+                   count(*) FILTER (WHERE discovery_date >= :p0 AND discovery_date < :t0) AS pd
+            FROM source_domains WHERE workspace_id = :ws
+            """,
+            {"ws": ctx.workspace_id, "t0": t0, "p0": prev0},
+        )
+        drow = (await db.execute(dsql, {"ws": ctx.workspace_id, "t0": t0, "p0": prev0})).mappings().first() or {}
+        new_domains = int(drow.get("nd") or 0)
+        prev_domains = int(drow.get("pd") or 0)
+        wsql, _ = _bind(
+            """
+            SELECT to_char(date_trunc('week', discovery_date), 'YYYY-MM-DD') AS week, count(*) AS n
+            FROM source_domains WHERE workspace_id = :ws AND discovery_date >= :t0
+            GROUP BY 1
+            """,
+            {"ws": ctx.workspace_id, "t0": t0},
+        )
+        wkmap = {r["week"]: int(r["n"]) for r in (await db.execute(wsql, {"ws": ctx.workspace_id, "t0": t0})).mappings().all()}
+        seen = set()
+        for w in weekly:
+            w["new_domains"] = wkmap.get(w["week"], 0)
+            seen.add(w["week"])
+        for week, n in wkmap.items():
+            if week not in seen:
+                weekly.append({"week": week, "links": 0, "new_domains": n})
+        weekly.sort(key=lambda w: w["week"])
+
     return {
         "days": days,
         "new_links": head.get("new_links", 0),
-        "new_domains": head.get("new_domains", 0),
+        "new_domains": new_domains,
         "new_indexed": head.get("new_indexed", 0),
         "prev_links": head.get("prev_links", 0),
-        "prev_domains": head.get("prev_domains", 0),
+        "prev_domains": prev_domains,
         "weekly": weekly,
     }
 

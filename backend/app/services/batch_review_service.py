@@ -610,11 +610,18 @@ async def approve_items(
                     datetime.fromisoformat(m["metrics_updated_at"])
                     if m.get("metrics_updated_at") else None
                 ),
+                # Discovery = when this domain was added to the catalog by import.
+                "discovery_date": now,
             }
             stmt = pg_insert(SourceDomain).values(**values)
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_source_domains_ws_domain",
                 set_={
+                    # Keep the EARLIEST discovery if the row already existed.
+                    "discovery_date": func.least(
+                        func.coalesce(SourceDomain.discovery_date, SourceDomain.created_at),
+                        stmt.excluded.discovery_date,
+                    ),
                     # Merge metrics without wiping better data already stored.
                     "da": func.coalesce(stmt.excluded.da, SourceDomain.da),
                     "pa": func.coalesce(stmt.excluded.pa, SourceDomain.pa),
