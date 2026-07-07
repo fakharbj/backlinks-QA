@@ -105,6 +105,13 @@ async def known_labels(ctx: AuthCtx, db: ReadSession) -> list[str]:
     return await workforce_service.known_labels(db, ctx)
 
 
+@router.get("/people")
+async def all_people(ctx: AuthCtx, db: ReadSession) -> list[dict]:
+    """Everyone with any history (incl. laid-off), each flagged active — for the
+    User Dashboards VIEW grid, so people with real work always appear."""
+    return await workforce_service.all_people(db, ctx)
+
+
 # ── Weekly templates ("set the week up once") ────────────────────────────────
 class TemplateWeek(BaseModel):
     week_start: date  # any day of the target week — normalized to Monday

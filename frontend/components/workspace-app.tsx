@@ -5648,10 +5648,12 @@ function UserDashboardsDesk({
     }
   }, []);
 
-  const knownLabels = useQuery({
-    queryKey: ["workforce-labels", token],
+  // The grid + finder list EVERYONE with history (incl. laid-off) — this is a
+  // view, not a planning picker, so a laid-off person's work still shows.
+  const people = useQuery({
+    queryKey: ["workforce-people", token],
     enabled: Boolean(token),
-    queryFn: () => api<string[]>("/workforce/labels", { token })
+    queryFn: () => api<Array<{ user_label: string; active: boolean }>>("/workforce/people", { token })
   });
 
   type DeskUser = {
@@ -5682,7 +5684,24 @@ function UserDashboardsDesk({
       />
     );
 
-  const users = team.data?.users || [];
+  // The grid lists EVERY known person (not just those with links in the last 30
+  // days) — activity is a stat, not a filter. Merge the full label list with the
+  // windowed activity so people with no recent links still get a card (0 links).
+  const activity = new Map((team.data?.users || []).map((u) => [u.user_label, u]));
+  const activeMap = new Map((people.data || []).map((p) => [p.user_label, p.active]));
+  const labelSet = Array.from(
+    new Set([...(people.data || []).map((p) => p.user_label), ...(team.data?.users || []).map((u) => u.user_label)])
+  );
+  const users: DeskUser[] = labelSet
+    .map(
+      (l) =>
+        activity.get(l) || {
+          user_label: l, links: 0, indexed: 0, pass: 0, fail: 0,
+          duplicates: 0, avg_score: null, project_new_domains: 0, global_new_domains: 0,
+        }
+    )
+    .sort((a, b) => b.links - a.links || a.user_label.localeCompare(b.user_label));
+  const loading = team.isLoading || people.isLoading;
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -5698,13 +5717,13 @@ function UserDashboardsDesk({
         <SearchSelect
           value={person}
           onChange={setPerson}
-          options={(knownLabels.data || []).map((l) => ({ value: l, label: l }))}
+          options={(people.data || []).map((p) => ({ value: p.user_label, label: p.active ? p.user_label : `${p.user_label} (laid off)` }))}
           placeholder="Find a person…"
           width="w-64"
         />
       </div>
 
-      {team.isLoading ? (
+      {loading ? (
         <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
       ) : null}
       {team.isError ? (
@@ -5713,7 +5732,7 @@ function UserDashboardsDesk({
         </p>
       ) : null}
 
-      {!team.isLoading && !team.isError ? (
+      {!loading && !team.isError ? (
         users.length ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {users.map((u) => {
@@ -5730,6 +5749,9 @@ function UserDashboardsDesk({
                       <Users className="h-4 w-4" />
                     </span>
                     <span className="min-w-0 flex-1 truncate font-semibold text-ink">{u.user_label}</span>
+                    {activeMap.get(u.user_label) === false ? (
+                      <span className="shrink-0 rounded-full bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted" title="Laid off — history kept, hidden from planning pickers">laid off</span>
+                    ) : null}
                   </span>
                   <span className="text-xs text-muted">{u.links} links · last 30 days</span>
                   {rate != null ? (

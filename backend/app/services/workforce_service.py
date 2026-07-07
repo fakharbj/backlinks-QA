@@ -484,6 +484,21 @@ async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
             )
         ).scalars().all()
     )
+    # Anyone who has ever been credited a backlink is a real person to show/plan
+    # for — even without an employee-catalog row (e.g. a sheet-only name).
+    from app.models.backlink import BacklinkRecord
+
+    labels |= {
+        lbl
+        for lbl in (
+            await db.execute(
+                select(BacklinkRecord.assigned_user_label)
+                .where(BacklinkRecord.workspace_id == ctx.workspace_id)
+                .distinct()
+            )
+        ).scalars().all()
+        if lbl and lbl.strip()
+    }
     # Laid-off labels leave the pickers even if they have past assignments.
     inactive = set(
         (
@@ -500,6 +515,48 @@ async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
     if scope is not None:
         labels &= scope
     return sorted(labels, key=str.lower)
+
+
+async def all_people(db: AsyncSession, ctx: AuthContext) -> list[dict]:
+    """Everyone with any history — for the User Dashboards grid (a VIEW, not a
+    planning picker), so laid-off people with real work still appear. Union of
+    employee-catalog labels (active OR inactive), task assignments and any
+    backlink assignee; each flagged ``active`` (False = laid off). TeamLead-scoped."""
+    from app.models.backlink import BacklinkRecord
+    from app.models.employee import UserEmployeeMapping
+
+    inactive = {
+        (lbl or "").strip()
+        for lbl in (
+            await db.execute(
+                select(UserEmployeeMapping.sheet_user_label).where(
+                    UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                    UserEmployeeMapping.is_active.is_(False),
+                )
+            )
+        ).scalars().all()
+        if lbl and lbl.strip()
+    }
+    labels: set[str] = set()
+    for stmt in (
+        select(UserEmployeeMapping.sheet_user_label).where(
+            UserEmployeeMapping.workspace_id == ctx.workspace_id
+        ),
+        select(TaskAssignment.user_label).where(
+            TaskAssignment.workspace_id == ctx.workspace_id
+        ).distinct(),
+        select(BacklinkRecord.assigned_user_label).where(
+            BacklinkRecord.workspace_id == ctx.workspace_id
+        ).distinct(),
+    ):
+        labels |= {lbl.strip() for lbl in (await db.execute(stmt)).scalars().all() if lbl and lbl.strip()}
+    scope = await visible_labels(db, ctx)
+    if scope is not None:
+        labels &= scope
+    return [
+        {"user_label": lbl, "active": lbl not in inactive}
+        for lbl in sorted(labels, key=str.lower)
+    ]
 
 
 # ── Weekly templates (set the week up ONCE) ──────────────────────────────────
