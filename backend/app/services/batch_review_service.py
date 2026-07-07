@@ -46,7 +46,7 @@ log = get_logger("services.batch_review")
 
 # Item states that still need a human decision.
 _OPEN_STATES = ("pending", "checking", "checked", "failed")
-REVIEW_KINDS = ("link_review", "domain_import")
+REVIEW_KINDS = ("link_review", "domain_import", "competitor_import")
 
 
 def _sha(text: str) -> str:
@@ -578,8 +578,8 @@ async def check_domain_items(
     INLINE like /source-domains/fetch-metrics, capped per call. Results land in
     ``item.payload['metrics']`` only — the catalog is untouched until approval."""
     batch = await load_batch(db, ctx, batch_id, review_only=True)
-    if batch.kind != "domain_import":
-        raise ValidationAppError("Metric checks apply to domain-import batches")
+    if batch.kind not in ("domain_import", "competitor_import"):
+        raise ValidationAppError("Metric checks apply to domain / competitor batches")
     items = await _select_items(
         db, batch, item_ids=item_ids, state=state or "pending,failed,checked",
         presence=presence, q=q, thresholds=thresholds,

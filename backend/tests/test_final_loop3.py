@@ -84,6 +84,37 @@ def test_competitor_ingest_counts_and_domains(live_stack):
         assert f["competitor_url"]
         assert f["total_rows"] == 2 and f["new_domains"] == 1 and f["existing_domains"] == 0
 
+        # The upload staged a competitor_import REVIEW batch with one domain item
+        # per unique domain (the two links share blog-<mark>.test).
+        cbatches = client.get(
+            "/api/v1/batches",
+            params={"project_id": project_id, "kind": "competitor_import"},
+            headers=headers,
+        ).json()
+        assert cbatches, "competitor upload should create a competitor_import review batch"
+        assert cbatches[0]["status"] == "review"
+        bid = cbatches[0]["id"]
+        citems = client.get(f"/api/v1/batches/{bid}/items", headers=headers).json()
+        crows = citems.get("items", []) if isinstance(citems, dict) else citems
+        assert len(crows) == 1, crows
+        assert crows[0]["kind"] == "domain" and crows[0]["label"] == f"blog-{mark}.test"
+        # Approve it → the domain lands in the Source Domains catalog as origin='competitor'.
+        appr = client.post(
+            f"/api/v1/batches/{bid}/items/approve",
+            json={"item_ids": [crows[0]["id"]]},
+            headers=headers,
+        )
+        assert appr.status_code == 200, appr.text
+        # Promoted domains are workspace-global catalog rows (0 of our own backlinks),
+        # so query the global catalog (not the project-scoped view) by origin.
+        sd = client.get(
+            "/api/v1/source-domains",
+            params={"origin": "competitor", "search": f"blog-{mark}.test"},
+            headers=headers,
+        ).json()
+        sd_rows = sd.get("items", []) if isinstance(sd, dict) else sd
+        assert any(r["domain_key"] == f"blog-{mark}.test" for r in sd_rows), sd
+
         # Second upload with ONE repeat domain + one new: honest split (the old
         # bug reported project-wide totals: 'existing 0 / new 21').
         second = client.post(
