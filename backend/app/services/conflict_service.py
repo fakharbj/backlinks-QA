@@ -853,6 +853,30 @@ async def _load_group(db: AsyncSession, ctx: AuthContext, conflict_id: uuid.UUID
     return row
 
 
+async def find_for_backlink(
+    db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID
+) -> dict | None:
+    """Full duplicate-group detail for the group a backlink belongs to (or None).
+
+    Powers the backlink drawer's inline Duplicates panel so a user can see the
+    similar records, similarity and field-by-field comparison without leaving the
+    sidebar. Workspace-scoped via the group load in ``get_detail``."""
+    cid = (
+        await db.execute(
+            select(BacklinkConflictMember.conflict_id)
+            .join(BacklinkConflict, BacklinkConflict.id == BacklinkConflictMember.conflict_id)
+            .where(
+                BacklinkConflictMember.backlink_id == backlink_id,
+                BacklinkConflict.workspace_id == ctx.workspace_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if cid is None:
+        return None
+    return await get_detail(db, ctx, cid)
+
+
 async def get_detail(db: AsyncSession, ctx: AuthContext, conflict_id: uuid.UUID) -> dict:
     """Group + enriched members + field_matrix + similarity + reason + actions.
 

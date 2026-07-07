@@ -102,6 +102,16 @@ async def rebuild_conflicts(
     return ConflictSummaryOut(**await conflict_service.summary(db, ctx))
 
 
+@router.get("/for-backlink/{backlink_id}")
+async def conflict_for_backlink(
+    backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession
+) -> dict:
+    """The duplicate group (if any) that contains this backlink — powers the
+    inline Duplicates panel in the backlink detail drawer. Empty object when the
+    backlink is not part of any duplicate group."""
+    return await conflict_service.find_for_backlink(db, ctx, backlink_id) or {}
+
+
 @router.get("/{conflict_id}", response_model=ConflictDetailOut)
 async def conflict_detail(
     conflict_id: uuid.UUID, ctx: AuthCtx, db: ReadSession

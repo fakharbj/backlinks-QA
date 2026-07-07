@@ -2300,6 +2300,14 @@ function BacklinkDetailDrawer({
     enabled: Boolean(token),
     queryFn: () => api<BacklinkRow[]>(`/backlinks/${backlinkId}/duplicates`, { token })
   });
+  // The duplicate group this backlink belongs to (if any) — powers the inline
+  // Duplicates panel + the "compare all records" view without leaving the drawer.
+  const [showCompare, setShowCompare] = useState(false);
+  const conflictGroup = useQuery({
+    queryKey: ["backlink-conflict", token, backlinkId],
+    enabled: Boolean(token),
+    queryFn: () => api<ConflictDetail | Record<string, never>>(`/conflicts/for-backlink/${backlinkId}`, { token })
+  });
   const assignments = useQuery({
     queryKey: ["backlink-assign", token, backlinkId],
     enabled: Boolean(token),
@@ -2344,7 +2352,12 @@ function BacklinkDetailDrawer({
   });
 
   const data = detail.data;
+  const grp =
+    conflictGroup.data && (conflictGroup.data as ConflictDetail).id
+      ? (conflictGroup.data as ConflictDetail)
+      : null;
   return (
+    <>
     <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
       <aside
         className="h-full w-full max-w-[680px] overflow-y-auto bg-panel shadow-xl scrollbar-thin"
@@ -2482,20 +2495,56 @@ function BacklinkDetailDrawer({
               <FactRow k="Next check due" v={data.next_check_at ? formatDate(data.next_check_at) : "—"} />
             </DetailBlock>
 
-            {duplicates.data && duplicates.data.length > 0 ? (
-              <DetailBlock title={`Duplicate occurrences (${duplicates.data.length})`}>
-                <div className="space-y-1.5">
-                  {duplicates.data.map((d) => (
-                    <div key={d.id} className="rounded-md border border-line p-2 text-xs">
-                      <div className="truncate font-medium text-ink" title={d.source_page_url}>{d.source_page_url}</div>
-                      <div className="text-muted">
-                        → {d.target_url} · {d.assigned_user_label || "no user"} · {(d.duplicate_status || "").replace(/_/g, " ")}
-                      </div>
+            {(() => {
+              const occ = duplicates.data || [];
+              if (!grp && occ.length === 0) return null;
+              // Prefer the conflict group's own members (has similarity, scope,
+              // field diffs); fall back to the plain occurrences list.
+              const siblings = grp
+                ? (grp.members || []).filter((m) => m.backlink_id !== backlinkId)
+                : occ.map((d) => ({
+                    backlink_id: d.id, source_page_url: d.source_page_url, target_url: d.target_url,
+                    assigned_user_label: d.assigned_user_label, project_name: null,
+                    duplicate_status: d.duplicate_status, link_type: d.link_type, status: d.status
+                  }));
+              const diffFields = grp
+                ? (grp.field_matrix || []).filter((r) => !r.all_same).map((r) => compareFieldLabel(r.field))
+                : [];
+              return (
+                <DetailBlock title={`Duplicates (${siblings.length} other record${siblings.length === 1 ? "" : "s"})`}>
+                  {grp ? (
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <ScopeChip scope={grp.scope} />
+                      <SimilarityMeter value={grp.similarity} />
+                      {grp.resolution_status ? <Status value={grp.resolution_status} compact /> : null}
+                      <button
+                        onClick={() => setShowCompare(true)}
+                        className="ml-auto flex items-center gap-1 rounded-md border border-ocean/40 bg-ocean/10 px-2 py-1 text-[11px] font-semibold text-ocean transition hover:bg-ocean/20"
+                      >
+                        <GitCompare className="h-3 w-3" /> Compare all records
+                      </button>
                     </div>
-                  ))}
-                </div>
-              </DetailBlock>
-            ) : null}
+                  ) : null}
+                  {diffFields.length ? (
+                    <div className="mb-2 text-xs text-muted">
+                      Differs on: <span className="font-medium text-ember">{diffFields.join(", ")}</span>
+                    </div>
+                  ) : null}
+                  <div className="space-y-1.5">
+                    {siblings.map((d) => (
+                      <div key={d.backlink_id} className="rounded-md border border-line p-2 text-xs">
+                        <div className="truncate font-medium text-ink" title={d.source_page_url}>{d.source_page_url}</div>
+                        <div className="text-muted">
+                          → {d.target_url || "—"} · {d.assigned_user_label || "no user"}
+                          {d.project_name ? ` · ${d.project_name}` : ""}
+                          {d.duplicate_status ? ` · ${(d.duplicate_status || "").replace(/_/g, " ")}` : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </DetailBlock>
+              );
+            })()}
 
             {assignments.data && assignments.data.length > 0 ? (
               <DetailBlock title="Assignment history">
@@ -2628,6 +2677,19 @@ function BacklinkDetailDrawer({
         )}
       </aside>
     </div>
+    {showCompare && grp ? (
+      <ConflictComparisonModal
+        conflictId={grp.id}
+        token={token}
+        onClose={() => setShowCompare(false)}
+        onNotice={onNotice}
+        onChanged={() => {
+          queryClient.invalidateQueries({ queryKey: ["backlink-conflict", token, backlinkId] });
+          queryClient.invalidateQueries({ queryKey: ["backlink-dupes", token, backlinkId] });
+        }}
+      />
+    ) : null}
+    </>
   );
 }
 
