@@ -86,6 +86,7 @@ class BacklinkRow(ORMModel):
     domain_da: int | None = None
     domain_pa: int | None = None
     domain_as: int | None = None
+    domain_spam: int | None = None  # Moz spam score (domain-level, lower is better)
     assigned_user_id: uuid.UUID | None
     assigned_user_label: str | None = None
     employee_code: str | None = None

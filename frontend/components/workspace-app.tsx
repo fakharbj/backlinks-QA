@@ -1837,29 +1837,27 @@ function Backlinks({
           <div className="flex flex-wrap gap-2">
             <ExportButton
               onClick={async () => {
+                // Server-side export of the FULL filtered set (not the 200-row page).
                 try {
                   const p2 = new URLSearchParams(query);
-                  p2.set("limit", "200");
-                  p2.set("with_total", "false");
-                  const page = await api<Page<BacklinkRow>>(`/backlinks?${p2.toString()}`, { token });
-                  downloadCsv(
-                    "backlinks.csv",
-                    [
-                      "Source URL", "Target URL", "Status", "Score", "Type", "User", "Index", "HTTP", "Rel", "Duplicate",
-                      "Placement", "Discovery", "Import", "Sheet", "QA checked", "First QA", "Completion", "Assignment", "Update"
-                    ],
-                    page.items.map((r) => [
-                      r.source_page_url, r.target_url, r.override_status || r.status, r.score,
-                      r.link_type, r.assigned_user_label, r.index_status, r.http_status,
-                      r.current_rel, r.duplicate_status,
-                      formatDay(r.placement_date ?? null), formatDate(r.discovered_at ?? null),
-                      formatDate(r.created_at ?? null), formatDay(r.sheet_created_date ?? null),
-                      formatDate(r.last_checked_at), formatDate(r.first_qa_at ?? null),
-                      formatDate(r.qa_completed_at ?? null), formatDate(r.assigned_at ?? null),
-                      formatDate(r.updated_at ?? null)
-                    ])
-                  );
-                  onNotice(`Exported ${page.items.length} links (current filters).`);
+                  p2.delete("limit");
+                  p2.delete("with_total");
+                  p2.set("format", "csv");
+                  const res = await fetch(`${API_BASE}/backlinks/export?${p2.toString()}`, {
+                    headers: token ? { Authorization: `Bearer ${token}` } : {}
+                  });
+                  if (!res.ok) throw new Error(`Export failed (${res.status})`);
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download = "backlinks.csv";
+                  document.body.appendChild(link);
+                  link.click();
+                  link.remove();
+                  URL.revokeObjectURL(url);
+                  const cap = res.headers.get("X-Export-Truncated");
+                  onNotice(cap ? `Exported the first ${cap} links (limit reached).` : "Exported all matching links.");
                 } catch (e) {
                   onNotice(e instanceof Error ? e.message : "Export failed");
                 }
@@ -2191,10 +2189,11 @@ function Backlinks({
                 <Td>{row.http_status ?? "-"}</Td>
                 <Td>{row.current_rel ?? "-"}</Td>
                 <Td>
-                  {row.domain_da != null || row.domain_as != null ? (
+                  {row.domain_da != null || row.domain_as != null || row.domain_spam != null ? (
                     <span className="flex flex-wrap gap-1">
                       <MetricTag label="DA" value={row.domain_da} />
                       <MetricTag label="AS" value={row.domain_as} />
+                      {row.domain_spam != null ? <SpamTag value={row.domain_spam} /> : null}
                     </span>
                   ) : (
                     <span title={metricAgeTitle(row.extra?.metrics)}>{formatSiteMetric(row.extra?.metrics)}</span>
@@ -2408,6 +2407,7 @@ function BacklinkDetailDrawer({
                     <MetricTag label="DA" value={data.domain_da} title="Domain Authority — Moz, for the whole source domain" />
                     <MetricTag label="PA" value={data.domain_pa} title="Page/domain authority — Moz" />
                     <MetricTag label="AS" value={data.domain_as} title="Authority Score — Semrush" />
+                    {data.domain_spam != null ? <SpamTag value={data.domain_spam} /> : null}
                   </span>
                 }
               />
@@ -6381,17 +6381,7 @@ function BatchDetails({
         <MetricTag label="DA" value={m.da} title="Domain Authority — Moz" />
         <MetricTag label="PA" value={m.pa} title="Page Authority — Moz" />
         <MetricTag label="AS" value={m.semrush_as} title="Authority Score — Semrush" />
-        {m.spam_score != null ? (
-          <span
-            className={clsx(
-              "inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
-              m.spam_score <= 3 ? "bg-ocean/10 text-ocean" : m.spam_score <= 7 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
-            )}
-            title="Moz spam score — lower is better"
-          >
-            Spam {m.spam_score}
-          </span>
-        ) : null}
+        {m.spam_score != null ? <SpamTag value={m.spam_score} /> : null}
         {m.domain_age_days != null ? (
           <span className="text-[10px] text-muted" title="Domain age (registration date via RDAP)">
             {m.domain_age_days >= 365 ? `${Math.round(m.domain_age_days / 365)}y` : `${m.domain_age_days}d`} old
@@ -7341,29 +7331,21 @@ function CompetitorDesk({
     onError: (e: Error) => onNotice(e.message)
   });
   const exportCsv = () => {
-    const rows = domains.data || [];
-    const head = "domain,status,competitor_links,our_links,indexed_pct,da,pa,guest_post";
-    const body = rows
-      .map((d) =>
-        [
-          d.domain_key,
-          d.decision === "dismissed" ? "dismissed" : d.category,
-          d.url_count,
-          d.our_link_count,
-          d.our_indexed_pct ?? "",
-          d.da ?? "",
-          d.pa ?? "",
-          d.has_guest_post ? "yes" : ""
-        ].join(",")
-      )
-      .join("\n");
-    const blob = new Blob([`${head}\n${body}`], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "competitor-opportunities.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    // Use the shared CSV helper (UTF-8 BOM + proper escaping) — was hand-rolled.
+    downloadCsv(
+      "competitor-opportunities.csv",
+      ["domain", "status", "competitor_links", "our_links", "indexed_pct", "da", "pa", "guest_post"],
+      (domains.data || []).map((d) => [
+        d.domain_key,
+        d.decision === "dismissed" ? "dismissed" : d.category,
+        d.url_count,
+        d.our_link_count,
+        d.our_indexed_pct ?? "",
+        d.da ?? "",
+        d.pa ?? "",
+        d.has_guest_post ? "yes" : ""
+      ])
+    );
   };
   const ingest = useMutation({
     mutationFn: () =>

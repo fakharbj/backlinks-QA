@@ -391,13 +391,13 @@ async def domain_metrics_per_row(
     result = await db.execute(
         select(
             SourceDomain.workspace_id, SourceDomain.domain_key,
-            SourceDomain.da, SourceDomain.pa, SourceDomain.semrush_as,
+            SourceDomain.da, SourceDomain.pa, SourceDomain.semrush_as, SourceDomain.spam_score,
         ).where(
             SourceDomain.workspace_id.in_({r.workspace_id for r in rows}),
             SourceDomain.domain_key.in_(domains),
         )
     )
-    metrics = {(ws, key): (da, pa, sas) for ws, key, da, pa, sas in result.all()}
+    metrics = {(ws, key): (da, pa, sas, spam) for ws, key, da, pa, sas, spam in result.all()}
     return {
         r.id: metrics[(r.workspace_id, r.source_domain)]
         for r in rows
@@ -408,6 +408,55 @@ async def domain_metrics_per_row(
 async def count_backlinks(db: AsyncSession, ctx: AuthContext, filters: BacklinkFilters) -> int:
     stmt = _apply_filters(_scope(select(func.count(BacklinkRecord.id)), ctx), filters)
     return int((await db.execute(stmt)).scalar_one())
+
+
+_EXPORT_HEADERS = [
+    "Source URL", "Target URL", "Source domain", "Status", "Score", "Index status",
+    "Rel", "HTTP", "Link found", "Duplicate", "Link type", "Assigned user",
+    "DA", "PA", "AS", "Spam", "Placement date", "Discovered", "QA completed", "Created",
+]
+# Cap to protect memory; the frontend/logs surface truncation honestly.
+EXPORT_ROW_CAP = 50_000
+
+
+async def export_rows(
+    db: AsyncSession, ctx: AuthContext, filters: BacklinkFilters, *,
+    sort: str, direction: str, cap: int = EXPORT_ROW_CAP,
+) -> tuple[list[str], list[list], bool]:
+    """The FULL filtered backlink set for a server-side export (not the 200-row
+    page cap): keyset-paged internally, domain metrics enriched per page. Returns
+    (headers, rows, truncated)."""
+    def _v(x):
+        return getattr(x, "value", x)
+
+    rows_out: list[list] = []
+    cursor: str | None = None
+    truncated = False
+    while True:
+        page, cursor, has_more = await list_backlinks(
+            db, ctx, filters, sort=sort, direction=direction, limit=200, cursor=cursor
+        )
+        dm = await domain_metrics_per_row(db, page)
+        for r in page:
+            da, pa, sas, spam = dm.get(r.id, (None, None, None, None))
+            rows_out.append([
+                r.source_page_url, r.target_url, r.source_domain,
+                _v(r.override_status or r.status), r.score, _v(r.index_status),
+                _v(r.current_rel), r.http_status,
+                ("" if r.link_found is None else ("yes" if r.link_found else "no")),
+                r.duplicate_status, r.link_type, r.assigned_user_label,
+                da, pa, sas, spam,
+                r.placement_date.isoformat() if r.placement_date else "",
+                r.discovered_at.isoformat() if r.discovered_at else "",
+                r.qa_completed_at.isoformat() if r.qa_completed_at else "",
+                r.created_at.isoformat() if r.created_at else "",
+            ])
+            if len(rows_out) >= cap:
+                truncated = has_more or False
+                return _EXPORT_HEADERS, rows_out, truncated
+        if not has_more:
+            break
+    return _EXPORT_HEADERS, rows_out, truncated
 
 
 async def get_backlink(

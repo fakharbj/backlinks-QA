@@ -568,6 +568,7 @@ export type BacklinkRow = {
   domain_da?: number | null;
   domain_pa?: number | null;
   domain_as?: number | null;
+  domain_spam?: number | null;
   tags: string[];
   extra?: { metrics?: SiteMetrics } | null;
 };

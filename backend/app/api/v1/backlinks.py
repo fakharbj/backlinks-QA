@@ -6,6 +6,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, status
+from starlette.responses import StreamingResponse
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
@@ -117,7 +118,9 @@ async def list_backlinks(
     for r in rows:
         row = BacklinkRow.model_validate(r)
         row.targets_on_source = target_counts.get(r.id, 1)
-        row.domain_da, row.domain_pa, row.domain_as = domain_metrics.get(r.id, (None, None, None))
+        row.domain_da, row.domain_pa, row.domain_as, row.domain_spam = domain_metrics.get(
+            r.id, (None, None, None, None)
+        )
         items.append(row)
     return KeysetPage[BacklinkRow](
         items=items,
@@ -125,6 +128,88 @@ async def list_backlinks(
         has_more=has_more,
         total=total,
     )
+
+
+@router.get("/export")
+async def export_backlinks(
+    ctx: AuthCtx,
+    db: ReadSession,
+    project_id: uuid.UUID | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    issue_label: str | None = None,
+    score_min: int | None = Query(default=None, ge=0, le=100),
+    score_max: int | None = Query(default=None, ge=0, le=100),
+    rel: str | None = None,
+    indexability: Indexability | None = None,
+    robots_status: str | None = None,
+    canonical_status: str | None = None,
+    vendor_id: uuid.UUID | None = None,
+    campaign_id: uuid.UUID | None = None,
+    tag: str | None = None,
+    source_domain: str | None = None,
+    assigned_user_id: uuid.UUID | None = None,
+    assigned_user_label: str | None = None,
+    link_type: str | None = None,
+    duplicate_status: str | None = None,
+    index_status: str | None = None,
+    http_status: str | None = None,
+    broken: bool | None = None,
+    spam_min: int | None = Query(default=None, ge=0, le=100),
+    orphaned: bool | None = None,
+    search: str | None = None,
+    target: str | None = None,
+    placement_from: date | None = None, placement_to: date | None = None,
+    discovered_from: date | None = None, discovered_to: date | None = None,
+    qa_from: date | None = None, qa_to: date | None = None,
+    completed_from: date | None = None, completed_to: date | None = None,
+    imported_from: date | None = None, imported_to: date | None = None,
+    sheet_from: date | None = None, sheet_to: date | None = None,
+    assigned_from: date | None = None, assigned_to: date | None = None,
+    updated_from: date | None = None, updated_to: date | None = None,
+    sort: str = Query(default="score"),
+    direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    fmt: str = Query(default="csv", alias="format", pattern="^(csv|xlsx)$"),
+) -> StreamingResponse:
+    """Export the FULL filtered backlink set (not the 200-row page) as CSV/XLSX —
+    same filters as the grid. Available to anyone who can view the grid."""
+    from app.services import source_domain_service
+
+    filters = BacklinkFilters(
+        project_id=project_id, status=status_filter, issue_label=issue_label,
+        score_min=score_min, score_max=score_max, rel=rel, indexability=indexability,
+        robots_status=robots_status, canonical_status=canonical_status, vendor_id=vendor_id,
+        campaign_id=campaign_id, tag=tag, source_domain=source_domain,
+        assigned_user_id=assigned_user_id, assigned_user_label=assigned_user_label,
+        link_type=link_type, duplicate_status=duplicate_status, index_status=index_status,
+        http_status=http_status, broken=broken, spam_min=spam_min, orphaned=orphaned,
+        search=search, target=target,
+        placement_from=placement_from, placement_to=placement_to,
+        discovered_from=discovered_from, discovered_to=discovered_to,
+        qa_from=qa_from, qa_to=qa_to,
+        completed_from=completed_from, completed_to=completed_to,
+        imported_from=imported_from, imported_to=imported_to,
+        sheet_from=sheet_from, sheet_to=sheet_to,
+        assigned_from=assigned_from, assigned_to=assigned_to,
+        updated_from=updated_from, updated_to=updated_to,
+    )
+    headers, rows, truncated = await backlink_service.export_rows(
+        db, ctx, filters, sort=sort, direction=direction
+    )
+    if fmt == "xlsx":
+        data = source_domain_service.build_xlsx(headers, rows, title="Backlinks")
+        media, ext = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx",
+        )
+    else:
+        data = source_domain_service.build_csv(headers, rows)
+        media, ext = "text/csv; charset=utf-8", "csv"
+    resp = StreamingResponse(
+        iter([data]), media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="backlinks.{ext}"'},
+    )
+    if truncated:
+        resp.headers["X-Export-Truncated"] = str(backlink_service.EXPORT_ROW_CAP)
+    return resp
 
 
 @router.post("", response_model=BacklinkRow, status_code=status.HTTP_201_CREATED)
@@ -144,9 +229,9 @@ async def create_backlink(
 async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> BacklinkDetail:
     bl, issues, latest, history = await backlink_service.get_detail(db, ctx, backlink_id)
     detail = BacklinkDetail.model_validate(bl)
-    detail.domain_da, detail.domain_pa, detail.domain_as = (
+    detail.domain_da, detail.domain_pa, detail.domain_as, detail.domain_spam = (
         await backlink_service.domain_metrics_per_row(db, [bl])
-    ).get(bl.id, (None, None, None))
+    ).get(bl.id, (None, None, None, None))
     detail.issues = [
         IssueOut(code=i.code, label=i.label, category=i.category.value, severity=i.severity.value,
                  message=i.message, recommendation=i.recommendation, evidence=i.evidence)
