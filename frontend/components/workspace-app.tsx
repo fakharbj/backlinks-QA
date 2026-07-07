@@ -13333,6 +13333,28 @@ function SheetsDesk({
     onError: (e: Error) => onNotice(e.message)
   });
 
+  // ── Google Sheets API read-rate limit (global; guards Google's ~300/min quota) ──
+  const apiLimit = useQuery({
+    queryKey: ["sheets-api-limit", token],
+    enabled: Boolean(token) && !projectId,
+    queryFn: () => api<{ reads_per_min: number; default: number; max: number }>("/sheets/api-limit", { token })
+  });
+  const [limitDraft, setLimitDraft] = useState<string>("");
+  useEffect(() => {
+    if (apiLimit.data) setLimitDraft(String(apiLimit.data.reads_per_min));
+  }, [apiLimit.data]);
+  const saveLimit = useMutation({
+    mutationFn: (v: number) =>
+      api<{ reads_per_min: number }>("/sheets/api-limit", {
+        method: "PUT", token, body: JSON.stringify({ reads_per_min: v })
+      }),
+    onSuccess: (r) => {
+      onNotice(`Sheets API read limit set to ${r.reads_per_min}/min`);
+      queryClient.invalidateQueries({ queryKey: ["sheets-api-limit"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
   const cfg = config.data;
   // Project scope: entering a project narrows the desk to that project's sheets.
   const visibleSheets = (sheets.data || []).filter((s) => !projectId || s.project_id === projectId);
@@ -13344,7 +13366,9 @@ function SheetsDesk({
           <div>
             <h2 className="text-base font-semibold text-ink">Google Sheets</h2>
             <p className="text-sm text-muted">
-              Sync projects and backlinks from your main sheet. One project sheet = one project.
+              <span className="font-medium text-ink">Sync from main sheet</span> only discovers projects
+              (their name, sheet link + tabs). Then set each project&apos;s mapping — including any tabs
+              to ignore — and click <span className="font-medium text-ink">Sync</span> on that project to pull its links.
             </p>
           </div>
           <button
@@ -13353,9 +13377,28 @@ function SheetsDesk({
             className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
           >
             {syncAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Sync from main sheet
+            Discover projects from main sheet
           </button>
         </div>
+        {/* API read-rate limit — keeps syncs under Google's ~300 reads/min quota. */}
+        {cfg?.enabled ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-line bg-field p-3 text-sm">
+            <span className="font-medium text-ink">Sheets API read limit</span>
+            <input
+              type="number" min={0} max={300} value={limitDraft}
+              onChange={(e) => setLimitDraft(e.target.value)}
+              className="h-8 w-24 rounded-md border border-line bg-panel px-2 text-sm focus:border-ocean focus:outline-none"
+            />
+            <span className="text-xs text-muted">reads/min (Google&apos;s cap is 300; 0 = no throttle)</span>
+            <button
+              onClick={() => saveLimit.mutate(Math.max(0, Math.min(300, Number(limitDraft) || 0)))}
+              disabled={saveLimit.isPending || limitDraft === String(apiLimit.data?.reads_per_min ?? "")}
+              className="ml-auto h-8 rounded-md border border-line px-3 text-xs font-medium text-ink transition hover:bg-panel disabled:opacity-40"
+            >
+              Save limit
+            </button>
+          </div>
+        ) : null}
         {cfg && !cfg.enabled ? (
           <div className="mt-3 rounded-md border border-line bg-field p-3 text-sm text-muted">
             Google Sheets is not configured yet. Set the service account + main sheet ID in the
@@ -13586,6 +13629,20 @@ function SheetMappingEditor({
     onError: (e: Error) => onNotice(e.message)
   });
 
+  // Ignore / include a whole sub-sheet (tab). Ignored tabs are fully skipped on
+  // sync — no reads, no mapping, no links imported from them.
+  const toggleTab = useMutation({
+    mutationFn: (p: { id: string; import_enabled: boolean }) =>
+      api<{ id: string }>(`/sheets/tabs/${p.id}`, {
+        token, method: "PATCH", body: JSON.stringify({ import_enabled: p.import_enabled })
+      }),
+    onSuccess: (_r, p) => {
+      onNotice(p.import_enabled ? "Tab included — it will sync" : "Tab ignored — it won't sync");
+      queryClient.invalidateQueries({ queryKey: ["sheet-mapping", token, sheetId] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
   const fieldLabel = (f: string) => {
     const m = d?.field_meta.find((x) => x.key === f);
     return m ? m.label : f.replaceAll("_", " ");
@@ -13660,6 +13717,21 @@ function SheetMappingEditor({
         <span className="rounded-full bg-field px-2 py-0.5 text-[10px] font-semibold uppercase text-muted">
           {d.is_manual ? "Manual" : "Auto-detected"}
         </span>
+        {activeTab ? (
+          <button
+            onClick={() => toggleTab.mutate({ id: activeTab.id, import_enabled: !activeTab.import_enabled })}
+            disabled={toggleTab.isPending}
+            title={activeTab.import_enabled ? "Ignore this tab — it will be fully skipped on sync" : "Include this tab in sync"}
+            className={clsx(
+              "ml-auto flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition disabled:opacity-50",
+              activeTab.import_enabled
+                ? "border-line text-muted hover:bg-field"
+                : "border-ember/40 bg-ember/10 text-ember"
+            )}
+          >
+            {activeTab.import_enabled ? "Ignore this tab" : "Ignored — click to include"}
+          </button>
+        ) : null}
       </div>
 
       {/* TAB SWITCHER */}
@@ -13671,12 +13743,14 @@ function SheetMappingEditor({
               <button
                 key={t.id}
                 onClick={() => setSelectedTab(t.id)}
+                title={t.import_enabled ? t.tab_name : `${t.tab_name} — ignored (won't sync)`}
                 className={clsx(
                   "rounded-md px-2.5 py-1 transition",
-                  (selectedTab ?? d.tab_id) === t.id ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field"
+                  (selectedTab ?? d.tab_id) === t.id ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field",
+                  !t.import_enabled && (selectedTab ?? d.tab_id) !== t.id && "line-through opacity-50"
                 )}
               >
-                {t.tab_name}
+                {t.tab_name}{!t.import_enabled ? " ·ignored" : ""}
               </button>
             ))}
           </span>

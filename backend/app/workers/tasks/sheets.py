@@ -27,22 +27,12 @@ async def _sync_main_async(workspace_id: uuid.UUID) -> dict:
     async with session_scope() as s:
         sheet_source_ids = await sheet_sync_service.discover_projects(s, workspace_id)
 
-    if settings.GOOGLE_SHEETS_SEQUENTIAL_SYNC and sheet_source_ids:
-        # Project-by-project: a chain runs each sync only after the previous one
-        # finishes, so the Sheets API isn't hit by every project at the same time.
-        # Immutable signatures (.si) — no result is passed down the chain.
-        from celery import chain
-
-        chain(
-            *[sync_project_sheet.si(str(sid)) for sid in sheet_source_ids]
-        ).apply_async(queue="sheets.sync")
-    else:
-        stagger = max(0.0, settings.GOOGLE_SYNC_STAGGER_SECONDS)
-        for index, sid in enumerate(sheet_source_ids):
-            sync_project_sheet.apply_async(
-                args=[str(sid)], queue="sheets.sync", countdown=stagger * index
-            )
-    return {"projects": len(sheet_source_ids), "mode": "sequential" if settings.GOOGLE_SHEETS_SEQUENTIAL_SYNC else "staggered"}
+    # Main-sheet sync only DISCOVERS projects — it registers each project's name +
+    # sheet link (and its tabs, for mapping) but does NOT pull any links. The user
+    # sets the per-tab mapping (including which tabs to ignore) first, then syncs a
+    # project's links explicitly (POST /sheets/{id}/sync). This keeps reads far
+    # under the Sheets API quota and enforces the "map first, then sync" flow.
+    return {"discovered_projects": len(sheet_source_ids), "mode": "discover_only"}
 
 
 async def _sync_project_async(sheet_source_id: uuid.UUID) -> dict:

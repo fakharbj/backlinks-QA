@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.common import ORMModel
 
@@ -41,6 +41,18 @@ class SheetTabUpdate(BaseModel):
     link_type_name: str | None = None
     import_enabled: bool | None = None
     qa_enabled: bool | None = None
+
+
+class SheetsApiLimitIn(BaseModel):
+    # Max Google Sheets API READ requests per minute we allow ourselves. Google's
+    # per-project cap is ~300/min; keep this at or below it. 0 disables throttling.
+    reads_per_min: int = Field(ge=0, le=300)
+
+
+class SheetsApiLimitOut(BaseModel):
+    reads_per_min: int
+    default: int
+    max: int = 300
 
 
 class SheetConfigOut(BaseModel):

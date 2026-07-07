@@ -13,9 +13,12 @@ from app.core.errors import NotFoundError, ValidationAppError
 from app.core.rbac import Permission
 from app.integrations import google_sheets
 from app.models.enums import AuditAction
+from app.models.settings import Setting
 from app.models.sheets import SheetSource
 from app.schemas.sheet import (
     SheetConfigOut,
+    SheetsApiLimitIn,
+    SheetsApiLimitOut,
     SheetSourceOut,
     SheetSyncResponse,
     SheetTabOut,
@@ -24,6 +27,72 @@ from app.schemas.sheet import (
 from app.services import audit_service, sheet_sync_service
 
 router = APIRouter(prefix="/sheets", tags=["sheets"])
+
+_API_LIMIT_KEY = "sheets_reads_per_min"
+
+
+def _mirror_limit_to_redis(val: int) -> None:
+    """Write the limit to the same Redis the worker's read-throttle checks
+    (google_sheets.reads_per_min). Best-effort — never fails the request."""
+    try:
+        import redis  # sync client on the broker Redis (what the throttle reads)
+
+        redis.Redis.from_url(str(settings.CELERY_BROKER_URL), socket_timeout=3).set(
+            "ls:cfg:sheets_reads_per_min", str(int(val))
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.get("/api-limit", response_model=SheetsApiLimitOut)
+async def get_api_limit(ctx: AuthCtx, db: ReadSession) -> SheetsApiLimitOut:
+    """Current Sheets API read cap (reads/min). Persisted per workspace; also
+    mirrored to Redis so the worker throttle picks it up even after a cache flush."""
+    import asyncio
+
+    row = (
+        await db.execute(
+            select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == _API_LIMIT_KEY
+            )
+        )
+    ).scalar_one_or_none()
+    val = settings.GOOGLE_SHEETS_READS_PER_MIN
+    if row is not None and isinstance(row.value, dict) and row.value.get("value") is not None:
+        try:
+            val = int(row.value["value"])
+        except (TypeError, ValueError):
+            pass
+    await asyncio.to_thread(_mirror_limit_to_redis, val)  # write-through (survives flush)
+    return SheetsApiLimitOut(reads_per_min=val, default=settings.GOOGLE_SHEETS_READS_PER_MIN)
+
+
+@router.put("/api-limit", response_model=SheetsApiLimitOut)
+async def put_api_limit(
+    payload: SheetsApiLimitIn, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_INTEGRATIONS)),
+) -> SheetsApiLimitOut:
+    import asyncio
+
+    val = max(0, min(300, int(payload.reads_per_min)))
+    row = (
+        await db.execute(
+            select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == _API_LIMIT_KEY
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(workspace_id=ctx.workspace_id, key=_API_LIMIT_KEY, value={"value": val}, is_secret=False))
+    else:
+        row.value = {"value": val}
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="setting", entity_id=ctx.workspace_id, summary=f"Sheets API read limit → {val}/min",
+    )
+    await db.commit()
+    await asyncio.to_thread(_mirror_limit_to_redis, val)
+    return SheetsApiLimitOut(reads_per_min=val, default=settings.GOOGLE_SHEETS_READS_PER_MIN)
 
 
 @router.get("/config", response_model=SheetConfigOut)
@@ -68,7 +137,10 @@ async def sync_main(
     from app.workers.tasks.sheets import sync_main_sheet
 
     sync_main_sheet.apply_async(args=[str(ctx.workspace_id)], queue="sheets.sync")
-    return SheetSyncResponse(message="Main sheet sync started — projects will sync shortly.")
+    return SheetSyncResponse(
+        message="Discovering projects from the main sheet (names + sheet links + tabs). "
+        "Set each project's tab mapping, then click Sync on a project to pull its links."
+    )
 
 
 @router.post("/{sheet_id}/sync", response_model=SheetSyncResponse, status_code=202)

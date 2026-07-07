@@ -48,9 +48,34 @@ def _rate_client():
     return _rate_redis
 
 
+_REDIS_LIMIT_KEY = "ls:cfg:sheets_reads_per_min"
+_limit_cache: dict = {"val": None, "ts": 0.0}
+
+
+def reads_per_min() -> int:
+    """Effective reads/min cap. Runtime-configurable via the Settings UI (writes
+    ``ls:cfg:sheets_reads_per_min`` in Redis); falls back to the env default.
+    Cached ~15s so we don't hit Redis on every single read."""
+    now = time.time()
+    if _limit_cache["val"] is not None and (now - _limit_cache["ts"]) < 15:
+        return _limit_cache["val"]
+    val = int(getattr(settings, "GOOGLE_SHEETS_READS_PER_MIN", 0) or 0)
+    client = _rate_client()
+    if client is not None:
+        try:
+            raw = client.get(_REDIS_LIMIT_KEY)
+            if raw is not None:
+                val = int(raw)
+        except Exception:  # noqa: BLE001 — fall back to env default
+            pass
+    _limit_cache["val"] = val
+    _limit_cache["ts"] = now
+    return val
+
+
 def _throttle_read() -> None:
-    """Block until a Sheets API read token is free (≈ READS_PER_MIN/60 per second)."""
-    rpm = int(getattr(settings, "GOOGLE_SHEETS_READS_PER_MIN", 0) or 0)
+    """Block until a Sheets API read token is free (≈ reads_per_min/60 per second)."""
+    rpm = reads_per_min()
     if rpm <= 0:
         return
     per_sec = max(1, rpm // 60)
