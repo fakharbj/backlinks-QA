@@ -14289,6 +14289,170 @@ function MemberProjectsCell({
   );
 }
 
+type GmailAssignmentRow = { id: string; scope: string; target_label: string; assigned_at: string | null; notes: string | null };
+type GmailAccountRow = {
+  id: string; email: string; display_name: string | null; status: string;
+  is_active: boolean; notes: string | null; last_used_at: string | null;
+  user_count: number; project_count: number; assignments: GmailAssignmentRow[];
+};
+
+function GmailAccountsCard({
+  token, members, projects, onNotice
+}: {
+  token: string | null;
+  members: TeamMember[];
+  projects: Project[];
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  // Per-account assign form state, keyed by account id.
+  const [assignFor, setAssignFor] = useState<string | null>(null);
+  const [scope, setScope] = useState<"user" | "project">("user");
+  const [targetUser, setTargetUser] = useState("");
+  const [targetProject, setTargetProject] = useState("");
+
+  const accountsQ = useQuery({
+    queryKey: ["gmail-accounts", token],
+    enabled: Boolean(token),
+    queryFn: () => api<GmailAccountRow[]>("/gmail/accounts", { token })
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["gmail-accounts"] });
+
+  const create = useMutation({
+    mutationFn: () => api<GmailAccountRow>("/gmail/accounts", { token, method: "POST", body: JSON.stringify({ email, display_name: displayName.trim() || null }) }),
+    onSuccess: () => { onNotice("Gmail account added"); setEmail(""); setDisplayName(""); invalidate(); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const assign = useMutation({
+    mutationFn: (accountId: string) => api<{ message: string }>("/gmail/assign", {
+      token, method: "POST",
+      body: JSON.stringify({ account_id: accountId, scope, user_id: scope === "user" ? targetUser : null, project_id: scope === "project" ? targetProject : null })
+    }),
+    onSuccess: (r) => { onNotice(r.message); setAssignFor(null); setTargetUser(""); setTargetProject(""); invalidate(); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const revoke = useMutation({
+    mutationFn: (assignmentId: string) => api<{ message: string }>(`/gmail/assignments/${assignmentId}/revoke`, { token, method: "POST" }),
+    onSuccess: () => { onNotice("Assignment revoked"); invalidate(); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const retire = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/gmail/accounts/${id}`, { token, method: "DELETE" }),
+    onSuccess: (r) => { onNotice(r.message); invalidate(); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const markUsed = useMutation({
+    mutationFn: (id: string) => api<GmailAccountRow>(`/gmail/accounts/${id}/used`, { token, method: "POST" }),
+    onSuccess: () => { onNotice("Marked as used today"); invalidate(); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const accounts = accountsQ.data || [];
+  return (
+    <div className="space-y-4">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="border-b border-line p-4">
+          <h2 className="text-base font-semibold text-ink">Add a company Gmail account</h2>
+          <p className="text-sm text-muted">
+            Track which shared outreach address belongs to which person or project. This is a
+            record-keeping layer — LinkSentinel doesn&apos;t connect to Gmail.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-end gap-3 p-4">
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">Email</span>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="outreach@company.com"
+              className="h-9 w-64 rounded-lg border border-line bg-panel px-2 text-sm" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">Label (optional)</span>
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Outreach 1"
+              className="h-9 w-48 rounded-lg border border-line bg-panel px-2 text-sm" />
+          </label>
+          <button onClick={() => create.mutate()} disabled={create.isPending || !email.includes("@")}
+            className="flex h-9 items-center gap-1.5 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900">
+            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} Add
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title={`Gmail accounts (${accounts.length})`} />
+        {accountsQ.isLoading ? (
+          <div className="p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+        ) : !accounts.length ? (
+          <Empty label="No Gmail accounts yet — add one above." />
+        ) : (
+          <div className="divide-y divide-line">
+            {accounts.map((a) => (
+              <div key={a.id} className="p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-medium text-ink">{a.email}</span>
+                    {a.display_name ? <span className="ml-2 text-xs text-muted">{a.display_name}</span> : null}
+                    <div className="mt-0.5 text-[11px] text-muted">
+                      {a.user_count} user{a.user_count === 1 ? "" : "s"} · {a.project_count} project{a.project_count === 1 ? "" : "s"}
+                      {a.last_used_at ? ` · last used ${formatDay(a.last_used_at)}` : " · never marked used"}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => markUsed.mutate(a.id)} className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field">Mark used</button>
+                    <button onClick={() => setAssignFor(assignFor === a.id ? null : a.id)} className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ocean hover:bg-field">Assign</button>
+                    <button onClick={() => { if (window.confirm(`Retire ${a.email}? Its history stays; active assignments are revoked.`)) retire.mutate(a.id); }} className="rounded-md border border-line px-2 py-1 text-xs font-medium text-muted hover:text-danger hover:bg-field">Retire</button>
+                  </div>
+                </div>
+
+                {/* Active assignment chips */}
+                {a.assignments.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {a.assignments.map((asg) => (
+                      <span key={asg.id} className="flex items-center gap-1 rounded-full border border-line bg-field/60 px-2 py-0.5 text-[11px] text-ink">
+                        <span className={clsx("rounded px-1 text-[9px] font-semibold uppercase", asg.scope === "user" ? "bg-ocean/15 text-ocean" : "bg-plum/15 text-plum")}>{asg.scope}</span>
+                        {asg.target_label}
+                        <button onClick={() => revoke.mutate(asg.id)} title="Revoke" className="text-muted hover:text-danger">×</button>
+                      </span>
+                    ))}
+                  </div>
+                ) : <p className="mt-2 text-xs text-muted">Not assigned to anyone yet.</p>}
+
+                {/* Inline assign form */}
+                {assignFor === a.id ? (
+                  <div className="mt-2 flex flex-wrap items-end gap-2 rounded-lg border border-line bg-field/40 p-2.5">
+                    <select value={scope} onChange={(e) => setScope(e.target.value as "user" | "project")} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm">
+                      <option value="user">To a user</option>
+                      <option value="project">To a project</option>
+                    </select>
+                    {scope === "user" ? (
+                      <select value={targetUser} onChange={(e) => setTargetUser(e.target.value)} className="h-8 w-56 rounded-lg border border-line bg-panel px-2 text-sm">
+                        <option value="">Choose a user…</option>
+                        {members.map((m) => <option key={m.user_id} value={m.user_id}>{m.full_name || m.email}</option>)}
+                      </select>
+                    ) : (
+                      <select value={targetProject} onChange={(e) => setTargetProject(e.target.value)} className="h-8 w-56 rounded-lg border border-line bg-panel px-2 text-sm">
+                        <option value="">Choose a project…</option>
+                        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    )}
+                    <button
+                      onClick={() => assign.mutate(a.id)}
+                      disabled={assign.isPending || (scope === "user" ? !targetUser : !targetProject)}
+                      className="h-8 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+                    >
+                      Assign
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
@@ -14296,7 +14460,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [role, setRole] = useState<Role>("viewer");
   const [password, setPassword] = useState("");
   // One desk, two sections: workspace accounts vs sheet-employee mapping.
-  const [teamTab, setTeamTab] = useState<"members" | "employees">("members");
+  const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail">("members");
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -14432,7 +14596,17 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
         >
           Employees &amp; mapping
         </button>
+        <button
+          onClick={() => setTeamTab("gmail")}
+          title="Company Gmail accounts — who/what each address is assigned to"
+          className={clsx("px-2.5 py-1 transition", teamTab === "gmail" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+        >
+          Gmail accounts
+        </button>
       </span>
+      {teamTab === "gmail" ? (
+        <GmailAccountsCard token={token} members={members.data || []} projects={projectsQ.data || []} onNotice={onNotice} />
+      ) : null}
       {teamTab === "members" ? (<>
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="border-b border-line p-4">

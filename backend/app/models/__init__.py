@@ -18,6 +18,7 @@ from app.models.conflict import (  # noqa: F401
 )
 from app.models.crawl import BacklinkIssue, BacklinkHistory, CrawlJob, CrawlResult  # noqa: F401,E501
 from app.models.employee import EmployeeCode, UserEmployeeMapping  # noqa: F401
+from app.models.gmail_account import GmailAccount, GmailAssignment  # noqa: F401
 from app.models.enums import (  # noqa: F401
     HistoryEventType,
     ImportStatus,
