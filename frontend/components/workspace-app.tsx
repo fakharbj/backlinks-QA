@@ -4252,26 +4252,68 @@ function TasksDesk({
 }
 
 // ── Shared: GSC-style chart, CSV export, help tips ──────────────────────────
+const _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Human-friendly label for a chart bucket key. "2026-07-04" → "Jul 4"
+// (axis) or "Jul 4, 2026" (tooltip); "2026-07" → "Jul 2026". Falls back to raw.
+function fmtChartLabel(raw: string, withYear = false): string {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (d) {
+    const mon = _MONTHS[parseInt(d[2], 10) - 1] || d[2];
+    return withYear ? `${mon} ${parseInt(d[3], 10)}, ${d[1]}` : `${mon} ${parseInt(d[3], 10)}`;
+  }
+  const m = /^(\d{4})-(\d{2})$/.exec(raw);
+  if (m) return `${_MONTHS[parseInt(m[2], 10) - 1] || m[2]} ${m[1]}`;
+  return raw;
+}
+
+// Interactive multi-series area/line chart used across every desk. Hover shows a
+// crosshair + a floating card with the human date and each series' exact value;
+// points are clickable; the latest point is emphasised; a subtle mount fade
+// respects prefers-reduced-motion. Upgrading this lifts all charts at once.
 function TrendChart({
   labels,
   series,
-  height = 170
+  height = 170,
+  onPointClick,
+  valueFmt
 }: {
   labels: string[];
   series: Array<{ name: string; cssVar: string; values: number[] }>;
   height?: number;
+  onPointClick?: (index: number) => void;
+  valueFmt?: (v: number) => string;
 }) {
   const W = 640;
   const H = height;
   const PADX = 34;
   const PADY = 22;
+  const [hover, setHover] = useState<number | null>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setMounted(true), 20);
+    return () => clearTimeout(t);
+  }, []);
   const max = Math.max(1, ...series.flatMap((s) => s.values));
-  const x = (i: number) =>
-    labels.length <= 1 ? W / 2 : PADX + (i * (W - PADX * 2)) / (labels.length - 1);
+  const n = labels.length;
+  const x = (i: number) => (n <= 1 ? W / 2 : PADX + (i * (W - PADX * 2)) / (n - 1));
   const y = (v: number) => H - PADY - (v / max) * (H - PADY * 2);
+  const fmtV = valueFmt || ((v: number) => String(v));
   if (!labels.length) return <Empty label="Not enough data for a chart yet." />;
+
+  const pickIndex = (clientX: number, rect: DOMRect) => {
+    const px = ((clientX - rect.left) / Math.max(1, rect.width)) * W; // → viewBox units
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(x(i) - px);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  };
+  const hoverLeftPct = hover != null ? (x(hover) / W) * 100 : 0;
+
   return (
-    <div>
+    <div className="relative">
       <div className="mb-1.5 flex flex-wrap gap-3 px-1">
         {series.map((s) => (
           <span key={s.name} className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
@@ -4280,7 +4322,15 @@ function TrendChart({
           </span>
         ))}
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full touch-none"
+        role="img"
+        style={{ opacity: mounted ? 1 : 0, transition: "opacity .5s ease" }}
+        onMouseMove={(e) => setHover(pickIndex(e.clientX, e.currentTarget.getBoundingClientRect()))}
+        onMouseLeave={() => setHover(null)}
+        onClick={(e) => onPointClick?.(pickIndex(e.clientX, e.currentTarget.getBoundingClientRect()))}
+      >
         {[0, 0.5, 1].map((f) => (
           <g key={f}>
             <line
@@ -4292,6 +4342,13 @@ function TrendChart({
             </text>
           </g>
         ))}
+        {/* Crosshair at the hovered bucket. */}
+        {hover != null ? (
+          <line
+            x1={x(hover)} x2={x(hover)} y1={PADY - 8} y2={H - PADY}
+            stroke="rgb(var(--muted))" strokeWidth="1" strokeDasharray="2 3" opacity="0.5"
+          />
+        ) : null}
         {series.map((s) => {
           const pts = s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ");
           const area = `M ${x(0)},${y(s.values[0] ?? 0)} ${s.values
@@ -4304,22 +4361,47 @@ function TrendChart({
                 points={pts} fill="none" stroke={`rgb(var(${s.cssVar}))`}
                 strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"
               />
-              {s.values.map((v, i) => (
-                <circle key={i} cx={x(i)} cy={y(v)} r="3" fill={`rgb(var(${s.cssVar}))`}>
-                  <title>{`${labels[i]} — ${s.name}: ${v}`}</title>
-                </circle>
-              ))}
+              {s.values.map((v, i) => {
+                const isHover = hover === i;
+                const isLast = i === n - 1;
+                return (
+                  <circle
+                    key={i} cx={x(i)} cy={y(v)}
+                    r={isHover ? 5 : isLast ? 3.5 : 2.5}
+                    fill={`rgb(var(${s.cssVar}))`}
+                    stroke="rgb(var(--panel))" strokeWidth={isHover || isLast ? 1.5 : 0}
+                  >
+                    <title>{`${fmtChartLabel(labels[i], true)} — ${s.name}: ${fmtV(v)}`}</title>
+                  </circle>
+                );
+              })}
             </g>
           );
         })}
         {labels.map((l, i) =>
-          labels.length <= 8 || i === 0 || i === labels.length - 1 || i % Math.ceil(labels.length / 6) === 0 ? (
+          n <= 8 || i === 0 || i === n - 1 || i % Math.ceil(n / 6) === 0 ? (
             <text key={i} x={x(i)} y={H - 6} textAnchor="middle" fontSize="9" fill="rgb(var(--muted))">
-              {l.slice(5)}
+              {fmtChartLabel(l)}
             </text>
           ) : null
         )}
       </svg>
+      {/* Floating tooltip — follows the hovered bucket, clamped to the panel. */}
+      {hover != null ? (
+        <div
+          className="pointer-events-none absolute top-6 z-10 -translate-x-1/2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-xs shadow-pop"
+          style={{ left: `clamp(64px, ${hoverLeftPct}%, calc(100% - 64px))` }}
+        >
+          <div className="mb-0.5 font-semibold text-ink">{fmtChartLabel(labels[hover], true)}</div>
+          {series.map((s) => (
+            <div key={s.name} className="flex items-center gap-1.5 whitespace-nowrap text-muted">
+              <span className="h-2 w-2 rounded-full" style={{ background: `rgb(var(${s.cssVar}))` }} />
+              <span>{s.name}</span>
+              <span className="ml-auto pl-2 font-semibold text-ink tabular-nums">{fmtV(s.values[hover] ?? 0)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -13756,7 +13838,11 @@ function AnalyticsDesk({
       "status", "index_status", "duplicate_status", "rel", "link_type",
       "source_domain", "assigned_user_label", "project_id",
       "http_status", "http_class", "broken", "orphaned",
-      "link_missing", "da_min", "pa_min", "as_min", "search"
+      "link_missing", "da_min", "pa_min", "as_min", "search",
+      // Date ranges the Backlinks endpoint shares by name (esp. placement = link
+      // creation) so the list matches the summary/time-range selector exactly.
+      "placement_from", "placement_to", "discovered_from", "discovered_to",
+      "completed_from", "completed_to", "sheet_from", "sheet_to"
     ].forEach((k) => {
       if (filters[k]) map[k] = filters[k];
     });
@@ -13861,6 +13947,45 @@ function AnalyticsDesk({
     setDrillKey(null);
   };
 
+  // ── Time range (drives cards + charts + tables). Filters by the link's real
+  // creation (placement) date, so every figure reflects when links went live. ──
+  const _todayIso = new Date().toISOString().slice(0, 10);
+  const _isoAgo = (opts: { days?: number; months?: number }) => {
+    const d = new Date();
+    if (opts.days) d.setDate(d.getDate() - opts.days);
+    if (opts.months) d.setMonth(d.getMonth() - opts.months);
+    return d.toISOString().slice(0, 10);
+  };
+  const RANGES: Array<[string, string, () => string | null]> = [
+    ["30d", "Last 30 days", () => _isoAgo({ days: 30 })],
+    ["3m", "Last 3 months", () => _isoAgo({ months: 3 })],
+    ["6m", "Last 6 months", () => _isoAgo({ months: 6 })],
+    ["all", "All time", () => null],
+    ["custom", "Custom", () => filters.placement_from || null]
+  ];
+  const [rangeKey, setRangeKey] = useState<string>("all");
+  const applyRange = (key: string) => {
+    setRangeKey(key);
+    if (key === "custom") return; // custom uses the two date inputs below
+    const preset = RANGES.find((r) => r[0] === key);
+    const from = preset ? preset[2]() : null;
+    setFilters((f) => {
+      const n = { ...f };
+      if (from) { n.placement_from = from; n.placement_to = _todayIso; }
+      else { delete n.placement_from; delete n.placement_to; }
+      return n;
+    });
+    setDrillKey(null);
+  };
+  const setCustomBound = (which: "placement_from" | "placement_to", v: string) => {
+    setRangeKey("custom");
+    setFilters((f) => {
+      const n = { ...f };
+      if (v) n[which] = v; else delete n[which];
+      return n;
+    });
+  };
+
   return (
     <section className="space-y-4">
       {/* Filter bar (connected facets with live counts) */}
@@ -13868,10 +13993,44 @@ function AnalyticsDesk({
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-base font-semibold text-ink">Analytics</h2>
           {Object.keys(filters).length ? (
-            <button onClick={() => setFilters({})} className="text-xs font-medium text-ocean hover:underline">
+            <button onClick={() => { setFilters({}); setRangeKey("all"); }} className="text-xs font-medium text-ocean hover:underline">
               Clear filters
             </button>
           ) : null}
+        </div>
+        {/* Time range — presets + custom, all by link creation (placement) date. */}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-line pb-3">
+          <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-muted">Range</span>
+          {RANGES.map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => applyRange(key)}
+              className={clsx(
+                "h-8 rounded-full border px-3 text-xs font-medium transition",
+                rangeKey === key
+                  ? "border-ocean bg-ocean/10 text-ocean"
+                  : "border-line bg-panel text-muted hover:bg-field"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          {rangeKey === "custom" ? (
+            <span className="flex items-center gap-1.5">
+              <input type="date" value={filters.placement_from || ""}
+                onChange={(e) => setCustomBound("placement_from", e.target.value)}
+                className="h-8 rounded-lg border border-line bg-panel px-2 text-xs focus:border-ocean focus:outline-none" />
+              <span className="text-xs text-muted">to</span>
+              <input type="date" value={filters.placement_to || ""}
+                onChange={(e) => setCustomBound("placement_to", e.target.value)}
+                className="h-8 rounded-lg border border-line bg-panel px-2 text-xs focus:border-ocean focus:outline-none" />
+            </span>
+          ) : null}
+          <span className="ml-auto text-xs text-muted">
+            {filters.placement_from
+              ? `Showing ${fmtChartLabel(filters.placement_from, true)} → ${fmtChartLabel(filters.placement_to || _todayIso, true)} · by link creation date`
+              : "Showing all time · by link creation date"}
+          </span>
         </div>
         <div className="flex flex-wrap gap-2">
           {ANALYTICS_FACETS.filter(([dim]) => !(projectId && dim === "project")).map(
