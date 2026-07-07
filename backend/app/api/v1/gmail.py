@@ -137,6 +137,14 @@ async def revoke(
     return result
 
 
+@router.get("/assignments")
+async def all_assignments(
+    ctx: AuthCtx, db: ReadSession, status: str | None = Query(None)
+) -> dict:
+    """Flat assignments table (account × user/project × who/when/status) + stats."""
+    return await gmail_service.list_all_assignments(db, ctx, status=status)
+
+
 @router.get("/by-user/{user_id}")
 async def by_user(user_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> list[dict]:
     return await gmail_service.for_user(db, ctx, user_id)

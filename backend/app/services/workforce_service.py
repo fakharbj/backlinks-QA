@@ -550,11 +550,21 @@ async def save_week_as_template(
 
 
 async def apply_template_to_week(
-    db: AsyncSession, ctx: AuthContext, *, week_start: date
+    db: AsyncSession, ctx: AuthContext, *, week_start: date,
+    mode: str = "week", clear: bool = True,
 ) -> dict:
-    """Materialize the standing weekly template into real assignments for the
-    given week (idempotent upsert — targets recompute from CURRENT rates)."""
-    from app.models.workforce import TaskWeekTemplate
+    """Materialize the standing weekly template into real assignments and OVERRIDE
+    whatever was there.
+
+    ``mode="week"`` targets the given week; ``mode="month"`` targets the entire
+    NEXT calendar month (relative to ``week_start``). When ``clear`` (default), all
+    existing assignments for the target days (today onward — history is immutable)
+    are deleted first, so the template becomes the single source of truth for that
+    range. Targets recompute from CURRENT productivity rates."""
+    import calendar as _cal
+    from sqlalchemy import delete as sa_delete
+
+    from app.models.workforce import TaskAssignment, TaskWeekTemplate
 
     monday = _monday_of(week_start)
     tpl = (
@@ -568,21 +578,51 @@ async def apply_template_to_week(
         raise ValidationAppError(
             "No weekly template yet — set one week up, then use “Save week as template”."
         )
+
+    today = date.today()
+    if mode == "month":
+        y = monday.year + (1 if monday.month == 12 else 0)
+        m = 1 if monday.month == 12 else monday.month + 1
+        ndays = _cal.monthrange(y, m)[1]
+        days = [date(y, m, d) for d in range(1, ndays + 1)]
+        range_label = f"{y}-{m:02d}"
+    else:
+        days = [monday + timedelta(days=i) for i in range(7)]
+        range_label = f"week of {monday.isoformat()}"
+    future_days = [d for d in days if d >= today]  # never rewrite the past
+
+    cleared = 0
+    if clear and future_days:
+        res = await db.execute(
+            sa_delete(TaskAssignment).where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.day.in_(future_days),
+            )
+        )
+        cleared = res.rowcount or 0
+
+    tpl_by_weekday: dict[int, list] = {}
+    for t in tpl:
+        tpl_by_weekday.setdefault(t.weekday, []).append(t)
     active = set(await known_labels(db, ctx))
     applied = skipped = 0
     all_warnings: list[str] = []
-    for t in tpl:
-        if t.user_label not in active:
-            skipped += 1
-            continue
-        _, warnings = await upsert_assignment(
-            db, ctx, project_id=t.project_id, user_label=t.user_label,
-            day=monday + timedelta(days=t.weekday), hours=float(t.hours),
-            link_type_names=t.link_type_names or [], priority=t.priority, note=t.note,
-        )
-        all_warnings.extend(warnings)
-        applied += 1
-    return {"applied": applied, "skipped_inactive": skipped, "warnings": all_warnings[:6]}
+    for d in future_days:
+        for t in tpl_by_weekday.get(d.weekday(), []):
+            if t.user_label not in active:
+                skipped += 1
+                continue
+            _, warnings = await upsert_assignment(
+                db, ctx, project_id=t.project_id, user_label=t.user_label, day=d,
+                hours=float(t.hours), link_type_names=t.link_type_names or [],
+                priority=t.priority, note=t.note,
+            )
+            all_warnings.extend(warnings)
+            applied += 1
+    return {
+        "applied": applied, "cleared": cleared, "skipped_inactive": skipped,
+        "range": range_label, "warnings": all_warnings[:6],
+    }
 
 
 async def upsert_template_entry(
@@ -592,9 +632,9 @@ async def upsert_template_entry(
     expected_links: int | None = None,
 ) -> dict:
     """Upsert ONE standing-plan cell (person × weekday × project), then
-    materialize it into the current AND next week immediately — the beat job
-    is next-week-only and fill-gaps-only, so it would never propagate an edit.
-    Past days of the current week are never rewritten (history is immutable)."""
+    materialize it into the current week AND the next 3 weeks immediately (4 weeks
+    total) — so a standing plan is visible a month ahead without waiting for the
+    beat job. Past days of the current week are never rewritten (history stays)."""
     from app.models.workforce import TaskWeekTemplate
 
     ctx.assert_project(project_id)
@@ -632,7 +672,8 @@ async def upsert_template_entry(
     this_monday = _monday_of(today)
     materialized: list[str] = []
     all_warnings: list[str] = []
-    for monday in (this_monday, this_monday + timedelta(days=7)):
+    for wk in range(4):  # this week + next 3 (a month ahead)
+        monday = this_monday + timedelta(days=7 * wk)
         day = monday + timedelta(days=weekday)
         if day < today:
             continue  # already-passed day of the current week — leave it alone
@@ -693,13 +734,14 @@ async def delete_template_entry(
 
 
 async def auto_apply_templates(db: AsyncSession) -> dict:
-    """Beat job: materialize NEXT week's plans from every workspace's weekly
-    template. Fill-gaps only (ON CONFLICT DO NOTHING) — a manually adjusted
-    plan for next week is never overwritten by automation."""
+    """Beat job: keep the next 4 weeks' plans materialized from every workspace's
+    weekly template so a standing plan always shows a month ahead. Fill-gaps only
+    (ON CONFLICT DO NOTHING) — a manually adjusted future plan is never overwritten."""
     from app.models.employee import UserEmployeeMapping
     from app.models.workforce import TaskWeekTemplate
 
-    next_monday = _monday_of(date.today()) + timedelta(days=7)
+    this_monday = _monday_of(date.today())
+    horizon = [this_monday + timedelta(days=7 * wk) for wk in range(1, 5)]  # next 4 weeks
     ws_ids = (
         await db.execute(select(TaskWeekTemplate.workspace_id).distinct())
     ).scalars().all()
@@ -721,29 +763,30 @@ async def auto_apply_templates(db: AsyncSession) -> dict:
             ).scalars().all()
         )
         g, o = await _lph_map(db, ws)
-        for t in tpl:
-            if t.user_label in inactive:
-                continue
-            types = list(t.link_type_names or [])
-            hours = float(t.hours)
-            expected = _expected(hours, types, t.user_label, g, o)
-            used_override = any((t.user_label.lower(), x.lower()) in o for x in types)
-            stmt = (
-                pg_insert(TaskAssignment)
-                .values(
-                    workspace_id=ws, project_id=t.project_id, user_label=t.user_label,
-                    day=next_monday + timedelta(days=t.weekday), hours=hours,
-                    link_type_names=types, expected_links=max(0, expected),
-                    rate_source="override" if used_override else "global",
-                    lph_used=round(expected / hours, 1) if hours > 0 else None,
-                    priority=t.priority, note=t.note, created_by=t.created_by,
+        for monday in horizon:
+            for t in tpl:
+                if t.user_label in inactive:
+                    continue
+                types = list(t.link_type_names or [])
+                hours = float(t.hours)
+                expected = _expected(hours, types, t.user_label, g, o)
+                used_override = any((t.user_label.lower(), x.lower()) in o for x in types)
+                stmt = (
+                    pg_insert(TaskAssignment)
+                    .values(
+                        workspace_id=ws, project_id=t.project_id, user_label=t.user_label,
+                        day=monday + timedelta(days=t.weekday), hours=hours,
+                        link_type_names=types, expected_links=max(0, expected),
+                        rate_source="override" if used_override else "global",
+                        lph_used=round(expected / hours, 1) if hours > 0 else None,
+                        priority=t.priority, note=t.note, created_by=t.created_by,
+                    )
+                    .on_conflict_do_nothing(constraint="uq_task_ws_proj_user_day")
                 )
-                .on_conflict_do_nothing(constraint="uq_task_ws_proj_user_day")
-            )
-            result = await db.execute(stmt)
-            created += result.rowcount or 0
+                result = await db.execute(stmt)
+                created += result.rowcount or 0
     await db.commit()
-    return {"week_start": next_monday.isoformat(), "assignments_created": created}
+    return {"weeks": [m.isoformat() for m in horizon], "assignments_created": created}
 
 
 async def template_summary(db: AsyncSession, ctx: AuthContext) -> dict:

@@ -283,6 +283,68 @@ async def _for(
     ]
 
 
+async def list_all_assignments(
+    db: AsyncSession, ctx: AuthContext, *, status: str | None = None
+) -> dict:
+    """Flat, filterable list of EVERY assignment (for the detail table) — account,
+    user, project, who assigned it, when, status, last used — plus summary stats."""
+    stmt = (
+        select(
+            GmailAssignment, GmailAccount.email, GmailAccount.last_used_at,
+            User.full_name, User.email, Project.name,
+        )
+        .join(GmailAccount, GmailAccount.id == GmailAssignment.gmail_account_id)
+        .join(User, User.id == GmailAssignment.user_id, isouter=True)
+        .join(Project, Project.id == GmailAssignment.project_id, isouter=True)
+        .where(GmailAssignment.workspace_id == ctx.workspace_id)
+    )
+    if status in ("active", "revoked"):
+        stmt = stmt.where(GmailAssignment.status == status)
+    rows = (await db.execute(stmt.order_by(GmailAssignment.assigned_at.desc()))).all()
+    # Resolve "assigned by" names in one lookup.
+    actor_ids = {asg.assigned_by for asg, *_ in rows if asg.assigned_by}
+    actors: dict[uuid.UUID, str] = {}
+    if actor_ids:
+        for uid, name, email in (
+            await db.execute(
+                select(User.id, User.full_name, User.email).where(User.id.in_(actor_ids))
+            )
+        ).all():
+            actors[uid] = name or email
+    items = []
+    active_users: set[str] = set()
+    active_projects: set[str] = set()
+    for asg, acc_email, last_used, full_name, user_email, proj_name in rows:
+        if asg.status == "active" and asg.scope == "user" and asg.user_id:
+            active_users.add(str(asg.user_id))
+        if asg.status == "active" and asg.scope == "project" and asg.project_id:
+            active_projects.add(str(asg.project_id))
+        items.append({
+            "id": str(asg.id),
+            "account_id": str(asg.gmail_account_id),
+            "email": acc_email,
+            "scope": asg.scope,
+            "user_name": (full_name or user_email) if asg.scope == "user" else None,
+            "project_name": proj_name if asg.scope == "project" else None,
+            "assigned_by": actors.get(asg.assigned_by) if asg.assigned_by else None,
+            "assigned_at": asg.assigned_at.isoformat() if asg.assigned_at else None,
+            "unassigned_at": asg.unassigned_at.isoformat() if asg.unassigned_at else None,
+            "status": asg.status,
+            "last_used_at": last_used.isoformat() if last_used else None,
+            "notes": asg.notes,
+        })
+    return {
+        "items": items,
+        "stats": {
+            "total": len(items),
+            "active": sum(1 for i in items if i["status"] == "active"),
+            "revoked": sum(1 for i in items if i["status"] == "revoked"),
+            "active_users": len(active_users),
+            "active_projects": len(active_projects),
+        },
+    }
+
+
 async def for_user(db: AsyncSession, ctx: AuthContext, user_id: uuid.UUID) -> list[dict]:
     return await _for(db, ctx, user_id=user_id, project_id=None)
 

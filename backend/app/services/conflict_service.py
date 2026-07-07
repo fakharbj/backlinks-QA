@@ -595,7 +595,10 @@ def _list_where(
     min_similarity: int | None,
     max_similarity: int | None,
     target_domain: str | None,
-    search: str | None,
+    source_page: str | None = None,
+    created_from: date | datetime | None = None,
+    created_to: date | datetime | None = None,
+    search: str | None = None,
 ) -> list:
     """Build the whitelisted WHERE clauses (bind real values; no raw casts)."""
     clauses = [BacklinkConflict.workspace_id == ctx.workspace_id]
@@ -668,6 +671,39 @@ def _list_where(
             )
         )
 
+    # Source page: multiselect + searchable — each value is a substring match,
+    # OR'd together (pick a full URL from the list, or type a partial).
+    sp_vals = [s.strip() for s in _csv(source_page) if s.strip()]
+    if sp_vals:
+        clauses.append(
+            exists(
+                select(BacklinkConflictMember.id)
+                .join(BacklinkRecord, BacklinkRecord.id == BacklinkConflictMember.backlink_id)
+                .where(
+                    BacklinkConflictMember.conflict_id == BacklinkConflict.id,
+                    or_(*[BacklinkRecord.source_page_url.ilike(f"%{v}%") for v in sp_vals]),
+                )
+            )
+        )
+
+    # Date filter = the backlink's real CREATION/placement day (not detection/import).
+    if created_from is not None or created_to is not None:
+        member_date = func.coalesce(BacklinkRecord.placement_date, func.date(BacklinkRecord.created_at))
+        date_clauses = [
+            BacklinkConflictMember.conflict_id == BacklinkConflict.id,
+        ]
+        if created_from is not None:
+            date_clauses.append(member_date >= created_from)
+        if created_to is not None:
+            date_clauses.append(member_date <= created_to)
+        clauses.append(
+            exists(
+                select(BacklinkConflictMember.id)
+                .join(BacklinkRecord, BacklinkRecord.id == BacklinkConflictMember.backlink_id)
+                .where(*date_clauses)
+            )
+        )
+
     rbac = _project_scope_clause(ctx)
     if rbac is not None:
         clauses.append(rbac)
@@ -688,6 +724,9 @@ async def list_conflicts(
     min_similarity: int | None = None,
     max_similarity: int | None = None,
     target_domain: str | None = None,
+    source_page: str | None = None,
+    created_from: date | datetime | None = None,
+    created_to: date | datetime | None = None,
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
@@ -699,7 +738,8 @@ async def list_conflicts(
         ctx, scope=scope, status=status, project_id=project_id, user=user,
         detected_from=detected_from, detected_to=detected_to, min_members=min_members,
         min_similarity=min_similarity, max_similarity=max_similarity,
-        target_domain=target_domain, search=search,
+        target_domain=target_domain, source_page=source_page,
+        created_from=created_from, created_to=created_to, search=search,
     )
 
     total = (

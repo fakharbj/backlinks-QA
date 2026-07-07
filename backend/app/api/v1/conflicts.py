@@ -45,19 +45,24 @@ async def list_conflicts(
     user: str | None = None,
     detected_from: date | None = None,
     detected_to: date | None = None,
+    created_from: date | None = None,
+    created_to: date | None = None,
     min_members: int | None = None,
     min_similarity: int | None = None,
     max_similarity: int | None = None,
     target_domain: str | None = None,
+    source_page: str | None = None,
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> ConflictListOut:
     res = await conflict_service.list_conflicts(
         db, ctx, scope=scope, status=status, project_id=project_id, user=user,
-        detected_from=detected_from, detected_to=detected_to, min_members=min_members,
+        detected_from=detected_from, detected_to=detected_to,
+        created_from=created_from, created_to=created_to, min_members=min_members,
         min_similarity=min_similarity, max_similarity=max_similarity,
-        target_domain=target_domain, search=search, limit=limit, offset=offset,
+        target_domain=target_domain, source_page=source_page, search=search,
+        limit=limit, offset=offset,
     )
     return ConflictListOut(
         items=[ConflictOut(**row) for row in res["items"]],

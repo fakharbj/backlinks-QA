@@ -108,6 +108,8 @@ async def known_labels(ctx: AuthCtx, db: ReadSession) -> list[str]:
 # ── Weekly templates ("set the week up once") ────────────────────────────────
 class TemplateWeek(BaseModel):
     week_start: date  # any day of the target week — normalized to Monday
+    mode: str = "week"       # "week" (this week) or "month" (next calendar month)
+    clear: bool = True       # override: wipe existing future assignments in range first
 
 
 @router.post("/templates/save-week")
@@ -131,8 +133,12 @@ async def apply_week_template(
     payload: TemplateWeek, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
 ) -> dict:
-    """Copy the standing weekly template into the given week right now."""
-    result = await workforce_service.apply_template_to_week(db, ctx, week_start=payload.week_start)
+    """Apply the standing weekly template to this week or the next whole month,
+    overriding existing assignments in the range (see service)."""
+    mode = payload.mode if payload.mode in ("week", "month") else "week"
+    result = await workforce_service.apply_template_to_week(
+        db, ctx, week_start=payload.week_start, mode=mode, clear=payload.clear,
+    )
     await db.commit()
     return result
 

@@ -1835,14 +1835,14 @@ function Backlinks({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <ExportButton
-              onClick={async () => {
-                // Server-side export of the FULL filtered set (not the 200-row page).
+            {(() => {
+              // Server-side export of the FULL filtered set (not the 200-row page), CSV or Excel.
+              const doExport = async (fmt: "csv" | "xlsx") => {
                 try {
                   const p2 = new URLSearchParams(query);
                   p2.delete("limit");
                   p2.delete("with_total");
-                  p2.set("format", "csv");
+                  p2.set("format", fmt);
                   const res = await fetch(`${API_BASE}/backlinks/export?${p2.toString()}`, {
                     headers: token ? { Authorization: `Bearer ${token}` } : {}
                   });
@@ -1851,7 +1851,7 @@ function Backlinks({
                   const url = URL.createObjectURL(blob);
                   const link = document.createElement("a");
                   link.href = url;
-                  link.download = "backlinks.csv";
+                  link.download = `backlinks.${fmt === "xlsx" ? "xlsx" : "csv"}`;
                   document.body.appendChild(link);
                   link.click();
                   link.remove();
@@ -1861,8 +1861,20 @@ function Backlinks({
                 } catch (e) {
                   onNotice(e instanceof Error ? e.message : "Export failed");
                 }
-              }}
-            />
+              };
+              return (
+                <>
+                  <ExportButton onClick={() => doExport("csv")} />
+                  <button
+                    onClick={() => doExport("xlsx")}
+                    title="Download all matching links (every filter, all pages) as an Excel file"
+                    className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium text-ink transition hover:bg-field"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Excel
+                  </button>
+                </>
+              );
+            })()}
             <button
               onClick={runIndexCheck}
               className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
@@ -3246,13 +3258,13 @@ function TasksDesk({
     onError: (e: Error) => onNotice(e.message)
   });
   const applyTemplateMut = useMutation({
-    mutationFn: () =>
-      api<{ applied: number; skipped_inactive: number; warnings: string[] }>(
+    mutationFn: (mode: "week" | "month") =>
+      api<{ applied: number; cleared: number; skipped_inactive: number; range: string; warnings: string[] }>(
         "/workforce/templates/apply",
-        { token, method: "POST", body: JSON.stringify({ week_start: weekDays[0] }) }
+        { token, method: "POST", body: JSON.stringify({ week_start: weekDays[0], mode, clear: true }) }
       ),
     onSuccess: (r) => {
-      onNotice(`Template applied — ${r.applied} plan${r.applied === 1 ? "" : "s"} set for this week.`);
+      onNotice(`Template applied to ${r.range} — ${r.applied} plan${r.applied === 1 ? "" : "s"} set, ${r.cleared} existing cleared.`);
       (r.warnings || []).forEach((w) => onNotice(`⚠ ${w}`));
       queryClient.invalidateQueries({ queryKey: ["day-report"] });
     },
@@ -3617,15 +3629,27 @@ function TasksDesk({
           <span className="mx-1 h-5 w-px bg-line" />
           <button
             onClick={() => {
-              if (window.confirm(`Apply the weekly template to the week of ${formatDay(weekDays[0])}?\n\nExisting plans for the same person+project+day are updated; targets recalculate from current rates.`))
-                applyTemplateMut.mutate();
+              if (window.confirm(`Apply the weekly template to the week of ${formatDay(weekDays[0])}?\n\n⚠ This OVERRIDES every assignment in that week (from today onward) — existing plans are wiped and replaced by the template. Past days are kept.`))
+                applyTemplateMut.mutate("week");
             }}
             disabled={applyTemplateMut.isPending || !(templates.data?.total_entries || 0)}
-            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Copy the standing weekly plan into this week"}
+            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Wipe this week's assignments (today onward) and replace with the template"}
             className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
           >
             {applyTemplateMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-            Apply template to this week
+            Apply to this week
+          </button>
+          <button
+            onClick={() => {
+              if (window.confirm(`Apply the weekly template to ALL of next month?\n\n⚠ This OVERRIDES every assignment across next calendar month — existing plans are wiped and replaced by the template on each matching weekday. This cannot be undone.`))
+                applyTemplateMut.mutate("month");
+            }}
+            disabled={applyTemplateMut.isPending || !(templates.data?.total_entries || 0)}
+            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Wipe next calendar month's assignments and replace with the template"}
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-ocean/50 px-3 text-xs font-semibold text-ocean transition hover:bg-ocean/10 disabled:opacity-40"
+          >
+            <CalendarDays className="h-3.5 w-3.5" />
+            Apply to next month
           </button>
           <button
             onClick={() => {
@@ -3720,12 +3744,15 @@ function TasksDesk({
                 </span>
               );
               const dayHeader = (d: string, i: number) => (
-                <Th key={d}>
-                  <span className={clsx(!isWorking(d) && "opacity-50")} title={isWorking(d) ? d : `${d} — non-working day`}>
+                <th key={d} className={clsx("whitespace-nowrap px-3 py-2 text-left font-semibold uppercase", d === todayIso && "bg-ocean/10")}>
+                  <span
+                    className={clsx(!isWorking(d) && "opacity-50", d === todayIso && "font-bold text-ocean")}
+                    title={d === todayIso ? "Today" : isWorking(d) ? d : `${d} — non-working day`}
+                  >
                     {dayNames[i]} {d.slice(8)}/{d.slice(5, 7)}
-                    {!isWorking(d) ? " · off" : ""}
+                    {d === todayIso ? " · today" : !isWorking(d) ? " · off" : ""}
                   </span>
-                </Th>
+                </th>
               );
               if (view === "project") {
                 const gridProjects = Array.from(new Set(rows.map((r) => r.project_id)));
@@ -3753,7 +3780,7 @@ function TasksDesk({
                             const target = cell.reduce((a, r) => a + r.expected_links, 0);
                             const done = cell.reduce((a, r) => a + r.actual_links, 0);
                             return (
-                              <Td key={d}>
+                              <td key={d} className={clsx("px-3 py-2 align-top", d === todayIso && "bg-ocean/5")}>
                                 {cell.length ? (
                                   <span className={clsx("block min-w-[110px] space-y-1", !isWorking(d) && "opacity-60")}>
                                     {cell.map((r) => (
@@ -3790,7 +3817,7 @@ function TasksDesk({
                                 ) : (
                                   <span className="text-xs text-muted">—</span>
                                 )}
-                              </Td>
+                              </td>
                             );
                           })}
                         </tr>
@@ -3822,7 +3849,7 @@ function TasksDesk({
                           const cell = rows.filter((r) => r.user_label === u && r.day === d);
                           const leave = onLeave(u, d);
                           return (
-                            <Td key={d}>
+                            <td key={d} className={clsx("px-3 py-2 align-top", d === todayIso && "bg-ocean/5")}>
                               <span className={clsx("block min-w-[116px] space-y-1", !isWorking(d) && "opacity-60")}>
                                 {leave ? (
                                   <span className="block rounded-md bg-plum/10 px-1.5 py-1 text-[11px] font-medium text-plum" title="Approved leave — plans on this day are excused">
@@ -3838,7 +3865,7 @@ function TasksDesk({
                                   + Add
                                 </button>
                               </span>
-                            </Td>
+                            </td>
                           );
                         })}
                       </tr>
@@ -6571,6 +6598,37 @@ function BatchDetails({
           </div>
           {b.status !== "running" ? (
             <div className="flex items-center gap-3">
+              {isReview ? (
+                <button
+                  onClick={() => {
+                    // Export the staged rows straight from the queue (no need to approve first).
+                    if (b.kind === "domain_import") {
+                      downloadCsv(
+                        `domain-import-B-${b.seq}.csv`,
+                        ["Domain", "Presence", "State", "DA", "PA", "AS", "Spam", "Age (days)"],
+                        items.map((it) => {
+                          const m = (it.payload?.metrics || {}) as Record<string, number | null | undefined>;
+                          return [it.label, it.presence, it.state, m.da ?? "", m.pa ?? "", m.semrush_as ?? "", m.spam_score ?? "", m.domain_age_days ?? ""];
+                        })
+                      );
+                    } else {
+                      downloadCsv(
+                        `link-import-B-${b.seq}.csv`,
+                        ["Source URL", "Presence", "State", "QA status", "Score", "HTTP", "Rel"],
+                        items.map((it) => {
+                          const qa = (it.payload?.qa || {}) as Record<string, unknown>;
+                          return [it.label, it.presence, it.state, (qa.status as string) ?? "", (qa.score as number) ?? "", (qa.http_status as number) ?? "", (qa.rel as string) ?? ""];
+                        })
+                      );
+                    }
+                    onNotice(`Exported ${items.length} staged item(s).`);
+                  }}
+                  title="Download the staged rows in this queue as CSV (without approving them)"
+                  className="flex items-center gap-1.5 text-xs font-medium text-ink hover:underline"
+                >
+                  <Download className="h-3.5 w-3.5" /> Export items
+                </button>
+              ) : null}
               <button
                 onClick={() => { setRevertTyped(""); setRevertOpen(true); }}
                 title="Delete this batch AND remove the rows it created (reversible cleanup)"
@@ -9170,44 +9228,43 @@ function SourceDomainsDesk({
   const st = stats.data;
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-muted">
-          Every backlink grouped by its source website. Filter, sort and export the catalog; build
-          reusable rules to surface the domains that matter.
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="mr-1 flex items-center gap-1.5 text-base font-semibold text-ink">
+          Source Domains
+          <HelpTip text="Every backlink grouped by its source website. Filter, sort and export the catalog; build reusable rules to surface the domains that matter." />
+        </h2>
+        {/* All actions on one responsive row */}
+        {onImportDomains ? (
           <button
-            onClick={() => recompute.mutate()}
-            className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
-          >
-            {recompute.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Recompute
-          </button>
-          <button
-            onClick={() => fetchMoz.mutate()}
+            onClick={onImportDomains}
+            title="Paste a list of websites — they land in a review batch and join this catalog only when you approve them"
             className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
           >
-            {fetchMoz.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
-            Check DA/PA (Moz)
+            <Upload className="h-4 w-4" />
+            Import domains
           </button>
-          <button
-            onClick={() => fetchSemrush.mutate()}
-            className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
-          >
-            {fetchSemrush.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
-            Check AS (Semrush)
-          </button>
-          {onImportDomains ? (
-            <button
-              onClick={onImportDomains}
-              title="Paste a list of websites — they land in a review batch and join this catalog only when you approve them"
-              className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
-            >
-              <Upload className="h-4 w-4" />
-              Import domains
-            </button>
-          ) : null}
-        </div>
+        ) : null}
+        <button
+          onClick={() => recompute.mutate()}
+          className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+        >
+          {recompute.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          Recompute
+        </button>
+        <button
+          onClick={() => fetchMoz.mutate()}
+          className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+        >
+          {fetchMoz.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+          Check DA/PA (Moz)
+        </button>
+        <button
+          onClick={() => fetchSemrush.mutate()}
+          className="flex h-9 items-center gap-2 rounded-md border border-line bg-panel px-3 text-sm font-medium text-ink transition hover:bg-field"
+        >
+          {fetchSemrush.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+          Check AS (Semrush)
+        </button>
       </div>
 
       {/* Stat cards — refetched with the active filters */}
@@ -11123,6 +11180,56 @@ function QaSettingsCard({ token, onNotice }: { token: string | null; onNotice: (
   );
 }
 
+// Global productivity rates (links per hour, per link type) — the workspace-wide
+// default that per-user overrides (in the Tasks desk) beat. Lives in Settings so
+// the baseline lives with the other global config.
+function ProductivityCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  type Prod = { global: Array<{ link_type_name: string; links_per_hour: number }>; overrides: Array<{ user_label: string; link_type_name: string; links_per_hour: number }> };
+  const q = useQuery({
+    queryKey: ["productivity", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Prod>("/workforce/productivity", { token })
+  });
+  const save = useMutation({
+    mutationFn: (p: { link_type_name: string; links_per_hour: number }) =>
+      api<{ message: string }>("/workforce/productivity", { token, method: "PUT", body: JSON.stringify(p) }),
+    onSuccess: () => { onNotice("Global rate saved"); queryClient.invalidateQueries({ queryKey: ["productivity"] }); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const rows = q.data?.global || [];
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex items-center gap-2 border-b border-line p-4">
+        <h3 className="text-sm font-semibold text-ink">Productivity — links per hour (global)</h3>
+        <HelpTip text="The workspace default rate for each link type, used to turn planned hours into an expected-links target. A person's own rate (set in the Tasks desk) beats this. Edit a value and click away to save." />
+      </div>
+      {q.isLoading ? (
+        <div className="p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      ) : !rows.length ? (
+        <Empty label="No link types yet — add link types first (Settings → Link types)." />
+      ) : (
+        <div className="divide-y divide-line">
+          {rows.map((g) => (
+            <div key={g.link_type_name} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+              <span className="font-medium text-ink">{linkTypeLabel(g.link_type_name)}</span>
+              <span className="flex items-center gap-2">
+                <input
+                  type="number" min={0.1} step={0.5} defaultValue={g.links_per_hour}
+                  onBlur={(e) => { const v = Number(e.target.value); if (v > 0 && v !== g.links_per_hour) save.mutate({ link_type_name: g.link_type_name, links_per_hour: v }); }}
+                  className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
+                />
+                <span className="text-xs text-muted">/hour</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="px-4 py-2 text-[11px] text-muted">Per-person overrides live in the Tasks desk (they win over these).</p>
+    </section>
+  );
+}
+
 function SettingsDesk({
   token,
   projectId,
@@ -11225,6 +11332,7 @@ function SettingsDesk({
     <section className="space-y-5">
       <BrandingCard token={token} projectId={projectId} onNotice={onNotice} />
       <LinkTypesCard token={token} onNotice={onNotice} />
+      <ProductivityCard token={token} onNotice={onNotice} />
       <QaSettingsCard token={token} onNotice={onNotice} />
       {!projectId ? (
         <div className="rounded-xl border border-line bg-panel shadow-card">
@@ -11391,10 +11499,13 @@ function ConflictsDesk({
   const [statusF, setStatusF] = useState<string[]>(["open"]);
   const [minMembers, setMinMembers] = useState<string>("");
   const [minSim, setMinSim] = useState<string>("");
-  const [targetDomain, setTargetDomain] = useState<string>("");
+  const [targetDomains, setTargetDomains] = useState<string[]>([]);
+  const [sourcePages, setSourcePages] = useState<string[]>([]);
+  const [userF, setUserF] = useState<string[]>([]);
   const [search, setSearch] = useState<string>("");
-  const [detectedFrom, setDetectedFrom] = useState<string>("");
-  const [detectedTo, setDetectedTo] = useState<string>("");
+  // Date filter = the backlink's real creation (placement) date, not detection/import.
+  const [createdFrom, setCreatedFrom] = useState<string>("");
+  const [createdTo, setCreatedTo] = useState<string>("");
   // Comparison view + bulk selection.
   const [openId, setOpenId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -11405,13 +11516,15 @@ function ConflictsDesk({
     statusF.forEach((v) => p.append("status", v));
     if (minMembers.trim()) p.set("min_members", minMembers.trim());
     if (minSim.trim()) p.set("min_similarity", minSim.trim());
-    if (targetDomain.trim()) p.set("target_domain", targetDomain.trim());
+    if (targetDomains.length) p.set("target_domain", targetDomains.join(","));
+    if (sourcePages.length) p.set("source_page", sourcePages.join(","));
+    if (userF.length) p.set("user", userF.join(","));
     if (search.trim()) p.set("search", search.trim());
-    if (detectedFrom) p.set("detected_from", detectedFrom);
-    if (detectedTo) p.set("detected_to", detectedTo);
+    if (createdFrom) p.set("created_from", createdFrom);
+    if (createdTo) p.set("created_to", createdTo);
     p.set("limit", "200");
     return p.toString();
-  }, [scopeF, statusF, minMembers, minSim, targetDomain, search, detectedFrom, detectedTo]);
+  }, [scopeF, statusF, minMembers, minSim, targetDomains, sourcePages, userF, search, createdFrom, createdTo]);
 
   const summary = useQuery({
     queryKey: ["conflict-summary", token],
@@ -11548,33 +11661,30 @@ function ConflictsDesk({
             placeholder="Min sim %"
             className="h-9 w-28 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
           />
-          <input
-            value={targetDomain}
-            onChange={(e) => setTargetDomain(e.target.value)}
-            placeholder="Target domain"
-            className="h-9 w-40 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
-          />
+          <FilterMultiSelect label="Target domain" options={[]} selected={targetDomains} onChange={setTargetDomains} allowCustom />
+          <FilterMultiSelect label="Source page" options={[]} selected={sourcePages} onChange={setSourcePages} allowCustom />
+          <FilterMultiSelect label="User" options={[]} selected={userF} onChange={setUserF} allowCustom />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search page / URL"
+            placeholder="Search canonical URL"
             className="h-9 w-52 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
           />
-          <label className="flex items-center gap-1 text-xs text-muted">
-            From
-            <input type="date" value={detectedFrom} onChange={(e) => setDetectedFrom(e.target.value)}
+          <label className="flex items-center gap-1 text-xs text-muted" title="Filter by the backlink's real creation (placement) date">
+            Created from
+            <input type="date" value={createdFrom} onChange={(e) => setCreatedFrom(e.target.value)}
               className="h-9 rounded-lg border border-line bg-panel px-2 text-sm focus:border-ocean focus:outline-none" />
           </label>
           <label className="flex items-center gap-1 text-xs text-muted">
             To
-            <input type="date" value={detectedTo} onChange={(e) => setDetectedTo(e.target.value)}
+            <input type="date" value={createdTo} onChange={(e) => setCreatedTo(e.target.value)}
               className="h-9 rounded-lg border border-line bg-panel px-2 text-sm focus:border-ocean focus:outline-none" />
           </label>
-          {(scopeF.length || statusF.join() !== "open" || minMembers || minSim || targetDomain || search || detectedFrom || detectedTo) ? (
+          {(scopeF.length || statusF.join() !== "open" || minMembers || minSim || targetDomains.length || sourcePages.length || userF.length || search || createdFrom || createdTo) ? (
             <button
               onClick={() => {
                 setScopeF([]); setStatusF(["open"]); setMinMembers(""); setMinSim("");
-                setTargetDomain(""); setSearch(""); setDetectedFrom(""); setDetectedTo("");
+                setTargetDomains([]); setSourcePages([]); setUserF([]); setSearch(""); setCreatedFrom(""); setCreatedTo("");
               }}
               className="h-9 rounded-lg border border-line px-2.5 text-xs font-medium text-muted transition hover:text-ink"
             >
@@ -12520,13 +12630,15 @@ function FilterMultiSelect({
   options,
   selected,
   onChange,
-  withBlanks = false
+  withBlanks = false,
+  allowCustom = false
 }: {
   label: string;
   options: Array<{ value: string; label?: string; count?: number }>;
   selected: string[];
   onChange: (vals: string[]) => void;
   withBlanks?: boolean;
+  allowCustom?: boolean; // let the user type + Enter to add a free-form value
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -12539,12 +12651,25 @@ function FilterMultiSelect({
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
 
-  const all = withBlanks ? [...options, { value: "(blanks)", label: "(Blanks)" }] : options;
+  // Custom (typed) values that aren't in the option list but are selected.
+  const customSelected = allowCustom
+    ? selected.filter((v) => !options.some((o) => o.value === v) && v !== "(blanks)")
+    : [];
+  const baseAll = withBlanks ? [...options, { value: "(blanks)", label: "(Blanks)" }] : options;
+  const all: Array<{ value: string; label?: string; count?: number }> = [
+    ...customSelected.map((v) => ({ value: v, label: v })),
+    ...baseAll,
+  ];
   const shown = all.filter((o) =>
     (o.label || o.value).toLowerCase().includes(q.trim().toLowerCase())
   );
   const toggle = (v: string) =>
     onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  const addCustom = () => {
+    const v = q.trim();
+    if (v && !selected.includes(v)) onChange([...selected, v]);
+    setQ("");
+  };
 
   return (
     <div ref={ref} className="relative">
@@ -12572,10 +12697,16 @@ function FilterMultiSelect({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search…"
+            onKeyDown={(e) => { if (allowCustom && e.key === "Enter") { e.preventDefault(); addCustom(); } }}
+            placeholder={allowCustom ? "Search or type + Enter to add…" : "Search…"}
             autoFocus
             className="mb-1.5 h-8 w-full rounded-md border border-line bg-panel px-2 text-xs focus:border-ocean focus:outline-none"
           />
+          {allowCustom && q.trim() && !all.some((o) => o.value.toLowerCase() === q.trim().toLowerCase()) ? (
+            <button type="button" onClick={addCustom} className="mb-1 w-full rounded-md bg-ocean/10 px-2 py-1 text-left text-xs font-medium text-ocean hover:bg-ocean/20">
+              + Add “{q.trim()}”
+            </button>
+          ) : null}
           <div className="mb-1 flex items-center justify-between px-1 text-[11px] font-medium">
             <button
               type="button"
@@ -14295,12 +14426,29 @@ function GmailAccountsCard({
   const [targetUser, setTargetUser] = useState("");
   const [targetProject, setTargetProject] = useState("");
 
+  const [asgStatus, setAsgStatus] = useState<"all" | "active" | "revoked">("active");
+  const [asgSearch, setAsgSearch] = useState("");
   const accountsQ = useQuery({
     queryKey: ["gmail-accounts", token],
     enabled: Boolean(token),
     queryFn: () => api<GmailAccountRow[]>("/gmail/accounts", { token })
   });
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["gmail-accounts"] });
+  type GmailAsgRow = {
+    id: string; account_id: string; email: string; scope: string;
+    user_name: string | null; project_name: string | null; assigned_by: string | null;
+    assigned_at: string | null; unassigned_at: string | null; status: string;
+    last_used_at: string | null; notes: string | null;
+  };
+  type GmailAsgResp = { items: GmailAsgRow[]; stats: { total: number; active: number; revoked: number; active_users: number; active_projects: number } };
+  const assignmentsQ = useQuery({
+    queryKey: ["gmail-assignments", token, asgStatus],
+    enabled: Boolean(token),
+    queryFn: () => api<GmailAsgResp>(`/gmail/assignments${asgStatus === "all" ? "" : `?status=${asgStatus}`}`, { token })
+  });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["gmail-accounts"] });
+    queryClient.invalidateQueries({ queryKey: ["gmail-assignments"] });
+  };
 
   const create = useMutation({
     mutationFn: () => api<GmailAccountRow>("/gmail/accounts", { token, method: "POST", body: JSON.stringify({ email, display_name: displayName.trim() || null }) }),
@@ -14430,6 +14578,68 @@ function GmailAccountsCard({
             ))}
           </div>
         )}
+      </section>
+
+      {/* Detailed, filterable assignments table — who has which account, for what project */}
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-4">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+            Assignments
+            <HelpTip text="Every Gmail assignment — to whom (user) and/or which project, who assigned it, when, and whether it's still active. Filter by status or search." />
+          </h3>
+          <div className="flex flex-wrap items-center gap-2">
+            {assignmentsQ.data ? (
+              <span className="flex flex-wrap gap-1.5 text-[11px]">
+                <span className="rounded-full bg-field px-2 py-0.5 text-muted">{assignmentsQ.data.stats.total} total</span>
+                <span className="rounded-full bg-ocean/10 px-2 py-0.5 text-ocean">{assignmentsQ.data.stats.active} active</span>
+                <span className="rounded-full bg-field px-2 py-0.5 text-muted">{assignmentsQ.data.stats.active_users} users</span>
+                <span className="rounded-full bg-field px-2 py-0.5 text-muted">{assignmentsQ.data.stats.active_projects} projects</span>
+              </span>
+            ) : null}
+            <input
+              value={asgSearch}
+              onChange={(e) => setAsgSearch(e.target.value)}
+              placeholder="Search email / user / project…"
+              className="h-8 w-52 rounded-lg border border-line bg-panel px-2 text-sm"
+            />
+            <select value={asgStatus} onChange={(e) => setAsgStatus(e.target.value as "all" | "active" | "revoked")} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm">
+              <option value="active">Active</option>
+              <option value="revoked">Revoked</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr><Th>Account</Th><Th>User</Th><Th>Project</Th><Th>Assigned by</Th><Th>Assigned</Th><Th>Last used</Th><Th>Status</Th></tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {(assignmentsQ.data?.items || [])
+                .filter((r) => {
+                  const q = asgSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return [r.email, r.user_name, r.project_name].some((v) => (v || "").toLowerCase().includes(q));
+                })
+                .map((r) => (
+                  <tr key={r.id} className="hover:bg-field/50">
+                    <Td><span className="font-medium text-ink">{r.email}</span></Td>
+                    <Td>{r.user_name ? <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-xs text-ocean">{r.user_name}</span> : <span className="text-muted">—</span>}</Td>
+                    <Td>{r.project_name ? <span className="rounded bg-plum/10 px-1.5 py-0.5 text-xs text-plum">{r.project_name}</span> : <span className="text-muted">—</span>}</Td>
+                    <Td><span className="text-xs text-muted">{r.assigned_by || "—"}</span></Td>
+                    <Td><span className="whitespace-nowrap text-xs text-muted">{r.assigned_at ? formatDay(r.assigned_at) : "—"}</span></Td>
+                    <Td><span className="whitespace-nowrap text-xs text-muted">{r.last_used_at ? formatDay(r.last_used_at) : "never"}</span></Td>
+                    <Td>
+                      {r.status === "active" ? (
+                        <button onClick={() => revoke.mutate(r.id)} className="rounded bg-ocean/10 px-1.5 py-0.5 text-xs font-medium text-ocean hover:bg-danger/10 hover:text-danger" title="Click to revoke">active ×</button>
+                      ) : <span className="rounded bg-field px-1.5 py-0.5 text-xs text-muted">revoked</span>}
+                    </Td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+          {assignmentsQ.data && !assignmentsQ.data.items.length ? <Empty label="No assignments yet." /> : null}
+        </div>
       </section>
     </div>
   );
