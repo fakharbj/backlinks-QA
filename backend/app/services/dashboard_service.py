@@ -333,18 +333,22 @@ async def _trends_uncached(
         "  < (coalesce(b.placement_date, b.created_at), b.id))"
     )
 
+    # Bucket the Activity trend by the link's REAL creation/placement day (from the
+    # sheet), not by when the row was imported — so the chart reflects when work
+    # actually happened. Falls back to import time only when no sheet date exists.
+    eff = "coalesce(b.placement_date, b.created_at)"
     sql, _ = _bind(
         f"""
         SELECT
-            count(*) FILTER (WHERE b.created_at >= :t0)                       AS new_links,
-            count(*) FILTER (WHERE b.created_at >= :t0 AND {new_domain})      AS new_domains,
-            count(*) FILTER (WHERE b.created_at >= :p0 AND b.created_at < :t0) AS prev_links,
+            count(*) FILTER (WHERE {eff} >= :t0)                       AS new_links,
+            count(*) FILTER (WHERE {eff} >= :t0 AND {new_domain})      AS new_domains,
+            count(*) FILTER (WHERE {eff} >= :p0 AND {eff} < :t0)       AS prev_links,
             count(*) FILTER (
-                WHERE b.created_at >= :p0 AND b.created_at < :t0 AND {new_domain}
-            )                                                                 AS prev_domains,
-            count(*) FILTER (WHERE b.created_at >= :t0 AND b.index_status = 'indexed') AS new_indexed
+                WHERE {eff} >= :p0 AND {eff} < :t0 AND {new_domain}
+            )                                                          AS prev_domains,
+            count(*) FILTER (WHERE {eff} >= :t0 AND b.index_status = 'indexed') AS new_indexed
         FROM backlink_records b
-        WHERE {where} AND b.created_at >= :p0
+        WHERE {where} AND {eff} >= :p0
         """,
         params,
     )
@@ -352,11 +356,11 @@ async def _trends_uncached(
 
     weekly_sql, _ = _bind(
         f"""
-        SELECT to_char(date_trunc('week', b.created_at), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('week', {eff}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
                count(*) FILTER (WHERE {new_domain}) AS new_domains
         FROM backlink_records b
-        WHERE {where} AND b.created_at >= :t0
+        WHERE {where} AND {eff} >= :t0
         GROUP BY 1 ORDER BY 1 ASC
         """,
         params,
