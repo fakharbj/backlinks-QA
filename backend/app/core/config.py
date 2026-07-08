@@ -292,6 +292,12 @@ class Settings(BaseSettings):
     # of them at once — each project finishes before the next starts, so the API
     # isn't hit by every project simultaneously. False → legacy staggered fan-out.
     GOOGLE_SHEETS_SEQUENTIAL_SYNC: bool = True
+    # Short-lived cache (Redis) of raw sheet reads (tab list + per-tab values),
+    # SHARED by the mapping preview and the import sync. The map→sync flow reads
+    # the mapping preview first; the import then reuses that exact read instead of
+    # fetching the tab a second time — one Google request per tab, and the import
+    # matches what you previewed. Cleared on write-back. 0 disables (always fresh).
+    GOOGLE_SHEETS_READ_CACHE_SECONDS: int = 600
     # Auto-create an app account (Viewer role, scoped to that project) for every
     # sheet "User" name that has no catalog mapping yet; admins hand out access
     # via Team → Reset password. Off → sheets never touch the user table.

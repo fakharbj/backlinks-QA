@@ -225,6 +225,88 @@ def read_project_sheet(
     return headers, rows
 
 
+# ── Shared read cache ─────────────────────────────────────────────────────────
+# The map→sync flow reads each tab for the mapping preview, then again for the
+# import. These cached wrappers store the raw read in Redis (short TTL) so the
+# import reuses the preview's read: ONE Google request per tab, and the import
+# imports exactly what was previewed. Cleared on write-back. Fail-open: any Redis
+# hiccup just falls through to a live read.
+import hashlib as _hashlib
+import json as _json
+
+
+def _cache_ttl() -> int:
+    return int(getattr(settings, "GOOGLE_SHEETS_READ_CACHE_SECONDS", 0) or 0)
+
+
+def _rps_cache_key(spreadsheet_id: str, tab: str | None, header_row: int) -> str:
+    tail = _hashlib.md5(f"{tab or ''}|{header_row}".encode()).hexdigest()[:16]
+    return f"ls:shcache:rps:{spreadsheet_id}:{tail}"
+
+
+def _lw_cache_key(spreadsheet_id: str) -> str:
+    return f"ls:shcache:lw:{spreadsheet_id}"
+
+
+def list_worksheets_cached(spreadsheet_id: str, *, use_cache: bool = True) -> list[dict]:
+    ttl = _cache_ttl()
+    client = _rate_client() if (use_cache and ttl > 0) else None
+    key = _lw_cache_key(spreadsheet_id)
+    if client is not None:
+        try:
+            raw = client.get(key)
+            if raw:
+                return _json.loads(raw)
+        except Exception:  # noqa: BLE001
+            pass
+    ws = list_worksheets(spreadsheet_id)
+    if client is not None:
+        try:
+            client.set(key, _json.dumps(ws), ex=ttl)
+        except Exception:  # noqa: BLE001
+            pass
+    return ws
+
+
+def read_project_sheet_cached(
+    spreadsheet_id: str, tab: str | None = None, header_row: int = 1, *, use_cache: bool = True
+) -> tuple[list[str], list[dict[str, str]]]:
+    ttl = _cache_ttl()
+    client = _rate_client() if (use_cache and ttl > 0) else None
+    key = _rps_cache_key(spreadsheet_id, tab, header_row)
+    if client is not None:
+        try:
+            raw = client.get(key)
+            if raw:
+                data = _json.loads(raw)
+                return data["headers"], data["rows"]
+        except Exception:  # noqa: BLE001
+            pass
+    headers, rows = read_project_sheet(spreadsheet_id, tab, header_row)
+    if client is not None:
+        try:
+            payload = _json.dumps({"headers": headers, "rows": rows})
+            if len(payload) <= 8_000_000:  # don't stuff enormous sheets into Redis
+                client.set(key, payload, ex=ttl)
+        except Exception:  # noqa: BLE001
+            pass
+    return headers, rows
+
+
+def invalidate_sheet_cache(spreadsheet_id: str) -> None:
+    """Drop cached reads for a spreadsheet (e.g. after write-back mutates it)."""
+    client = _rate_client()
+    if client is None:
+        return
+    try:
+        keys = list(client.scan_iter(match=f"ls:shcache:rps:{spreadsheet_id}:*", count=200))
+        keys.append(_lw_cache_key(spreadsheet_id))
+        if keys:
+            client.delete(*keys)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _col_letter(n: int) -> str:
     """1 → A, 2 → B, … 27 → AA (1-based column index to A1 letter)."""
     s = ""

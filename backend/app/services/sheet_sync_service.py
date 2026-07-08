@@ -93,6 +93,17 @@ async def discover_projects(db: AsyncSession, workspace_id: uuid.UUID) -> list[u
         source = await _resolve_sheet_source(
             db, workspace_id, project.id, name, spreadsheet_id, url
         )
+        # Discover this project's tabs NOW (metadata only — no row read) so the
+        # mapping UI is usable BEFORE any import. This lets the operator set the
+        # mapping first and then run a SINGLE import sync, instead of syncing once
+        # just to reveal the tabs and a second time to actually import.
+        try:
+            worksheets = await asyncio.to_thread(
+                google_sheets.list_worksheets_cached, spreadsheet_id
+            )
+            await _sync_tabs(db, source, worksheets)
+        except Exception as exc:  # noqa: BLE001 — tab discovery must not fail the run
+            log.warning("discover_tabs_failed", project=name, error=repr(exc))
         sheet_source_ids.append(source.id)
     await db.commit()
     return sheet_source_ids
@@ -385,7 +396,7 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
     )
 
     try:
-        worksheets = await asyncio.to_thread(google_sheets.list_worksheets, source.spreadsheet_id)
+        worksheets = await asyncio.to_thread(google_sheets.list_worksheets_cached, source.spreadsheet_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("sheet_tabs_read_failed", sheet_source_id=str(sheet_source_id), error=repr(exc))
         source.last_sync_status = "error"
@@ -423,7 +434,7 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         await batch_service.update(batch_id, meta={"current_step": f"Reading “{ws['title']}”"})
         try:
             headers, rows = await asyncio.to_thread(
-                google_sheets.read_project_sheet, source.spreadsheet_id, ws["title"],
+                google_sheets.read_project_sheet_cached, source.spreadsheet_id, ws["title"],
                 (tab.header_row or 1),
             )
         except Exception as exc:  # noqa: BLE001 - one bad tab must not stop the rest
@@ -638,6 +649,10 @@ async def writeback_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dic
             written += 1
         except Exception as exc:  # noqa: BLE001 - write-back failure must not crash
             log.warning("writeback_failed", tab=tab, error=repr(exc))
+    if written:
+        # Write-back mutated the sheet — drop cached reads so the next sync/preview
+        # sees the new column layout rather than a stale cached copy.
+        await asyncio.to_thread(google_sheets.invalidate_sheet_cache, source.spreadsheet_id)
     source.last_sync_error = None
     await db.commit()
     return {"tabs_written": written}

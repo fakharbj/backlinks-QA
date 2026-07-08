@@ -256,7 +256,7 @@ async def get_mapping(
     if tab is not None:
         try:
             headers, rows = await asyncio.to_thread(
-                google_sheets.read_project_sheet, source.spreadsheet_id,
+                google_sheets.read_project_sheet_cached, source.spreadsheet_id,
                 tab.tab_name, (tab.header_row or 1),
             )
         except Exception as exc:  # noqa: BLE001 — mapping UI still works without live headers
