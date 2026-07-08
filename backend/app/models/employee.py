@@ -68,3 +68,8 @@ class UserEmployeeMapping(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Laid-off flag (0027): False → excluded from assignment pickers, planner
     # rows and weekly templates. ALL history (links, tasks, reports) is kept.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Alias/merge layer (0042): when set, this ``sheet_user_label`` is a spelling
+    # VARIANT of ``canonical_label`` (e.g. "Keven" → "Kevin"). Every assigned_user_label
+    # write normalizes the variant to this string so grouping/filtering never
+    # re-split. NULL = this label is its own canonical identity (unmerged).
+    canonical_label: Mapped[str | None] = mapped_column(String(200))

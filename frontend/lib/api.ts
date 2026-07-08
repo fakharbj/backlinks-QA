@@ -138,6 +138,7 @@ export type EmployeeMapping = {
   employee_code_id: string | null;
   backlink_count: number;
   is_active?: boolean; // false = laid off (hidden from pickers; history kept)
+  canonical_label?: string | null; // set = this label is an ALIAS rolled up into canonical_label
 };
 
 export type EmployeeOverview = {
@@ -145,6 +146,15 @@ export type EmployeeOverview = {
   mappings: EmployeeMapping[];
   app_users: AppUser[];
 };
+
+export type LabelSuggestionMember = { label: string; backlink_count: number };
+export type LabelSuggestionCluster = {
+  key: string;
+  canonical: string; // suggested keeper (highest-count spelling)
+  score: number; // 0..1 fuzzy confidence
+  members: LabelSuggestionMember[];
+};
+export type LabelSuggestions = { clusters: LabelSuggestionCluster[] };
 
 export type LinkType = {
   id: string;

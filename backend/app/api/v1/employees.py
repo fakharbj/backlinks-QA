@@ -19,6 +19,9 @@ from app.schemas.employee import (
     EmployeeMappingOut,
     EmployeeMappingUpdate,
     EmployeeOverviewOut,
+    LabelSuggestionsOut,
+    MergeLabelsIn,
+    MergeResultOut,
 )
 from app.services import audit_service
 from app.services import employee_service as svc
@@ -92,6 +95,38 @@ async def delete_code(
     )
     await db.commit()
     return {"ok": True}
+
+
+@router.get("/label-suggestions", response_model=LabelSuggestionsOut)
+async def label_suggestions(
+    db: ReadSession, ctx: AuthContext = Depends(require_role(Role.MANAGER))
+) -> LabelSuggestionsOut:
+    """Fuzzy-grouped sheet labels that look like one person (spelling variants)."""
+    return LabelSuggestionsOut(**await svc.suggest_label_groups(db, ctx))
+
+
+@router.post("/merge", response_model=MergeResultOut)
+async def merge_labels(
+    payload: MergeLabelsIn, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+) -> MergeResultOut:
+    """Fold spelling variants / alternate names of one person into one canonical label."""
+    result = await svc.merge_labels(
+        db, ctx, payload.canonical_label, payload.alias_labels, user_id=payload.user_id
+    )
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="employee_mapping", entity_id=ctx.workspace_id,
+        summary=(
+            f"Merged {len(result['alias_labels'])} name(s) into "
+            f"'{result['canonical_label']}' ({result['rows_relabeled']} links relabeled)"
+        ),
+        before={"aliases": result["alias_labels"]},
+        after={"canonical": result["canonical_label"],
+               "user_id": str(payload.user_id) if payload.user_id else None},
+    )
+    await db.commit()
+    return MergeResultOut(**result)
 
 
 @router.patch("/mappings/{mapping_id}", response_model=EmployeeMappingOut)

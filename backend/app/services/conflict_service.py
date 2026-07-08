@@ -1143,6 +1143,11 @@ async def reassign(
     label = (to_user_label or "").strip()
     if not label:
         raise ValidationAppError("to_user_label is required")
+    # Roll a spelling variant up to its canonical person so a bulk reassign to
+    # "Keven" lands on "Kevin" (one identity across dashboards/performance).
+    from app.services import employee_service
+
+    label = employee_service.normalize_label(label, await employee_service.alias_map(db, ctx.workspace_id))
 
     conflict, _cu, _fp = await _load_group(db, ctx, conflict_id)
     members = await _members_for_edit(db, ctx, conflict)

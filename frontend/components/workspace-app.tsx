@@ -79,6 +79,8 @@ import {
   ConflictSummary,
   Dashboard,
   EmployeeOverview,
+  LabelSuggestions,
+  LabelSuggestionCluster,
   LinkType,
   Page,
   Project,
@@ -10708,8 +10710,53 @@ function EmployeesDesk({
     onError: (e: Error) => onNotice(e.message)
   });
 
+  // ── Merge misspelled / alternate spellings of one person ──────────────────
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [canonicalName, setCanonicalName] = useState("");
+  const [mergeUserId, setMergeUserId] = useState("");
+  const suggestions = useQuery({
+    queryKey: ["employee-suggestions", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LabelSuggestions>("/employees/label-suggestions", { token })
+  });
+  // A merge rewrites assigned_user_label everywhere, so drop every cache that
+  // groups/filters on the (now canonical) label.
+  const invalidateIdentity = () => {
+    [
+      "employees", "employee-suggestions", "workforce-labels", "dashboard",
+      "dashboard-trends", "performance", "user-dashboard", "user-dash-history",
+      "user-dash-weakest", "user-dash-month", "user-dashboards-team", "backlinks"
+    ].forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
+  };
+  const merge = useMutation({
+    mutationFn: (v: { canonical_label: string; alias_labels: string[]; user_id: string | null }) =>
+      api<{ rows_relabeled: number }>("/employees/merge", { token, method: "POST", body: JSON.stringify(v) }),
+    onSuccess: (r, v) => {
+      onNotice(`Merged ${v.alias_labels.length} name${v.alias_labels.length === 1 ? "" : "s"} into “${v.canonical_label}” (${r.rows_relabeled} links)`);
+      setSelected(new Set());
+      setCanonicalName("");
+      setMergeUserId("");
+      invalidateIdentity();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const toggleLabel = (label: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+
   const d = data.data;
   const users = d?.app_users || [];
+  const pickMergeUser = (id: string) => {
+    setMergeUserId(id);
+    if (!canonicalName.trim()) {
+      const u = users.find((x) => x.id === id);
+      if (u) setCanonicalName(u.name || u.email);
+    }
+  };
   const userOptions = (
     <>
       <option value="">— unmapped —</option>
@@ -10736,12 +10783,75 @@ function EmployeesDesk({
         </button>
       </div>
 
+      {(suggestions.data?.clusters?.length ?? 0) > 0 ? (
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <SectionTitle title="Smart suggestions — possible duplicate people" />
+          <div className="space-y-2.5 p-3">
+            <p className="text-xs text-muted">
+              These sheet names look like spelling variants of one person. Review each group, tick in any
+              extra name that belongs (a nickname or a different name for the same person, e.g. “Kashif”),
+              then merge — their links, dashboards and performance all combine under one name.
+            </p>
+            {suggestions.data!.clusters.map((c) => (
+              <MergeSuggestionCard
+                key={c.key}
+                cluster={c}
+                allLabels={(d?.mappings || []).map((m) => ({ label: m.sheet_user_label, backlink_count: m.backlink_count }))}
+                pending={merge.isPending}
+                onMerge={(v) => merge.mutate(v)}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="Sheet users → app accounts" />
+        {selected.size > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 border-b border-line bg-field/50 px-3 py-2">
+            <span className="text-xs font-semibold text-ink">{selected.size} selected</span>
+            <span className="text-xs text-muted">Merge into</span>
+            <input
+              list="employee-label-list"
+              className="h-8 w-44 rounded-md border border-line bg-panel px-2 text-sm"
+              placeholder="Canonical name"
+              value={canonicalName}
+              onChange={(e) => setCanonicalName(e.target.value)}
+            />
+            <span className="text-xs text-muted">map to</span>
+            <select
+              className="h-8 rounded-md border border-line bg-panel px-2 text-sm"
+              value={mergeUserId}
+              onChange={(e) => pickMergeUser(e.target.value)}
+            >
+              {userOptions}
+            </select>
+            <button
+              disabled={!canonicalName.trim() || merge.isPending}
+              onClick={() => {
+                const canon = canonicalName.trim();
+                const aliases = Array.from(selected).filter((l) => l.toLowerCase() !== canon.toLowerCase());
+                if (!aliases.length) {
+                  onNotice("Pick a canonical name different from the selected labels.");
+                  return;
+                }
+                merge.mutate({ canonical_label: canon, alias_labels: aliases, user_id: mergeUserId || null });
+              }}
+              className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+            >
+              {merge.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCompare className="h-3.5 w-3.5" />}
+              Merge {selected.size}
+            </button>
+            <button onClick={() => setSelected(new Set())} className="text-xs text-muted hover:text-ink">
+              Clear
+            </button>
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-field text-left text-xs uppercase text-muted">
               <tr>
+                <Th> </Th>
                 <Th>Sheet user</Th>
                 <Th>Backlinks</Th>
                 <Th>Mapped to</Th>
@@ -10756,7 +10866,25 @@ function EmployeesDesk({
               {(d?.mappings || []).map((m) => (
                 <tr key={m.id}>
                   <Td>
-                    <span className="font-medium text-ink">{m.sheet_user_label}</span>
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={selected.has(m.sheet_user_label)}
+                      onChange={() => toggleLabel(m.sheet_user_label)}
+                    />
+                  </Td>
+                  <Td>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium text-ink">{m.sheet_user_label}</span>
+                      {m.canonical_label && m.canonical_label.trim().toLowerCase() !== m.sheet_user_label.trim().toLowerCase() ? (
+                        <span
+                          title={`Counts toward “${m.canonical_label}”`}
+                          className="inline-flex items-center gap-0.5 rounded-full border border-ocean/30 bg-ocean/10 px-1.5 py-0.5 text-[10px] font-medium text-ocean"
+                        >
+                          <GitCompare className="h-3 w-3" /> {m.canonical_label}
+                        </span>
+                      ) : null}
+                    </div>
                   </Td>
                   <Td>{m.backlink_count}</Td>
                   <Td>
@@ -10799,6 +10927,13 @@ They disappear from assignment pickers, the planner and weekly templates — all
             <Empty label="No sheet users yet — click 'Sync from sheets'." />
           ) : null}
         </div>
+        <datalist id="employee-label-list">
+          {Array.from(
+            new Set((d?.mappings || []).map((m) => (m.canonical_label || m.sheet_user_label).trim()).filter(Boolean))
+          ).map((v) => (
+            <option key={v} value={v} />
+          ))}
+        </datalist>
       </section>
 
       <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -10885,6 +11020,103 @@ They disappear from assignment pickers, the planner and weekly templates — all
         </form>
       </section>
     </section>
+  );
+}
+
+// One fuzzy-suggestion cluster: shows the likely-same spellings as toggle chips,
+// lets you pull in an extra name (e.g. a different name for the same person), pick
+// the keeper, and merge in one click.
+function MergeSuggestionCard({
+  cluster,
+  allLabels,
+  pending,
+  onMerge
+}: {
+  cluster: LabelSuggestionCluster;
+  allLabels: { label: string; backlink_count: number }[];
+  pending: boolean;
+  onMerge: (v: { canonical_label: string; alias_labels: string[]; user_id: string | null }) => void;
+}) {
+  const [canonical, setCanonical] = useState(cluster.canonical);
+  const [members, setMembers] = useState<Set<string>>(() => new Set(cluster.members.map((m) => m.label)));
+  const inCluster = new Set(cluster.members.map((m) => m.label));
+  const byLabel = new Map(allLabels.map((l) => [l.label, l] as const));
+  const chips = [
+    ...cluster.members,
+    ...Array.from(members).filter((l) => !inCluster.has(l)).map((l) => byLabel.get(l) || { label: l, backlink_count: 0 })
+  ];
+  const addable = allLabels.filter((l) => !inCluster.has(l.label) && !members.has(l.label));
+  const toggle = (label: string) =>
+    setMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  const aliases = Array.from(members).filter((l) => l.trim() && l.toLowerCase() !== canonical.trim().toLowerCase());
+  const canMerge = Boolean(canonical.trim()) && aliases.length >= 1 && !pending;
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-line bg-field/40 p-3">
+      <div className="flex items-center gap-2 text-sm">
+        <Users className="h-4 w-4 text-ocean" />
+        <span className="font-medium text-ink">These look like one person</span>
+        <span className="rounded-full bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean">
+          {Math.round(cluster.score * 100)}% match
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map((m) => {
+          const on = members.has(m.label);
+          return (
+            <button
+              key={m.label}
+              onClick={() => toggle(m.label)}
+              title={on ? "Included — click to leave out" : "Excluded — click to include"}
+              className={clsx(
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition",
+                on ? "border-ocean/40 bg-ocean/10 text-ink" : "border-line bg-panel text-muted line-through"
+              )}
+            >
+              {m.label}
+              <span className="text-[10px] text-muted">{m.backlink_count}</span>
+            </button>
+          );
+        })}
+      </div>
+      {addable.length ? (
+        <div className="flex items-center gap-2">
+          <UserPlus className="h-3.5 w-3.5 text-muted" />
+          <select
+            className="h-8 rounded-md border border-line bg-panel px-2 text-xs"
+            value=""
+            onChange={(e) => { if (e.target.value) toggle(e.target.value); }}
+          >
+            <option value="">Add another name to this person…</option>
+            {addable.map((l) => (
+              <option key={l.label} value={l.label}>{l.label} ({l.backlink_count})</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted">Keep as</span>
+        <input
+          list="employee-label-list"
+          className="h-8 min-w-[150px] flex-1 rounded-md border border-line bg-panel px-2 text-sm"
+          value={canonical}
+          onChange={(e) => setCanonical(e.target.value)}
+        />
+        <button
+          disabled={!canMerge}
+          onClick={() => onMerge({ canonical_label: canonical.trim(), alias_labels: aliases, user_id: null })}
+          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+        >
+          {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCompare className="h-3.5 w-3.5" />}
+          Merge into {canonical.trim() || "…"}
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -583,6 +583,12 @@ async def update_backlink(
         # Store a trimmed label (or NULL) so a whitespace-only value never becomes
         # its own "user" — keeps it in the "(unassigned)" bucket, matching imports.
         cleaned = (data["assigned_user_label"] or "").strip()
+        if cleaned:
+            # Roll a spelling variant up to its canonical person (KEVIN/Keven → Kevin).
+            from app.services import employee_service
+
+            amap = await employee_service.alias_map(db, ctx.workspace_id)
+            cleaned = employee_service.normalize_label(cleaned, amap)
         data["assigned_user_label"] = cleaned or None
     for field, value in data.items():
         setattr(bl, field, value)

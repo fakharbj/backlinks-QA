@@ -302,6 +302,11 @@ class Settings(BaseSettings):
     # sheet "User" name that has no catalog mapping yet; admins hand out access
     # via Team → Reset password. Off → sheets never touch the user table.
     SHEETS_AUTO_CREATE_USERS: bool = True
+    # difflib ratio at/above which two sheet "User" spellings are PROPOSED as one
+    # person on the Employees desk (e.g. KEVIN/Keven/KEVEN). 0.80 clusters those
+    # (kevin↔keven = 0.80 exactly); it is only a suggestion — a manual merge
+    # confirms it, and genuinely different names (Kashif = Kevin) are merged by hand.
+    EMPLOYEE_LABEL_SUGGEST_THRESHOLD: float = 0.80
     # QA/stat checks are MANUAL by default: imports/syncs leave new links as
     # "QA pending" until someone starts a check from the Backlinks list. Turning
     # this on restores check-immediately-after-import (crawls + API credits).

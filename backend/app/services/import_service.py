@@ -137,6 +137,11 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     # Target authority = the project's main domain (Phase 8): a row's target comes
     # from the project, not the sheet. Loaded once per import.
     project_domain = await _project_target_domain(db, imp.project_id)
+    # Spelling-variant → canonical map (KEVIN/Keven → Kevin). Loaded once so a
+    # re-sync of a still-misspelled sheet lands on the canonical and never re-splits.
+    from app.services import employee_service
+
+    label_aliases = await employee_service.alias_map(db, imp.workspace_id)
 
     rows = (
         await db.execute(
@@ -151,6 +156,7 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
             created_id = await _process_row(
                 db, imp, row, user_map, dirty_identities, identity_cache,
                 canonical_cache, dirty_canonicals, link_type_cache, project_domain,
+                label_aliases,
             )
             if created_id is not None:
                 new_ids.append(created_id)
@@ -202,6 +208,7 @@ async def _process_row(
     dirty_canonicals: set[uuid.UUID],
     link_type_cache: dict[str, uuid.UUID],
     project_domain: str | None,
+    label_aliases: dict[str, str],
 ) -> uuid.UUID | None:
     data = row.mapped or {}
     source = (data.get("source_page_url") or "").strip()
@@ -298,7 +305,7 @@ async def _process_row(
                 datetime.now(timezone.utc) if settings.AUTO_QA_ON_IMPORT else None
             )
         old_label = existing.assigned_user_label
-        _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id)
+        _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id, label_aliases)
         existing.canonical_url_id = canonical_id
         existing.link_type_id = await link_type_service.resolve_or_create(
             db, imp.workspace_id, existing.link_type, link_type_cache
@@ -344,7 +351,7 @@ async def _process_row(
         # check-immediately behavior back on).
         next_check_at=(datetime.now(timezone.utc) if settings.AUTO_QA_ON_IMPORT else None),
     )
-    _apply_input_fields(backlink, data, imp, row, user_map, vendor_id, campaign_id)
+    _apply_input_fields(backlink, data, imp, row, user_map, vendor_id, campaign_id, label_aliases)
     # First assignment on insert: record when the link got an owner.
     if backlink.assigned_user_label:
         backlink.assigned_at = datetime.now(timezone.utc)
@@ -373,6 +380,7 @@ def _apply_input_fields(
     user_map: dict[str, uuid.UUID],
     vendor_id: uuid.UUID | None,
     campaign_id: uuid.UUID | None,
+    label_aliases: dict[str, str],
 ) -> None:
     """Set the SHEET-owned input fields on a backlink (create or re-sync update)."""
     target = (data.get("target_url") or bl.target_url or "").strip()
@@ -398,11 +406,13 @@ def _apply_input_fields(
     if data.get("tags"):
         bl.tags = _parse_tags(data.get("tags"))
 
-    # Sheet-sourced fields.
-    label = (data.get("assigned_user_label") or "").strip()
-    if label:
+    # Sheet-sourced fields. Roll a spelling variant up to its canonical person so a
+    # re-sync of the still-misspelled sheet stores the canonical label (no re-split).
+    raw_label = (data.get("assigned_user_label") or "").strip()
+    if raw_label:
+        label = label_aliases.get(raw_label.lower(), raw_label)
         bl.assigned_user_label = label
-        resolved = user_map.get(label.lower())
+        resolved = user_map.get(label.lower()) or user_map.get(raw_label.lower())
         if resolved is not None:
             bl.assigned_user_id = resolved
     if data.get("employee_code"):
