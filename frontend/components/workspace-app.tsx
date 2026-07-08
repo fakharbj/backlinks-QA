@@ -1226,20 +1226,16 @@ function Overview({
               { name: "Needs improvement", cssVar: "--ember", value: stats.totals.warning_count ?? 0 },
               { name: "Needs review", cssVar: "--plum", value: stats.totals.review_count ?? 0 },
               { name: "Not qualified", cssVar: "--danger", value: stats.totals.fail_count ?? 0 },
-              {
-                name: "QA pending", cssVar: "--muted",
-                value: Math.max(
-                  0,
-                  (stats.totals.total ?? 0) - (stats.totals.pass_count ?? 0) -
-                    (stats.totals.warning_count ?? 0) - (stats.totals.review_count ?? 0) -
-                    (stats.totals.fail_count ?? 0)
-                )
-              }
+              // Each bucket uses its OWN count — never a remainder (that wrongly
+              // folded UNKNOWN links into "QA pending"). Zero buckets are hidden.
+              { name: "Unknown", cssVar: "--ink", value: stats.totals.unknown_count ?? 0 },
+              { name: "QA pending", cssVar: "--muted", value: stats.totals.pending_count ?? 0 }
             ]}
             onSegmentClick={(name) => {
               const map: Record<string, string> = {
                 Qualified: "PASS", "Needs improvement": "WARNING",
-                "Needs review": "NEEDS_MANUAL_REVIEW", "Not qualified": "FAIL", "QA pending": "PENDING"
+                "Needs review": "NEEDS_MANUAL_REVIEW", "Not qualified": "FAIL",
+                Unknown: "UNKNOWN", "QA pending": "PENDING"
               };
               onOpenBacklinks(map[name] ? { status: map[name] } : {});
             }}
@@ -4522,7 +4518,7 @@ function StackedBar({
         })}
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-        {segments.map((s) => (
+        {shown.map((s) => (
           <button
             key={s.name}
             onClick={onSegmentClick ? () => onSegmentClick(s.name) : undefined}
