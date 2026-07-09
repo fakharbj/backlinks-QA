@@ -324,7 +324,7 @@ class Settings(BaseSettings):
     INDEX_TIMEOUT_SECONDS: float = 45.0
     # Provider:
     #  • "serper"       — serper.dev Google Search API (reliable JSON, free 2,500
-    #    queries). RECOMMENDED. Needs SERPER_API_KEY.
+    #    queries). RECOMMENDED. Needs SERPER_API_KEY (or a SERPER_API_KEYS pool).
     #  • "google_cse"   — Google Custom Search JSON API. Note: Google deprecated
     #    "Search the entire web" for new engines, so this only works for engines that
     #    had it enabled previously. Needs GOOGLE_CSE_API_KEY + _CX.
@@ -332,6 +332,12 @@ class Settings(BaseSettings):
     #    now serves a JS-only shell, so most results come back UNCERTAIN).
     SERP_PROVIDER: Literal["serper", "google_cse", "proxy_scrape"] = "proxy_scrape"
     SERPER_API_KEY: str | None = None
+    # Optional ROTATION POOL: comma-separated serper.dev keys. Each free key carries
+    # a one-time 2,500-credit allowance, so we drain one fully, then automatically
+    # roll to the next (exhausted keys are retired in Redis, shared across the
+    # api/worker/beat processes). SERPER_API_KEY (above) is appended as one more key.
+    # Add capacity by appending keys here and restarting — no code change.
+    SERPER_API_KEYS: str = ""
     GOOGLE_CSE_API_KEY: str | None = None
     GOOGLE_CSE_CX: str | None = None       # Programmable Search Engine ID
     INDEX_GOOGLE_ENDPOINT: str = "https://www.google.com/search"  # proxy_scrape only

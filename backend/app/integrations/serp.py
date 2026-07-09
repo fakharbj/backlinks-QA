@@ -16,7 +16,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.integrations import proxy
+from app.integrations import proxy, serper_pool
 from app.models.index_check import INDEXED, NOT_INDEXED, UNCERTAIN
 
 log = get_logger("integrations.serp")
@@ -72,7 +72,7 @@ def classify_serp_html(status_code: int, html: str) -> tuple[str, int | None, st
 
 async def check_indexed(source_page_url: str) -> dict:
     """Run a `site:` check for one source URL. Always returns a dict; never raises."""
-    if settings.SERP_PROVIDER == "serper" and settings.SERPER_API_KEY:
+    if settings.SERP_PROVIDER == "serper" and serper_pool.all_keys():
         return await _check_serper(source_page_url)
     if (
         settings.SERP_PROVIDER == "google_cse"
@@ -84,28 +84,58 @@ async def check_indexed(source_page_url: str) -> dict:
 
 
 async def _check_serper(source_page_url: str) -> dict:
-    """serper.dev Google Search API — reliable JSON; indexed if it returns results."""
-    headers = {"X-API-KEY": settings.SERPER_API_KEY or "", "Content-Type": "application/json"}
+    """serper.dev Google Search API — reliable JSON; indexed if it returns results.
+
+    Uses the key ROTATION POOL: the first key with credit answers; when a key is out
+    of credit / invalid (401/402/403) it is retired and we transparently retry the
+    same query with the next key, so a running batch never drops a check just because
+    one key ran dry. Rate limits (429) and transient errors stay UNCERTAIN and keep
+    the key. When every key is exhausted we return UNCERTAIN, never a false negative.
+    """
     body = {"q": f"site:{source_page_url}", "num": 10}
-    try:
-        async with httpx.AsyncClient(timeout=settings.INDEX_TIMEOUT_SECONDS) as client:
-            resp = await client.post("https://google.serper.dev/search", headers=headers, json=body)
-        if resp.status_code in (401, 403, 429):
-            return {"verdict": UNCERTAIN, "result_count": None,
-                    "evidence": {"reason": f"serper_http_{resp.status_code}"}}
-        if resp.status_code != 200:
-            return {"verdict": UNCERTAIN, "result_count": None,
-                    "evidence": {"reason": f"serper_http_{resp.status_code}", "body": resp.text[:200]}}
-        data = resp.json()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("serper_check_failed", url=source_page_url, error=repr(exc))
-        return {"verdict": UNCERTAIN, "result_count": None,
-                "evidence": {"reason": "serper_error", "error": repr(exc)[:200]}}
-    organic = data.get("organic") or []
-    count = len(organic)
-    verdict = INDEXED if count > 0 else NOT_INDEXED
-    return {"verdict": verdict, "result_count": count,
-            "evidence": {"reason": "serper", "provider": "serper"}}
+    n = len(serper_pool.all_keys())
+    attempts = 0
+    async with httpx.AsyncClient(timeout=settings.INDEX_TIMEOUT_SECONDS) as client:
+        while attempts < max(1, n):
+            key = await serper_pool.active_key()
+            if not key:
+                return {"verdict": UNCERTAIN, "result_count": None,
+                        "evidence": {"reason": "serper_all_keys_exhausted"}}
+            attempts += 1
+            try:
+                resp = await client.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                    json=body,
+                )
+            except Exception as exc:  # noqa: BLE001 - transient network error; keep the key
+                log.warning("serper_check_failed", url=source_page_url, error=repr(exc))
+                return {"verdict": UNCERTAIN, "result_count": None,
+                        "evidence": {"reason": "serper_error", "error": repr(exc)[:200]}}
+            if resp.status_code in (401, 402, 403):
+                # Bad key or out of credits → retire it and roll to the next key.
+                await serper_pool.mark_dead(key)
+                continue
+            if resp.status_code == 429:
+                # Rate limited (transient) — do NOT retire the key.
+                return {"verdict": UNCERTAIN, "result_count": None,
+                        "evidence": {"reason": "serper_rate_limited"}}
+            if resp.status_code != 200:
+                return {"verdict": UNCERTAIN, "result_count": None,
+                        "evidence": {"reason": f"serper_http_{resp.status_code}", "body": resp.text[:200]}}
+            try:
+                data = resp.json()
+            except Exception as exc:  # noqa: BLE001
+                return {"verdict": UNCERTAIN, "result_count": None,
+                        "evidence": {"reason": "serper_bad_json", "error": repr(exc)[:200]}}
+            await serper_pool.note_use(key, int(data.get("credits") or 1))
+            organic = data.get("organic") or []
+            count = len(organic)
+            verdict = INDEXED if count > 0 else NOT_INDEXED
+            return {"verdict": verdict, "result_count": count,
+                    "evidence": {"reason": "serper", "provider": "serper", "key_tail": key[-4:]}}
+    return {"verdict": UNCERTAIN, "result_count": None,
+            "evidence": {"reason": "serper_all_keys_exhausted"}}
 
 
 async def _check_google_cse(source_page_url: str) -> dict:

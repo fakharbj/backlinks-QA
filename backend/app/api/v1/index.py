@@ -9,10 +9,36 @@ from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.errors import ValidationAppError
 from app.core.rbac import Permission
 from app.models.enums import AuditAction
+from app.integrations import serper_pool
 from app.schemas.index_check import IndexCheckRequest, IndexCheckResponse, IndexSummaryOut
 from app.services import audit_service, index_service
 
 router = APIRouter(prefix="/index", tags=["index"])
+
+
+@router.get("/serper-status")
+async def serper_status(
+    ctx: AuthContext = Depends(require(Permission.RUN_CRAWLS)),
+) -> dict:
+    """Live view of the serper.dev key rotation pool — how many keys are configured,
+    which one is active, which are exhausted, and approx credits used per key."""
+    return await serper_pool.status()
+
+
+@router.post("/serper-reset")
+async def serper_reset(
+    db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.RUN_CRAWLS)),
+) -> dict:
+    """Clear retired/usage state for the serper pool (use after topping up credits or
+    swapping keys). All configured keys become eligible again."""
+    count = await serper_pool.reset()
+    await audit_service.record(
+        db, action=AuditAction.RECHECK, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="index_check", entity_id=ctx.workspace_id, summary="Serper key pool reset",
+    )
+    await db.commit()
+    return {"reset": True, "configured": count}
 
 
 @router.get("/summary", response_model=IndexSummaryOut)
