@@ -55,6 +55,14 @@ _DATE_FORMATS = (
 )
 
 
+def _is_gbp(link_type: str | None) -> bool:
+    """GBP link types are fully excluded from the duplicate system (owner rule):
+    any type whose NAME contains "GBP" (case-insensitive substring) never joins a
+    link identity, is always duplicate_status='unique'/is_duplicate=False, and can
+    never cause another link to be flagged. Only GBP is exempt."""
+    return "gbp" in (link_type or "").lower()
+
+
 async def create_import(
     db: AsyncSession,
     ctx: AuthContext,
@@ -310,11 +318,23 @@ async def _process_row(
         existing.link_type_id = await link_type_service.resolve_or_create(
             db, imp.workspace_id, existing.link_type, link_type_cache
         )
-        identity_id = await duplicate_service.resolve_identity(
-            db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
-        )
-        existing.link_identity_id = identity_id
-        dirty_identities.add(identity_id)
+        if _is_gbp(existing.link_type):
+            # GBP is excluded from the duplicate system (owner rule): detach from any
+            # identity this row held, re-roll that identity so a former peer can fall
+            # back to unique, and stamp this row unique. recompute() never touches a
+            # NULL-identity row, so the verdict is set here.
+            if existing.link_identity_id is not None:
+                dirty_identities.add(existing.link_identity_id)
+            existing.link_identity_id = None
+            existing.duplicate_status = duplicate_service.UNIQUE
+            existing.is_duplicate = False
+            identity_id = None
+        else:
+            identity_id = await duplicate_service.resolve_identity(
+                db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
+            )
+            existing.link_identity_id = identity_id
+            dirty_identities.add(identity_id)
         new_label = existing.assigned_user_label
         if old_label and new_label and old_label != new_label:
             db.add(
@@ -358,11 +378,18 @@ async def _process_row(
     backlink.link_type_id = await link_type_service.resolve_or_create(
         db, imp.workspace_id, backlink.link_type, link_type_cache
     )
-    identity_id = await duplicate_service.resolve_identity(
-        db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
-    )
-    backlink.link_identity_id = identity_id
-    dirty_identities.add(identity_id)
+    if _is_gbp(backlink.link_type):
+        # GBP is excluded from the duplicate system (owner rule): never joins an
+        # identity and is always unique.
+        backlink.link_identity_id = None
+        backlink.duplicate_status = duplicate_service.UNIQUE
+        backlink.is_duplicate = False
+    else:
+        identity_id = await duplicate_service.resolve_identity(
+            db, imp.workspace_id, src.normalized, tgt.registrable_domain, identity_cache
+        )
+        backlink.link_identity_id = identity_id
+        dirty_identities.add(identity_id)
     db.add(backlink)
     await db.flush()
     row.status = ImportRowStatus.IMPORTED

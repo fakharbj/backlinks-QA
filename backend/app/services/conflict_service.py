@@ -67,6 +67,15 @@ _BULK_ACTIONS = {
 _MEMBER_DETAIL_CAP = 50
 
 
+def _non_gbp_clause():
+    """GBP link types are fully exempt from the Duplicates desk (owner rule): a
+    backlink whose link_type NAME contains 'GBP' (case-insensitive) never forms or
+    joins a conflict group and never bumps a group's member count. COALESCE keeps
+    NULL/blank link types (they are NOT GBP) — a bare ``NOT ILIKE`` on NULL would
+    wrongly drop them from grouping."""
+    return func.coalesce(BacklinkRecord.link_type, "").notilike("%GBP%")
+
+
 def classify_scope(project_count: int, user_count: int) -> str:
     """Pure rule (unit-tested): spanning projects > spanning users > same project."""
     if project_count > 1:
@@ -353,6 +362,7 @@ async def rebuild_workspace(db: AsyncSession, workspace_id: uuid.UUID) -> int:
             .where(
                 BacklinkRecord.workspace_id == workspace_id,
                 BacklinkRecord.canonical_url_id.is_not(None),
+                _non_gbp_clause(),
             )
             .group_by(BacklinkRecord.canonical_url_id)
             .having(func.count() > 1)
@@ -382,6 +392,7 @@ async def rebuild_workspace(db: AsyncSession, workspace_id: uuid.UUID) -> int:
                 select(BacklinkRecord.id).where(
                     BacklinkRecord.workspace_id == workspace_id,
                     BacklinkRecord.canonical_url_id == g.canonical_url_id,
+                    _non_gbp_clause(),
                 )
             )
         ).scalars().all()
@@ -426,6 +437,7 @@ async def detect_for_canonicals(
             .where(
                 BacklinkRecord.workspace_id == workspace_id,
                 BacklinkRecord.canonical_url_id.in_(ids),
+                _non_gbp_clause(),
             )
             .group_by(BacklinkRecord.canonical_url_id)
         )
@@ -475,6 +487,7 @@ async def detect_for_canonicals(
                 select(BacklinkRecord.id).where(
                     BacklinkRecord.workspace_id == workspace_id,
                     BacklinkRecord.canonical_url_id == cid,
+                    _non_gbp_clause(),
                 )
             )
         ).scalars().all()
