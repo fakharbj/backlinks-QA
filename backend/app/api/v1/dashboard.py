@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.core.deps import AuthCtx, ReadSession
 from app.schemas.dashboard import DashboardResponse
@@ -22,6 +22,10 @@ async def dashboard(
 
 @router.get("/trends")
 async def dashboard_trends(
-    ctx: AuthCtx, db: ReadSession, days: int = 30, project_id: uuid.UUID | None = None
+    ctx: AuthCtx, db: ReadSession, days: int = 30,
+    granularity: str = Query(default="week", pattern="^(day|week|month)$"),
+    project_id: uuid.UUID | None = None,
 ) -> dict:
-    return await dashboard_service.trends(db, ctx, days=days, project_id=project_id)
+    return await dashboard_service.trends(
+        db, ctx, days=days, granularity=granularity, project_id=project_id
+    )

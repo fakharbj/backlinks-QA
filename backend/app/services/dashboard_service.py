@@ -274,17 +274,20 @@ async def trends(
     ctx: AuthContext,
     *,
     days: int = 30,
+    granularity: str = "week",
     project_id: uuid.UUID | None = None,
 ) -> dict:
-    """Timeframe stats + equal-length previous-period comparison + weekly series.
-    'New domains' uses the owner rule: first-ever appearance of the domain in the
-    scope (project when selected, else workspace).
+    """Timeframe stats + equal-length previous-period comparison + a bucketed series
+    (day / week / month, per ``granularity``). 'New domains' uses the owner rule:
+    first-ever appearance of the domain in the scope (project when selected, else
+    workspace).
 
     Micro-cached in Redis for 30s: dashboards are read far more often than data
     changes, so repeat loads answer in a few ms without touching Postgres."""
     import json as _json
 
-    cache_key = f"ls:dash:trends:{ctx.workspace_id}:{project_id}:{days}"
+    bucket = granularity if granularity in ("day", "week", "month") else "week"
+    cache_key = f"ls:dash:trends:{ctx.workspace_id}:{project_id}:{days}:{bucket}"
     try:
         from app.core.redis import get_redis
 
@@ -293,7 +296,7 @@ async def trends(
             return _json.loads(cached)
     except Exception:  # noqa: BLE001 — cache is best-effort
         pass
-    result = await _trends_uncached(db, ctx, days=days, project_id=project_id)
+    result = await _trends_uncached(db, ctx, days=days, granularity=bucket, project_id=project_id)
     try:
         from app.core.redis import get_redis
 
@@ -308,9 +311,12 @@ async def _trends_uncached(
     ctx: AuthContext,
     *,
     days: int = 30,
+    granularity: str = "week",
     project_id: uuid.UUID | None = None,
 ) -> dict:
     where, params = _scope_clause(ctx, project_id, prefix="b")
+    # Whitelist the bucket — it is interpolated into date_trunc(), never bound.
+    bucket = granularity if granularity in ("day", "week", "month") else "week"
     days = max(1, min(days, 3660))
     now = datetime.now(timezone.utc)
     t0 = now - timedelta(days=days)
@@ -361,7 +367,7 @@ async def _trends_uncached(
     est = _effective("b")
     weekly_sql, _ = _bind(
         f"""
-        SELECT to_char(date_trunc('week', {eff}), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('{bucket}', {eff}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
                count(*) FILTER (WHERE {new_domain}) AS new_domains,
                count(*) FILTER (WHERE {est} = 'PASS') AS qualified,
@@ -398,8 +404,8 @@ async def _trends_uncached(
         prev_domains = int(drow.get("pd") or 0)
         wparams = {"ws": ctx.workspace_id, "t0": t0, "t1": now}
         wsql, _ = _bind(
-            """
-            SELECT to_char(date_trunc('week', discovery_date), 'YYYY-MM-DD') AS week, count(*) AS n
+            f"""
+            SELECT to_char(date_trunc('{bucket}', discovery_date), 'YYYY-MM-DD') AS week, count(*) AS n
             FROM source_domains
             WHERE workspace_id = :ws AND discovery_date >= :t0 AND discovery_date <= :t1
             GROUP BY 1
@@ -421,6 +427,7 @@ async def _trends_uncached(
 
     return {
         "days": days,
+        "granularity": bucket,
         "new_links": head.get("new_links", 0),
         "new_domains": new_domains,
         "new_indexed": head.get("new_indexed", 0),

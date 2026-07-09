@@ -159,6 +159,18 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
     if f.link_missing:
         # link_found IS FALSE — identical to the analytics "Missing" metric.
         stmt = stmt.where(BacklinkRecord.link_found.is_(False))
+    if f.no_placement:
+        # Links with no placement date — the set the "Fill missing dates" and
+        # per-row date editor act on.
+        stmt = stmt.where(BacklinkRecord.placement_date.is_(None))
+    if f.no_user:
+        # No owner assigned — blank/NULL label (same set as the (blanks) chip).
+        stmt = stmt.where(
+            or_(
+                BacklinkRecord.assigned_user_label.is_(None),
+                func.trim(BacklinkRecord.assigned_user_label) == "",
+            )
+        )
     # spam_min / da_min / pa_min / as_min / orphaned resolve against the
     # source_domains aggregate row. source_domains is unique per
     # (workspace_id, domain_key) so the LEFT JOIN never fans out the backlink
@@ -657,10 +669,15 @@ async def fill_missing_placement(
     db: AsyncSession, ctx: AuthContext, *,
     filters: BacklinkFilters | None = None, ids: list[uuid.UUID] | None = None,
 ) -> int:
-    """Back-fill placement_date = the link's import date (created_at, UTC) for links
-    that have NO placement date, scoped to explicit ids OR the same grid filters.
-    Opt-in / audited — gives the no-placement links a sensible spot on the timeline."""
-    from sqlalchemy import Date, cast
+    """Back-fill placement dates for links that have NONE, scoped to explicit ids OR
+    the same grid filters. Opt-in / audited.
+
+    The dates are *spread* across the real placement window of the surrounding scope
+    (min…max of the links that already have a date) with a per-row random day, so the
+    back-fill scatters naturally over the timeline instead of dumping every link on a
+    single spike. When there is no usable window (no existing dates, or all on one
+    day) each link falls back to its own import date (created_at, UTC)."""
+    from sqlalchemy import Date, Integer, cast, literal
     from sqlalchemy import update as sa_update
 
     id_select = _scope(select(BacklinkRecord.id), ctx)
@@ -672,11 +689,29 @@ async def fill_missing_placement(
     matching = list((await db.execute(id_select)).scalars().all())
     if not matching:
         return 0
-    await db.execute(
-        sa_update(BacklinkRecord)
-        .where(BacklinkRecord.id.in_(matching))
-        .values(placement_date=cast(func.timezone("UTC", BacklinkRecord.created_at), Date))
+
+    # Read the existing-placement span of the surrounding scope (the project when the
+    # caller narrowed to one, else the whole accessible workspace) — NOT the null-only
+    # filtered set, which by definition has no dates to spread across.
+    rng = _scope(
+        select(func.min(BacklinkRecord.placement_date), func.max(BacklinkRecord.placement_date)),
+        ctx,
     )
+    if filters is not None and filters.project_id:
+        rng = rng.where(BacklinkRecord.project_id == filters.project_id)
+    rng = rng.where(BacklinkRecord.placement_date.isnot(None))
+    dmin, dmax = (await db.execute(rng)).one()
+
+    upd = sa_update(BacklinkRecord).where(BacklinkRecord.id.in_(matching))
+    if dmin is not None and dmax is not None and dmax > dmin:
+        span = (dmax - dmin).days
+        # random() is volatile → evaluated per row, so the filled dates scatter
+        # uniformly over [dmin, dmax] (date + int-days is native in Postgres).
+        rand_day = cast(func.floor(func.random() * (span + 1)), Integer)
+        upd = upd.values(placement_date=cast(literal(dmin), Date) + rand_day)
+    else:
+        upd = upd.values(placement_date=cast(func.timezone("UTC", BacklinkRecord.created_at), Date))
+    await db.execute(upd)
     return len(matching)
 
 

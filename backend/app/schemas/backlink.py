@@ -205,6 +205,8 @@ class BacklinkFilters(BaseModel):
     pa_min: int | None = Field(default=None, ge=0, le=100)
     as_min: int | None = Field(default=None, ge=0, le=100)
     orphaned: bool | None = None         # source domain has no source_domains row
+    no_placement: bool | None = None     # placement_date IS NULL (links awaiting a date)
+    no_user: bool | None = None          # no assigned user (label blank) — quick chip
     search: str | None = None
     # Target-based lookup: matches the target URL or expected target (substring),
     # so "find every backlink pointing at /pricing" works.

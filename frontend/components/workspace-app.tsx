@@ -1097,19 +1097,20 @@ function Overview({
   });
   const activeProject = (projectsQ.data || []).find((p) => p.id === projectId) || null;
   const [trendDays, setTrendDays] = useState("3650"); // default: All time
+  const [trendGran, setTrendGran] = useState("week"); // chart bucket: day | week | month
   const trends = useQuery({
-    queryKey: ["dashboard-trends", token, projectId, trendDays],
+    queryKey: ["dashboard-trends", token, projectId, trendDays, trendGran],
     enabled: Boolean(token),
     queryFn: () =>
       api<{
         new_links: number; new_domains: number; new_indexed: number;
-        prev_links: number; prev_domains: number;
+        prev_links: number; prev_domains: number; granularity?: string;
         weekly: Array<{
           week: string; links: number; new_domains: number;
           qualified?: number; not_qualified?: number; needs_improvement?: number; indexed?: number;
         }>;
       }>(
-        `/dashboard/trends?days=${trendDays}${projectId ? `&project_id=${projectId}` : ""}`,
+        `/dashboard/trends?days=${trendDays}&granularity=${trendGran}${projectId ? `&project_id=${projectId}` : ""}`,
         { token }
       )
   });
@@ -1119,14 +1120,17 @@ function Overview({
   // stretch the axis). The backend already caps at today; this guards the UI too.
   const _todayStr = new Date().toISOString().slice(0, 10);
   const weekly = (trends.data?.weekly || []).filter((w) => w.week <= _todayStr);
-  // Clicking a weekly point drills into the Backlinks grid for that exact
-  // Monday–Sunday window (placement axis) so the chart's weekly total reconciles
-  // with the grid's row count. w.week is the bucket's Monday ("YYYY-MM-DD").
-  const openWeek = (i: number) => {
+  // Clicking a chart point drills into the Backlinks grid for that exact bucket's
+  // window (placement axis) so the chart total reconciles with the grid's row count.
+  // The window matches the active granularity: a single day, a Mon–Sun week, or a
+  // whole calendar month. w.week is the bucket start ("YYYY-MM-DD").
+  const openBucket = (i: number) => {
     const wk = weekly[i]?.week;
     if (!wk) return;
-    onOpenBacklinks({ placement_from: wk, placement_to: weekEndIso(wk) });
+    const r = bucketRange(wk, trendGran);
+    onOpenBacklinks({ placement_from: r.from, placement_to: r.to });
   };
+  const granNoun = trendGran === "day" ? "day" : trendGran === "month" ? "month" : "week";
   return (
     <section className="space-y-5">
       {projectId ? (
@@ -1296,17 +1300,39 @@ function Overview({
 
       {/* Timeframe activity + previous-period comparison */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
-        <div className="flex items-center justify-between border-b border-line p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
           <h3 className="text-sm font-semibold text-ink">Activity</h3>
-          <select
-            value={trendDays}
-            onChange={(e) => setTrendDays(e.target.value)}
-            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
-          >
-            {TIMEFRAMES.map(([v, l]) => (
-              <option key={v} value={v}>{l}</option>
-            ))}
-          </select>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Bucket size — Day/Week/Month. Smaller buckets = more detail and an
+                exact click-through window; the tooltip + drill follow the choice. */}
+            <div className="inline-flex overflow-hidden rounded-lg border border-line" role="group" aria-label="Chart detail">
+              {(
+                [["day", "Day"], ["week", "Week"], ["month", "Month"]] as Array<[string, string]>
+              ).map(([v, l]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setTrendGran(v)}
+                  className={`h-9 px-2.5 text-sm font-medium transition-colors ${
+                    trendGran === v
+                      ? "bg-ocean text-white dark:text-slate-900"
+                      : "bg-panel text-muted hover:bg-field"
+                  }`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+            <select
+              value={trendDays}
+              onChange={(e) => setTrendDays(e.target.value)}
+              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+            >
+              {TIMEFRAMES.map(([v, l]) => (
+                <option key={v} value={v}>{l}</option>
+              ))}
+            </select>
+          </div>
         </div>
         <div className="grid gap-3 p-4 sm:grid-cols-3">
           <div className="rounded-lg border border-line bg-field/50 p-3">
@@ -1343,8 +1369,9 @@ function Overview({
               </div>
               <TrendChart
                 labels={weekly.map((w) => w.week)}
-                labelFmt={weekRangeLabel}
-                onPointClick={openWeek}
+                labelFmt={(w) => bucketLabel(w, trendGran)}
+                tickFmt={(w) => bucketTick(w, trendGran)}
+                onPointClick={openBucket}
                 series={[
                   { name: "Links added", cssVar: "--ocean", values: weekly.map((w) => w.links) },
                   { name: "New source domains", cssVar: "--plum", values: weekly.map((w) => w.new_domains) }
@@ -1353,12 +1380,13 @@ function Overview({
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                Quality over time <span className="normal-case text-[10px]">(by link&apos;s placement week)</span>
+                Quality over time <span className="normal-case text-[10px]">(by link&apos;s placement {granNoun})</span>
               </div>
               <TrendChart
                 labels={weekly.map((w) => w.week)}
-                labelFmt={weekRangeLabel}
-                onPointClick={openWeek}
+                labelFmt={(w) => bucketLabel(w, trendGran)}
+                tickFmt={(w) => bucketTick(w, trendGran)}
+                onPointClick={openBucket}
                 series={[
                   { name: "Qualified", cssVar: "--ocean", values: weekly.map((w) => w.qualified ?? 0) },
                   { name: "Not qualified", cssVar: "--danger", values: weekly.map((w) => w.not_qualified ?? 0) },
@@ -1372,8 +1400,9 @@ function Overview({
               </div>
               <TrendChart
                 labels={weekly.map((w) => w.week)}
-                labelFmt={weekRangeLabel}
-                onPointClick={openWeek}
+                labelFmt={(w) => bucketLabel(w, trendGran)}
+                tickFmt={(w) => bucketTick(w, trendGran)}
+                onPointClick={openBucket}
                 series={[
                   { name: "Indexed", cssVar: "--plum", values: weekly.map((w) => w.indexed ?? 0) }
                 ]}
@@ -1635,6 +1664,8 @@ function Backlinks({
   const [linkMissingF, setLinkMissingF] = useState(() => fParam("link_missing") === "1");
   const [spamMinF, setSpamMinF] = useState(() => fParam("spam_min"));
   const [orphanedF, setOrphanedF] = useState(() => fParam("orphaned") === "1");
+  const [noPlacementF, setNoPlacementF] = useState(() => fParam("no_placement") === "1");
+  const [noUserF, setNoUserF] = useState(() => fParam("no_user") === "1");
   const [sort, setSort] = useState("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState(() => fParam("search"));
@@ -1746,9 +1777,11 @@ function Backlinks({
     setLinkMissingF(false);
     setSpamMinF("");
     setOrphanedF(false);
+    setNoPlacementF(false);
+    setNoUserF(false);
   };
   const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF]
-    .filter(Boolean).length + (orphanedF ? 1 : 0) + (linkMissingF ? 1 : 0);
+    .filter(Boolean).length + (orphanedF ? 1 : 0) + (linkMissingF ? 1 : 0) + (noPlacementF ? 1 : 0) + (noUserF ? 1 : 0);
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
   const toks = (v: string) => (v ? v.split(",") : []);
@@ -1771,7 +1804,9 @@ function Backlinks({
     ["4xx errors", toks(httpClassF).includes("4xx"), () => toggleTok(httpClassF, setHttpClassF, "4xx")],
     ["5xx errors", toks(httpClassF).includes("5xx"), () => toggleTok(httpClassF, setHttpClassF, "5xx")],
     ["Spam", Boolean(spamMinF), () => setSpamMinF((s) => (s ? "" : String(ANALYTICS_SPAM_THRESHOLD)))],
-    ["Orphaned", orphanedF, () => setOrphanedF((o) => !o)]
+    ["Orphaned", orphanedF, () => setOrphanedF((o) => !o)],
+    ["No date", noPlacementF, () => setNoPlacementF((v) => !v)],
+    ["No user", noUserF, () => setNoUserF((v) => !v)]
   ];
 
   const query = useMemo(() => {
@@ -1795,12 +1830,14 @@ function Backlinks({
     if (linkMissingF) params.set("link_missing", "true");
     if (spamMinF) params.set("spam_min", spamMinF);
     if (orphanedF) params.set("orphaned", "true");
+    if (noPlacementF) params.set("no_placement", "true");
+    if (noUserF) params.set("no_user", "true");
     if (axis.from && dateFrom) params.set(axis.from, dateFrom);
     if (axis.to && dateTo) params.set(axis.to, dateTo);
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, noPlacementF, noUserF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -1852,6 +1889,8 @@ function Backlinks({
     link_missing: linkMissingF ? true : null,
     spam_min: spamMinF ? Number(spamMinF) : null,
     orphaned: orphanedF ? true : null,
+    no_placement: noPlacementF ? true : null,
+    no_user: noUserF ? true : null,
     ...(axis.from && dateFrom ? { [axis.from]: dateFrom } : {}),
     ...(axis.to && dateTo ? { [axis.to]: dateTo } : {})
   });
@@ -2110,7 +2149,7 @@ function Backlinks({
             </button>
             <button
               onClick={() => {
-                if (window.confirm(`Set the placement date = import date for every link in this ${activeFilterCount ? "filtered set" : projectId ? "project" : "workspace"} that has NO placement date? This puts them on the timeline; it won't change any that already have a date.`))
+                if (window.confirm(`Give every link in this ${activeFilterCount ? "filtered set" : projectId ? "project" : "workspace"} that has NO placement date a date, spread naturally across the existing placement window (so they don't all land on one day)? Links that already have a date are left untouched.`))
                   fillPlacement.mutate();
               }}
               disabled={fillPlacement.isPending}
@@ -4698,6 +4737,39 @@ function weekRangeLabel(mondayIso: string): string {
   if (mon1 !== mon2) return `Week of ${mon1} ${d1} – ${mon2} ${d2}, ${b[1]}`;
   return `Week of ${mon1} ${d1} – ${d2}, ${b[1]}`;
 }
+// "May 2026" for a monthly bucket (bucket start "YYYY-MM-01").
+function monthLabel(firstIso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(firstIso);
+  if (!m) return fmtChartLabel(firstIso, true);
+  return `${_MONTHS[+m[2] - 1] || m[2]} ${m[1]}`;
+}
+// Tooltip/title label for a bucket start, per the active granularity.
+function bucketLabel(iso: string, gran: string): string {
+  if (gran === "day") return fmtChartLabel(iso, true);
+  if (gran === "month") return monthLabel(iso);
+  return weekRangeLabel(iso);
+}
+// Compact x-axis tick per granularity (month → "May '26", else the short date).
+function bucketTick(iso: string, gran: string): string {
+  if (gran === "month") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+    if (m) return `${_MONTHS[+m[2] - 1] || m[2]} '${m[1].slice(2)}`;
+  }
+  return fmtChartLabel(iso);
+}
+// The inclusive [from,to] date window a bucket covers, for drilling the grid so the
+// chart total reconciles exactly with the grid's row count.
+function bucketRange(iso: string, gran: string): { from: string; to: string } {
+  if (gran === "day") return { from: iso, to: iso };
+  if (gran === "month") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+    if (!m) return { from: iso, to: iso };
+    // day 0 of the next month = the last day of this month.
+    const end = new Date(Date.UTC(+m[1], +m[2], 0));
+    return { from: iso, to: end.toISOString().slice(0, 10) };
+  }
+  return { from: iso, to: weekEndIso(iso) };
+}
 
 // Modern 100%-stacked horizontal bar for a categorical mix (status, index state).
 // Pure inline SVG-free (flex rects); each segment carries an exact count + share
@@ -4761,7 +4833,8 @@ function TrendChart({
   height = 170,
   onPointClick,
   valueFmt,
-  labelFmt
+  labelFmt,
+  tickFmt
 }: {
   labels: string[];
   series: Array<{ name: string; cssVar: string; values: number[] }>;
@@ -4769,9 +4842,11 @@ function TrendChart({
   onPointClick?: (index: number) => void;
   valueFmt?: (v: number) => string;
   // Overrides the tooltip's bucket label (title + floating card). Axis ticks keep
-  // the short fmtChartLabel form. Weekly charts pass weekRangeLabel so a point
-  // reads as "Week of May 18 – 24" instead of a single-day "May 18".
+  // the short fmtChartLabel form unless tickFmt is given. Weekly charts pass
+  // weekRangeLabel so a point reads as "Week of May 18 – 24" not a single "May 18".
   labelFmt?: (raw: string) => string;
+  // Overrides the compact x-axis tick (e.g. "May '26" for monthly buckets).
+  tickFmt?: (raw: string) => string;
 }) {
   const W = 640;
   const H = height;
@@ -4872,7 +4947,7 @@ function TrendChart({
         {labels.map((l, i) =>
           n <= 8 || i === 0 || i === n - 1 || i % Math.ceil(n / 6) === 0 ? (
             <text key={i} x={x(i)} y={H - 6} textAnchor="middle" fontSize="9" fill="rgb(var(--muted))">
-              {fmtChartLabel(l)}
+              {tickFmt ? tickFmt(l) : fmtChartLabel(l)}
             </text>
           ) : null
         )}
