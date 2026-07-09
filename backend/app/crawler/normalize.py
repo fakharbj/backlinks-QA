@@ -129,6 +129,17 @@ def _clean_query(query: str) -> tuple[str, list[tuple[str, str]]]:
     return encoded, kept
 
 
+def _significant_fragment(frag: str) -> bool:
+    """True for a fragment that identifies a DISTINCT resource — an SPA hashbang
+    (``#!/x``), a hash route (``#/x``), or stateful key=value data like smallpdf's
+    ``#s=<uuid>`` — as opposed to a bare in-page anchor (``#section``, ``#top``).
+    Significant fragments are kept in the normalized form so distinct client-routed
+    pages don't wrongly dedup to one; bare anchors are still dropped."""
+    if not frag:
+        return False
+    return frag.startswith(("!", "/")) or "=" in frag or "&" in frag
+
+
 @dataclass(slots=True)
 class NormalizedUrl:
     original: str
@@ -199,11 +210,18 @@ def normalize_url(
     path = _normalize_path(parts.path, trailing_slash_policy=trailing_slash_policy)
     query_encoded, query_pairs = _clean_query(parts.query)
 
-    fragment = ""
-    if keep_hashbang and parts.fragment.startswith("!"):
-        fragment = parts.fragment  # rule 7 exception: SPA hashbang
+    # Bare in-page anchors are dropped (not part of the server resource), but a
+    # STRUCTURED/stateful fragment identifies a distinct resource (SPA route or
+    # key=value like smallpdf's #s=<uuid>) and is kept so distinct pages don't dedup
+    # to one. keep_hashbang additionally forces #!… kept for callers that request it.
+    frag = parts.fragment or ""
+    if _significant_fragment(frag) or (keep_hashbang and frag.startswith("!")):
+        fragment = frag
+    else:
+        fragment = ""
 
-    # Canonical match form: scheme pinned to https, www stripped, no fragment.
+    # Canonical match form: scheme pinned to https, www stripped, significant
+    # fragment preserved (bare anchors dropped).
     authority = host_no_www if port is None else f"{host_no_www}:{port}"
     normalized = urlunsplit(("https", authority, path, query_encoded, fragment))
 

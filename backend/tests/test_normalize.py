@@ -15,6 +15,21 @@ def test_normalize_drops_tracking_lowercases_and_sorts_query():
     assert result.scheme == "https"
 
 
+def test_significant_fragment_kept_bare_anchor_dropped():
+    # Stateful/SPA fragments identify DISTINCT resources and must NOT dedup away
+    # (e.g. smallpdf's #s=<uuid>); bare in-page anchors still normalize off.
+    a = normalize_url("https://smallpdf.com/file#s=aaaaaaaa-1111").normalized
+    b = normalize_url("https://smallpdf.com/file#s=bbbbbbbb-2222").normalized
+    assert a == "https://smallpdf.com/file#s=aaaaaaaa-1111"
+    assert a != b  # distinct fragments → distinct URLs (not duplicates)
+    # Hash routes are kept too.
+    assert normalize_url("https://app.example.com/#/dashboard").normalized.endswith("#/dashboard")
+    assert normalize_url("https://app.example.com/#!/inbox").normalized.endswith("#!/inbox")
+    # Bare anchor is still dropped → same page.
+    assert normalize_url("https://x.com/p#section").normalized == "https://x.com/p"
+    assert normalize_url("https://x.com/p#top").normalized == normalize_url("https://x.com/p").normalized
+
+
 def test_normalize_resolves_relative_url():
     result = normalize_url("../target?b=2&a=1", base_url="https://example.com/path/page.html")
 
