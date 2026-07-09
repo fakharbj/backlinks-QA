@@ -596,6 +596,90 @@ async def update_backlink(
     return bl
 
 
+BULK_EDIT_CAP = 2000
+
+
+async def bulk_edit(
+    db: AsyncSession, ctx: AuthContext, ids: list[uuid.UUID], *,
+    set_user: bool, assigned_user_label: str | None,
+    set_placement: bool, placement_date: date | None,
+) -> int:
+    """Set assigned_user_label and/or placement_date on many backlinks at once.
+    Every row is scoped to the caller's workspace + allowed projects (out-of-scope
+    ids are silently excluded), the label is canonicalized (blank→NULL) exactly like
+    single-edit, and a user change stamps assigned_at + logs AssignmentHistory (feeds
+    performance/tasks). Does NOT touch link identity (dedup is source-URL based)."""
+    if not (set_user or set_placement):
+        return 0
+    ids = ids[:BULK_EDIT_CAP]
+    if not ids:
+        return 0
+    from app.models.link_identity import AssignmentHistory
+    from app.services import employee_service
+
+    label: str | None = None
+    if set_user:
+        cleaned = (assigned_user_label or "").strip()
+        if cleaned:
+            amap = await employee_service.alias_map(db, ctx.workspace_id)
+            cleaned = employee_service.normalize_label(cleaned, amap)
+        label = cleaned or None
+
+    rows = list(
+        (await db.execute(_scope(select(BacklinkRecord).where(BacklinkRecord.id.in_(ids)), ctx)))
+        .scalars().all()
+    )
+    now = datetime.now(timezone.utc)
+    changed = 0
+    for bl in rows:
+        ctx.assert_project(bl.project_id)  # RBAC: refuse cross-project ids (fail-closed)
+        touched = False
+        if set_user and bl.assigned_user_label != label:
+            old = bl.assigned_user_label
+            bl.assigned_user_label = label
+            bl.assigned_at = now
+            db.add(AssignmentHistory(
+                workspace_id=ctx.workspace_id, project_id=bl.project_id, backlink_id=bl.id,
+                link_identity_id=bl.link_identity_id, old_user_label=old, new_user_label=label,
+                source="ui",
+            ))
+            touched = True
+        if set_placement and bl.placement_date != placement_date:
+            bl.placement_date = placement_date
+            touched = True
+        if touched:
+            changed += 1
+    await db.flush()
+    return changed
+
+
+async def fill_missing_placement(
+    db: AsyncSession, ctx: AuthContext, *,
+    filters: BacklinkFilters | None = None, ids: list[uuid.UUID] | None = None,
+) -> int:
+    """Back-fill placement_date = the link's import date (created_at, UTC) for links
+    that have NO placement date, scoped to explicit ids OR the same grid filters.
+    Opt-in / audited — gives the no-placement links a sensible spot on the timeline."""
+    from sqlalchemy import Date, cast
+    from sqlalchemy import update as sa_update
+
+    id_select = _scope(select(BacklinkRecord.id), ctx)
+    if ids:
+        id_select = id_select.where(BacklinkRecord.id.in_(ids[:BULK_EDIT_CAP]))
+    elif filters is not None:
+        id_select = _apply_filters(id_select, filters)
+    id_select = id_select.where(BacklinkRecord.placement_date.is_(None))
+    matching = list((await db.execute(id_select)).scalars().all())
+    if not matching:
+        return 0
+    await db.execute(
+        sa_update(BacklinkRecord)
+        .where(BacklinkRecord.id.in_(matching))
+        .values(placement_date=cast(func.timezone("UTC", BacklinkRecord.created_at), Date))
+    )
+    return len(matching)
+
+
 async def override_verdict(
     db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID, status: OverallStatus, note: str
 ) -> BacklinkRecord:

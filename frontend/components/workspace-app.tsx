@@ -1119,6 +1119,14 @@ function Overview({
   // stretch the axis). The backend already caps at today; this guards the UI too.
   const _todayStr = new Date().toISOString().slice(0, 10);
   const weekly = (trends.data?.weekly || []).filter((w) => w.week <= _todayStr);
+  // Clicking a weekly point drills into the Backlinks grid for that exact
+  // Monday–Sunday window (placement axis) so the chart's weekly total reconciles
+  // with the grid's row count. w.week is the bucket's Monday ("YYYY-MM-DD").
+  const openWeek = (i: number) => {
+    const wk = weekly[i]?.week;
+    if (!wk) return;
+    onOpenBacklinks({ placement_from: wk, placement_to: weekEndIso(wk) });
+  };
   return (
     <section className="space-y-5">
       {projectId ? (
@@ -1335,6 +1343,8 @@ function Overview({
               </div>
               <TrendChart
                 labels={weekly.map((w) => w.week)}
+                labelFmt={weekRangeLabel}
+                onPointClick={openWeek}
                 series={[
                   { name: "Links added", cssVar: "--ocean", values: weekly.map((w) => w.links) },
                   { name: "New source domains", cssVar: "--plum", values: weekly.map((w) => w.new_domains) }
@@ -1347,6 +1357,8 @@ function Overview({
               </div>
               <TrendChart
                 labels={weekly.map((w) => w.week)}
+                labelFmt={weekRangeLabel}
+                onPointClick={openWeek}
                 series={[
                   { name: "Qualified", cssVar: "--ocean", values: weekly.map((w) => w.qualified ?? 0) },
                   { name: "Not qualified", cssVar: "--danger", values: weekly.map((w) => w.not_qualified ?? 0) },
@@ -1360,6 +1372,8 @@ function Overview({
               </div>
               <TrendChart
                 labels={weekly.map((w) => w.week)}
+                labelFmt={weekRangeLabel}
+                onPointClick={openWeek}
                 series={[
                   { name: "Indexed", cssVar: "--plum", values: weekly.map((w) => w.indexed ?? 0) }
                 ]}
@@ -1628,12 +1642,21 @@ function Backlinks({
   const [targetInput, setTargetInput] = useState(() => fParam("target"));
   const [targetF, setTargetF] = useState(() => fParam("target"));
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // Row selection for scoped "check these exact links" actions.
+  // Row selection for scoped "check these exact links" / bulk-edit actions.
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [bulkUser, setBulkUser] = useState("");
+  const [bulkDate, setBulkDate] = useState("");
   // Which date type the "Link date" column shows / sorts on, plus its range filter.
-  const [dateAxis, setDateAxis] = useState("placement");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Date-range deep link: a dashboard drill (e.g. clicking a weekly chart point)
+  // arrives as f_<axis.from>/f_<axis.to> — e.g. f_placement_from/f_placement_to.
+  // Seed the date-axis picker + range from whichever axis' params are present so
+  // the grid opens filtered to that window; absent → placement/empty as before.
+  const _seedDateAxis = BACKLINK_DATE_AXES.find(
+    (a) => (a.from && fParam(a.from)) || (a.to && fParam(a.to))
+  );
+  const [dateAxis, setDateAxis] = useState(() => _seedDateAxis?.key || "placement");
+  const [dateFrom, setDateFrom] = useState(() => (_seedDateAxis?.from ? fParam(_seedDateAxis.from) : ""));
+  const [dateTo, setDateTo] = useState(() => (_seedDateAxis?.to ? fParam(_seedDateAxis.to) : ""));
   const axis = BACKLINK_DATE_AXES.find((a) => a.key === dateAxis) || BACKLINK_DATE_AXES[0];
 
   useEffect(() => {
@@ -1833,6 +1856,39 @@ function Backlinks({
     ...(axis.to && dateTo ? { [axis.to]: dateTo } : {})
   });
 
+  // Bulk edit (assign user / set placement date) on the ticked rows.
+  const bulkLabelsQ = useQuery({
+    queryKey: ["workforce-labels", token],
+    enabled: Boolean(token),
+    queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+  const bulkEdit = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<{ updated: number }>("/backlinks/bulk-edit", { token, method: "POST", body: JSON.stringify(body) }),
+    onSuccess: (r) => {
+      onNotice(`Updated ${r.updated} link${r.updated === 1 ? "" : "s"}.`);
+      setPicked(new Set());
+      setBulkUser("");
+      setBulkDate("");
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["performance"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+  const fillPlacement = useMutation({
+    mutationFn: () =>
+      api<{ updated: number }>("/backlinks/fill-missing-placement", {
+        token, method: "POST", body: JSON.stringify({ filters: filterBody() })
+      }),
+    onSuccess: (r) => {
+      onNotice(`Back-filled ${r.updated} link(s) with their import date.`);
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+
   const [staleDays, setStaleDays] = useState("30");
   const recheck = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -1989,14 +2045,52 @@ function Backlinks({
               Check DA · PA · AS
             </button>
             {picked.size ? (
-              <button
-                onClick={checkPicked}
-                className="flex h-9 items-center gap-2 rounded-lg border border-ocean/40 bg-ocean/10 px-3 text-sm font-semibold text-ocean transition hover:bg-ocean/20"
-                title="Re-crawl exactly the rows you ticked, even if they were checked recently"
-              >
-                <Play className="h-4 w-4" />
-                Check selected ({picked.size})
-              </button>
+              <div className="flex items-center gap-1.5 rounded-lg border border-ocean/40 bg-ocean/5 px-2 py-1">
+                <span className="text-xs font-semibold text-ink">{picked.size} sel.</span>
+                <SearchSelect
+                  value={bulkUser}
+                  onChange={setBulkUser}
+                  options={(bulkLabelsQ.data || []).map((l) => ({ value: l }))}
+                  placeholder="Assign user…"
+                  allowCustom
+                  width="w-36"
+                />
+                <button
+                  disabled={!bulkUser || bulkEdit.isPending}
+                  onClick={() => {
+                    if (!window.confirm(`Assign ${picked.size} selected link${picked.size === 1 ? "" : "s"} to “${bulkUser}”?`)) return;
+                    bulkEdit.mutate({ ids: Array.from(picked), set_user: true, assigned_user_label: bulkUser });
+                  }}
+                  className="h-8 rounded-md border border-line px-2 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+                >
+                  Assign
+                </button>
+                <input
+                  type="date"
+                  value={bulkDate}
+                  onChange={(e) => setBulkDate(e.target.value)}
+                  title="Placement (go-live) date to set on the selected links"
+                  className="h-8 rounded-md border border-line bg-panel px-1.5 text-xs text-ink"
+                />
+                <button
+                  disabled={!bulkDate || bulkEdit.isPending}
+                  onClick={() => {
+                    if (!window.confirm(`Set placement date ${bulkDate} on ${picked.size} selected link${picked.size === 1 ? "" : "s"}?`)) return;
+                    bulkEdit.mutate({ ids: Array.from(picked), set_placement: true, placement_date: bulkDate });
+                  }}
+                  className="h-8 rounded-md border border-line px-2 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-40"
+                >
+                  Set date
+                </button>
+                <button
+                  onClick={checkPicked}
+                  className="flex h-8 items-center gap-1.5 rounded-md border border-ocean/40 bg-ocean/10 px-2 text-xs font-semibold text-ocean transition hover:bg-ocean/20"
+                  title="Re-crawl exactly the rows you ticked, even if they were checked recently"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  Check ({picked.size})
+                </button>
+              </div>
             ) : null}
             <button
               onClick={checkPending}
@@ -2013,6 +2107,18 @@ function Backlinks({
             >
               <Filter className="h-4 w-4" />
               Check filtered
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm(`Set the placement date = import date for every link in this ${activeFilterCount ? "filtered set" : projectId ? "project" : "workspace"} that has NO placement date? This puts them on the timeline; it won't change any that already have a date.`))
+                  fillPlacement.mutate();
+              }}
+              disabled={fillPlacement.isPending}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field disabled:opacity-40"
+              title="Give links with no placement date a sensible date (their import date) so they appear on the activity chart"
+            >
+              {fillPlacement.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CalendarDays className="h-4 w-4" />}
+              Fill missing dates
             </button>
             <span className="flex items-center gap-1">
               <select
@@ -2423,6 +2529,25 @@ function BacklinkDetailDrawer({
     onError: (err: Error) => onNotice(err.message)
   });
 
+  // Edit an editable link field (currently the placement date). PATCH sends only
+  // the changed key; sending placement_date:null clears it, a "YYYY-MM-DD" sets it.
+  // Invalidate the dashboard too — placement_date moves the link on the time chart.
+  const editField = useMutation({
+    mutationFn: (payload: { placement_date: string | null }) =>
+      api<BacklinkRow>(`/backlinks/${backlinkId}`, {
+        token,
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      }),
+    onSuccess: () => {
+      onNotice("Placement date saved");
+      queryClient.invalidateQueries({ queryKey: ["backlink", token, backlinkId] });
+      queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
+
   const data = detail.data;
   const grp =
     conflictGroup.data && (conflictGroup.data as ConflictDetail).id
@@ -2554,7 +2679,13 @@ function BacklinkDetailDrawer({
             </DetailBlock>
 
             <DetailBlock title="Dates">
-              {BACKLINK_DATE_FIELDS.map((d) => {
+              <PlacementDateEditor
+                value={data.placement_date ?? null}
+                pending={editField.isPending}
+                onSave={(v) => editField.mutate({ placement_date: v })}
+              />
+              {/* Placement is edited above; the rest of the date types are read-only. */}
+              {BACKLINK_DATE_FIELDS.filter((d) => d.field !== "placement_date").map((d) => {
                 const v = (data[d.field] as string | null | undefined) ?? null;
                 return (
                   <FactRow
@@ -2806,6 +2937,63 @@ function OverrideForm({
         Override
       </button>
     </form>
+  );
+}
+
+// Add/edit a link's placement (go-live) date — the only user-editable date. An
+// empty value is called out in amber so links missing a date (and therefore off
+// the time chart) are easy to spot and fix. Save sends "YYYY-MM-DD"; clearing the
+// box and saving sends null (backend clears the column).
+function PlacementDateEditor({
+  value,
+  pending,
+  onSave
+}: {
+  value: string | null;
+  pending: boolean;
+  onSave: (value: string | null) => void;
+}) {
+  // The Date column serializes as "YYYY-MM-DD" (may carry a time) — <input type=
+  // "date"> wants exactly the 10-char day form.
+  const initial = (value || "").slice(0, 10);
+  const [draft, setDraft] = useState(initial);
+  // Re-sync the box when the record changes (after a save, or a reopened drawer).
+  useEffect(() => setDraft(initial), [initial]);
+  const missing = !value;
+  const dirty = draft !== initial;
+  return (
+    <div className="mb-3 border-b border-line pb-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm text-muted">Placement date</span>
+        {missing ? (
+          <span className="rounded bg-ember/10 px-1.5 py-0.5 text-[11px] font-semibold text-ember">
+            No date — add one to place it on the timeline
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <CalendarDays className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+          <input
+            type="date"
+            className="h-9 rounded-md border border-line bg-panel pl-8 pr-3 text-sm text-ink"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </div>
+        <button
+          disabled={pending || !dirty}
+          onClick={() => onSave(draft ? draft : null)}
+          className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+        >
+          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+          Save
+        </button>
+        {value && dirty && !draft ? (
+          <span className="text-[11px] text-muted">Saving with an empty box clears the date</span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -4485,6 +4673,32 @@ function fmtChartLabel(raw: string, withYear = false): string {
   return raw;
 }
 
+// Weekly dashboard buckets are date_trunc('week') → the bucket's Monday. Given
+// that Monday ISO ("YYYY-MM-DD"), return the Sunday that closes its 7-day span.
+// UTC math so the result never drifts by a day across timezones.
+function weekEndIso(mondayIso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(mondayIso);
+  if (!m) return mondayIso;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  d.setUTCDate(d.getUTCDate() + 6);
+  return d.toISOString().slice(0, 10);
+}
+// Human label for a weekly bucket so a point reads as a WEEK, never a single day:
+// "Week of May 18 – 24, 2026" (same month), "Week of May 30 – Jun 5, 2026"
+// (month crossing), "Week of Dec 28, 2026 – Jan 3, 2027" (year crossing).
+function weekRangeLabel(mondayIso: string): string {
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(mondayIso);
+  const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(weekEndIso(mondayIso));
+  if (!a || !b) return `Week of ${fmtChartLabel(mondayIso, true)}`;
+  const mon1 = _MONTHS[+a[2] - 1] || a[2];
+  const mon2 = _MONTHS[+b[2] - 1] || b[2];
+  const d1 = +a[3];
+  const d2 = +b[3];
+  if (a[1] !== b[1]) return `Week of ${mon1} ${d1}, ${a[1]} – ${mon2} ${d2}, ${b[1]}`;
+  if (mon1 !== mon2) return `Week of ${mon1} ${d1} – ${mon2} ${d2}, ${b[1]}`;
+  return `Week of ${mon1} ${d1} – ${d2}, ${b[1]}`;
+}
+
 // Modern 100%-stacked horizontal bar for a categorical mix (status, index state).
 // Pure inline SVG-free (flex rects); each segment carries an exact count + share
 // in its tooltip and is click-through to the matching Backlinks filter.
@@ -4546,13 +4760,18 @@ function TrendChart({
   series,
   height = 170,
   onPointClick,
-  valueFmt
+  valueFmt,
+  labelFmt
 }: {
   labels: string[];
   series: Array<{ name: string; cssVar: string; values: number[] }>;
   height?: number;
   onPointClick?: (index: number) => void;
   valueFmt?: (v: number) => string;
+  // Overrides the tooltip's bucket label (title + floating card). Axis ticks keep
+  // the short fmtChartLabel form. Weekly charts pass weekRangeLabel so a point
+  // reads as "Week of May 18 – 24" instead of a single-day "May 18".
+  labelFmt?: (raw: string) => string;
 }) {
   const W = 640;
   const H = height;
@@ -4569,6 +4788,7 @@ function TrendChart({
   const x = (i: number) => (n <= 1 ? W / 2 : PADX + (i * (W - PADX * 2)) / (n - 1));
   const y = (v: number) => H - PADY - (v / max) * (H - PADY * 2);
   const fmtV = valueFmt || ((v: number) => String(v));
+  const fmtLabel = labelFmt || ((raw: string) => fmtChartLabel(raw, true));
   if (!labels.length) return <Empty label="Not enough data for a chart yet." />;
 
   const pickIndex = (clientX: number, rect: DOMRect) => {
@@ -4595,7 +4815,7 @@ function TrendChart({
       </div>
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="w-full touch-none"
+        className={`w-full touch-none${onPointClick ? " cursor-pointer" : ""}`}
         role="img"
         style={{ opacity: mounted ? 1 : 0, transition: "opacity .5s ease" }}
         onMouseMove={(e) => setHover(pickIndex(e.clientX, e.currentTarget.getBoundingClientRect()))}
@@ -4642,7 +4862,7 @@ function TrendChart({
                     fill={`rgb(var(${s.cssVar}))`}
                     stroke="rgb(var(--panel))" strokeWidth={isHover || isLast ? 1.5 : 0}
                   >
-                    <title>{`${fmtChartLabel(labels[i], true)} — ${s.name}: ${fmtV(v)}`}</title>
+                    <title>{`${fmtLabel(labels[i])} — ${s.name}: ${fmtV(v)}`}</title>
                   </circle>
                 );
               })}
@@ -4663,7 +4883,7 @@ function TrendChart({
           className="pointer-events-none absolute top-6 z-10 -translate-x-1/2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-xs shadow-pop"
           style={{ left: `clamp(64px, ${hoverLeftPct}%, calc(100% - 64px))` }}
         >
-          <div className="mb-0.5 font-semibold text-ink">{fmtChartLabel(labels[hover], true)}</div>
+          <div className="mb-0.5 font-semibold text-ink">{fmtLabel(labels[hover])}</div>
           {series.map((s) => (
             <div key={s.name} className="flex items-center gap-1.5 whitespace-nowrap text-muted">
               <span className="h-2 w-2 rounded-full" style={{ background: `rgb(var(${s.cssVar}))` }} />

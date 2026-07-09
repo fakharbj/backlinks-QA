@@ -32,6 +32,10 @@ class BacklinkUpdate(BaseModel):
     expected_target_url: str | None = None
     expected_anchor_text: str | None = None
     expected_rel: RelType | None = None
+    # The link's real placement/go-live date (contract input). Only touched when
+    # the client sends the key (exclude_unset in update_backlink) — sending null
+    # clears it, omitting it leaves it untouched. Parses an ISO "YYYY-MM-DD".
+    placement_date: date | None = None
     notes: str | None = None
     tags: list[str] | None = None
     assigned_user_id: uuid.UUID | None = None
@@ -253,6 +257,26 @@ class RecheckRequest(BaseModel):
 class RecheckResponse(BaseModel):
     job_id: uuid.UUID
     queued: int
+
+
+class BacklinkBulkEdit(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=2000)
+    # Explicit set_* flags so a null value CLEARS a field only when that field is
+    # being set (the UI only sends set_user/set_placement when the operator chose to).
+    set_user: bool = False
+    assigned_user_label: str | None = Field(default=None, max_length=200)
+    set_placement: bool = False
+    placement_date: date | None = None
+
+
+class FillMissingPlacementRequest(BaseModel):
+    # Back-fill scope: explicit ids, else the same whitelisted grid filters as the list.
+    ids: list[uuid.UUID] | None = None
+    filters: BacklinkFilters | None = None
+
+
+class BulkEditResponse(BaseModel):
+    updated: int
 
 
 SortField = Literal[

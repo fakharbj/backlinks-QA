@@ -13,13 +13,16 @@ from app.core.rbac import Permission
 from app.models.enums import AuditAction, Indexability, JobType, OverallStatus, RelType
 from app.schemas.backlink import (
     AssignmentEventOut,
+    BacklinkBulkEdit,
     BacklinkCreate,
     BacklinkDetail,
     BacklinkFilters,
     BacklinkOverride,
     BacklinkRow,
     BacklinkUpdate,
+    BulkEditResponse,
     CrawlResultOut,
+    FillMissingPlacementRequest,
     HistoryEventOut,
     IssueOut,
     RecheckRequest,
@@ -409,3 +412,47 @@ async def recheck_bulk(
 
     enqueue_backlinks(ids, job_id=job.id, priority=payload.priority)
     return RecheckResponse(job_id=job.id, queued=len(ids))
+
+
+@router.post("/bulk-edit", response_model=BulkEditResponse)
+async def bulk_edit_backlinks(
+    payload: BacklinkBulkEdit, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> BulkEditResponse:
+    """Assign a user and/or set a placement date on many selected links at once."""
+    count = await backlink_service.bulk_edit(
+        db, ctx, payload.ids, set_user=payload.set_user,
+        assigned_user_label=payload.assigned_user_label,
+        set_placement=payload.set_placement, placement_date=payload.placement_date,
+    )
+    bits = []
+    if payload.set_user:
+        bits.append(f"user → {payload.assigned_user_label or '(unassigned)'}")
+    if payload.set_placement:
+        bits.append(f"placement → {payload.placement_date.isoformat() if payload.placement_date else '(cleared)'}")
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="backlink", entity_id=None,
+        summary=f"Bulk edit {count} link(s): {', '.join(bits)}",
+    )
+    await db.commit()
+    return BulkEditResponse(updated=count)
+
+
+@router.post("/fill-missing-placement", response_model=BulkEditResponse)
+async def fill_missing_placement(
+    payload: FillMissingPlacementRequest, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+) -> BulkEditResponse:
+    """Back-fill placement date = import date for links that have none (scoped to
+    the given ids or the current grid filters)."""
+    count = await backlink_service.fill_missing_placement(
+        db, ctx, filters=payload.filters, ids=payload.ids
+    )
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="backlink", entity_id=None,
+        summary=f"Back-filled placement date from import date for {count} link(s)",
+    )
+    await db.commit()
+    return BulkEditResponse(updated=count)
