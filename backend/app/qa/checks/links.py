@@ -75,12 +75,44 @@ def link_presence(ctx: CheckContext) -> Iterable[Issue]:
                     message="A link to the target domain exists, but not to the agreed target URL.",  # noqa: E501
                     evidence={"found_url": same_domain_link.normalized_url,
                               "expected": ctx.request.expected_target_url or ctx.request.target_url})  # noqa: E501
+    elif art.signals.doc_viewer:
+        # The page is a PDF/document VIEWER — the link usually lives inside the
+        # embedded document (annotation layers built lazily by JS), which we may
+        # not have fully read. "Couldn't verify" → review, NEVER a confident
+        # LINK_MISSING (that was a reported false FAIL).
+        yield issue(code="LNK-09", label=IssueLabel.JS_RENDER_REQUIRED, category=CAT,
+                    severity=Severity.INFO,
+                    message=("The page embeds a PDF/document and the link likely lives inside "
+                             "it. Our checker couldn't fully read the document — open the page "
+                             "and verify the link manually."),
+                    evidence={"doc_viewer": art.signals.doc_viewer_signature,
+                              "outbound_links": len(art.all_links),
+                              "target": ctx.request.target_url})
     else:
         yield issue(code="LNK-02", label=IssueLabel.LINK_MISSING, category=CAT,
                     severity=Severity.CRITICAL,
                     message="Backlink is missing from the source page.",
                     evidence={"target": ctx.request.target_url,
                               "outbound_links": len(art.all_links)})
+
+
+@check("LNK-18", CAT)
+def relaxed_match_disclosure(ctx: CheckContext) -> Iterable[Issue]:
+    """Transparency for GBP/citation RELAXED matches: the link counts as present,
+    but reports must say HOW it matched — never pretend the exact agreed URL was
+    found. INFO severity: no score damage, no status change."""
+    art = ctx.artifact
+    if not art.relaxed_reason or art.primary_link is None:
+        return
+    how = {
+        "gbp_map": "a Google Maps / Business Profile listing link",
+        "owned_directory": "a listing on one of our own directory sites",
+    }.get(art.relaxed_reason, art.relaxed_reason)
+    yield issue(code="LNK-18", label=IssueLabel.NONE, category=CAT, severity=Severity.INFO,
+                message=f"Accepted via relaxed GBP/citation matching: the page carries {how} instead of the main-domain link.",  # noqa: E501
+                evidence={"matched_url": art.primary_link.normalized_url,
+                          "reason": art.relaxed_reason,
+                          "expected": ctx.request.expected_target_url or ctx.request.target_url})
 
 
 @check("LNK-08", CAT)

@@ -149,6 +149,11 @@ class PageSignals:
     published_date: str | None = None
     modified_date: str | None = None
     date_source: str | None = None  # where we found it (for transparency)
+    # Page is a PDF/document VIEWER (embedded PDF, pdf.js, SimplePDF-style
+    # "web extracted" SVG-overlay anchors). A missing link on such a page means
+    # "couldn't fully read the document", never a confident LINK_MISSING.
+    doc_viewer: bool = False
+    doc_viewer_signature: str | None = None  # which marker tripped it (evidence)
 
 
 @dataclass(slots=True)
@@ -185,6 +190,14 @@ class CrawlRequest:
     # scope when the agreed target is a bare domain root (project main domain),
     # else exact-URL. See ``crawler.normalize.is_domain_root``.
     match_scope: str = "auto"
+    # ── Relaxed matching (GBP/GMB/citation link types only; owner rule) ──────
+    # When True and the strict matcher misses, a Google Maps/GBP listing link or
+    # an owned-directory link carrying the business tokens counts as present
+    # (with a transparency note). Resolved by the WORKER (link-type name), never
+    # inside the engine — the engine stays DB-free.
+    relaxed_match: bool = False
+    business_tokens: list[str] = field(default_factory=list)
+    owned_directory_domains: list[str] = field(default_factory=list)
 
     def domain_match(self) -> bool:
         """Resolve ``match_scope`` to a boolean: should a link to *any* page on the
@@ -240,6 +253,9 @@ class CrawlArtifact:
     found_in_raw: bool = False
     found_in_rendered: bool = False
     rendered: bool = False
+    # Set when the match came from the RELAXED (GBP/citation) fallback:
+    # "gbp_map" | "owned_directory". None = a normal strict match.
+    relaxed_reason: str | None = None
     # Set when a render WOULD help (link absent + JS-likely) but no browser was
     # attached — signals the HTTP pool to enqueue a render-pool task (Arch §6).
     render_recommended: bool = False

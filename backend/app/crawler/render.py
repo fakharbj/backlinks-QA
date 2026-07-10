@@ -35,6 +35,19 @@ class RenderOutcome:
     error: str | None = None
 
 
+# Conservative document-viewer markers (mirrors crawler/parse._DOC_VIEWER_MARKERS;
+# duplicated here so the render module stays import-light for non-render workers).
+_VIEWER_MARKERS = (
+    'type="application/pdf"', "pdfjs", "pdf_viewer", "annotationlayer",
+    'class="web extracted"', "data-link-id=",
+)
+
+
+def _looks_like_doc_viewer(html: str) -> bool:
+    low = (html or "")[:400_000].lower()
+    return any(m in low for m in _VIEWER_MARKERS)
+
+
 def _host_is_obviously_internal(url: str) -> bool:
     """Abort sub-requests to literal internal IPs (169.254.…, 10.…, ::1 …).
 
@@ -146,6 +159,22 @@ class BrowserManager:
                 else:
                     await page.wait_for_timeout(min(4000, timeout_ms // 3))
                 html = await page.content()
+                # PDF/document viewers build their link-annotation layers lazily,
+                # page by page, as you scroll. If the target anchor hasn't attached
+                # and the page looks like a viewer, scroll through it (bounded —
+                # stays inside this render's existing budget) and re-capture, so a
+                # link on page 3 of an embedded PDF is still seen.
+                if wait_selector and _looks_like_doc_viewer(html):
+                    try:
+                        if await page.query_selector(wait_selector) is None:
+                            for _ in range(12):
+                                await page.mouse.wheel(0, 1800)
+                                await page.wait_for_timeout(350)
+                                if await page.query_selector(wait_selector) is not None:
+                                    break
+                            html = await page.content()
+                    except Exception:  # noqa: BLE001 — scrolling is best-effort
+                        pass
                 return RenderOutcome(
                     ok=True,
                     html=html,

@@ -393,6 +393,26 @@ class CrawlEngine:
             # No browser in this process → tell the HTTP pool to escalate (Arch §6).
             artifact.render_recommended = True
 
+        # ── Relaxed fallback (GBP/GMB/citation link types ONLY) ─────────────
+        # Runs strictly LAST: only when every strict matcher (raw, markdown,
+        # rendered) missed AND the worker opted this link type in. A Google
+        # Maps/GBP listing link — or an owned-directory link carrying the
+        # business tokens — counts as present, stamped with relaxed_reason so
+        # LNK-18 discloses HOW it matched (reports never pretend it was the
+        # exact agreed URL).
+        if not artifact.matched_links and request.relaxed_match and artifact.all_links:
+            from app.crawler.relaxed import find_relaxed_match
+
+            hit = find_relaxed_match(
+                artifact.all_links,
+                tokens=request.business_tokens,
+                owned_directories=request.owned_directory_domains,
+            )
+            if hit is not None:
+                link, reason = hit
+                artifact.matched_links = [link]
+                artifact.relaxed_reason = reason
+
         return artifact
 
     # ── Internals ────────────────────────────────────────────────────────────
@@ -518,6 +538,12 @@ class CrawlEngine:
             artifact.found_in_rendered = True
             artifact.crawl_mode = CrawlMode.RENDERED
             artifact.all_links = rendered_page.links
+        elif rendered_page.signals.doc_viewer and not artifact.signals.doc_viewer:
+            # The RENDERED DOM revealed a PDF/document viewer the raw HTML didn't
+            # (JS-built shells). Propagate so LNK-01 says "verify the document"
+            # instead of a confident LINK_MISSING.
+            artifact.signals.doc_viewer = True
+            artifact.signals.doc_viewer_signature = rendered_page.signals.doc_viewer_signature
 
     @staticmethod
     def _target_selector(request: CrawlRequest) -> str | None:

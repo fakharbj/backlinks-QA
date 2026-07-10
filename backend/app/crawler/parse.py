@@ -355,10 +355,48 @@ def parse_html(
     _extract_dates(tree, page)  # before _extract_signals strips <script> (JSON-LD)
     _extract_links(tree, page, base_for_links, final_url, mode, trailing_slash_policy)
     _extract_signals(tree, body, page)
+    _detect_doc_viewer(tree, body, final_url, page)
 
     # Comment-embedded links (LNK-11): scanned from raw markup, flagged hidden.
     _extract_comment_links(tree, page, base_for_links, trailing_slash_policy)
     return page
+
+
+# Markers that the page is a PDF/document VIEWER rather than a normal article.
+# Kept conservative — each string is specific to embedded-document tooling, so a
+# regular page can't trip it (which would wrongly soften real LINK_MISSING fails).
+_DOC_VIEWER_MARKERS: tuple[tuple[str, str], ...] = (
+    ('type="application/pdf"', "embed_pdf"),        # <embed>/<object> PDF
+    ("type='application/pdf'", "embed_pdf"),
+    ("pdfjs", "pdfjs"),                              # Mozilla pdf.js bundles
+    ("pdf_viewer", "pdfjs_viewer"),
+    ("annotationlayer", "pdfjs_annotation_layer"),   # pdf.js link overlay layer
+    ('class="web extracted"', "extracted_overlay"),  # SimplePDF-style SVG anchors
+    ("data-link-id=", "extracted_overlay_id"),
+)
+
+
+def _detect_doc_viewer(tree: object, body: str, final_url: str, page: ParsedPage) -> None:
+    """Flag PDF/document-viewer pages (signals.doc_viewer) so the QA layer can say
+    "couldn't fully read the document → review" instead of a false LINK_MISSING."""
+    if (final_url or "").lower().split("?")[0].endswith(".pdf"):
+        page.signals.doc_viewer = True
+        page.signals.doc_viewer_signature = "pdf_url"
+        return
+    low = body[:400_000].lower()
+    for marker, sig in _DOC_VIEWER_MARKERS:
+        if marker in low:
+            page.signals.doc_viewer = True
+            page.signals.doc_viewer_signature = sig
+            return
+    # <iframe src="*.pdf"> — attribute check via the tree (marker strings can't
+    # express "src ends with .pdf" reliably).
+    for frame in tree.iter("iframe", "embed", "object"):
+        src = (frame.get("src") or frame.get("data") or "").lower().split("?")[0]
+        if src.endswith(".pdf"):
+            page.signals.doc_viewer = True
+            page.signals.doc_viewer_signature = "iframe_pdf"
+            return
 
 
 def _extract_meta(tree: object, page: ParsedPage) -> None:
@@ -510,6 +548,10 @@ def _extract_links(
     internal = external = 0
     for a in tree.iter("a"):
         href = a.get("href")
+        if not href:
+            # SVG anchors (PDF-viewer annotation overlays, inline graphics) carry
+            # xlink:href instead of href — lxml would otherwise drop them silently.
+            href = a.get("xlink:href") or a.get("{http://www.w3.org/1999/xlink}href")
         if not href:
             continue
         href = href.strip()
