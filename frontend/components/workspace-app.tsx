@@ -24,6 +24,7 @@ import {
   Layers,
   Lightbulb,
   Link2,
+  Pencil,
   Loader2,
   LogOut,
   Moon,
@@ -11560,6 +11561,13 @@ function MergeSuggestionCard({
   );
 }
 
+type MergeGroup = {
+  suggested_master: string;
+  suggested_master_id: string;
+  members: Array<{ id: string; name: string; backlinks: number }>;
+  total_backlinks: number;
+};
+
 function LinkTypesCard({
   token,
   onNotice
@@ -11569,12 +11577,23 @@ function LinkTypesCard({
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  // Standardization review state: proposal groups + per-group winner/final-name
+  // overrides. NOTHING merges until the admin explicitly clicks per group.
+  const [proposal, setProposal] = useState<MergeGroup[] | null>(null);
+  const [winnerPick, setWinnerPick] = useState<Record<number, string>>({});
+  const [finalName, setFinalName] = useState<Record<number, string>>({});
+  const [busyGroup, setBusyGroup] = useState<number | null>(null);
+  const [doneGroups, setDoneGroups] = useState<Record<number, string>>({});
+  const [renameFor, setRenameFor] = useState<{ id: string; name: string } | null>(null);
   const types = useQuery({
     queryKey: ["link-types", token],
     enabled: Boolean(token),
     queryFn: () => api<LinkType[]>("/link-types", { token })
   });
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["link-types"] });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["link-types"] });
+    queryClient.invalidateQueries({ queryKey: ["backlinks"] });
+  };
   const create = useMutation({
     mutationFn: () =>
       api("/link-types", { token, method: "POST", body: JSON.stringify({ name: name.trim() }) }),
@@ -11593,13 +11612,94 @@ function LinkTypesCard({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  const scan = useMutation({
+    mutationFn: () => api<{ groups: MergeGroup[] }>("/link-types/merge-proposal", { token }),
+    onSuccess: (d) => {
+      setProposal(d.groups);
+      setWinnerPick({});
+      setFinalName({});
+      setDoneGroups({});
+      if (!d.groups.length) onNotice("No duplicate or misspelled link types found — catalog is clean.");
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const renameOne = useMutation({
+    mutationFn: (v: { id: string; name: string }) =>
+      api<{ changed: Record<string, number>; tab_renames: Array<{ ok: boolean }> }>(
+        `/link-types/${v.id}/rename`,
+        { token, method: "POST", body: JSON.stringify({ name: v.name, rename_tabs: true }) }
+      ),
+    onSuccess: (d) => {
+      onNotice(
+        `Renamed everywhere — ${d.changed?.backlinks ?? 0} links, ${(d.tab_renames || []).filter((t) => t.ok).length} sheet tabs updated`
+      );
+      setRenameFor(null);
+      invalidate();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  // Execute ONE reviewed group: merge every non-winner member into the winner,
+  // then (if the admin edited the final spelling) rename the winner. Sequential —
+  // the server serializes per-workspace anyway (advisory lock).
+  const applyGroup = async (gi: number, g: MergeGroup) => {
+    const winnerId = winnerPick[gi] || g.suggested_master_id;
+    const winner = g.members.find((m) => m.id === winnerId);
+    if (!winner) return;
+    const target = (finalName[gi] ?? g.suggested_master).trim() || winner.name;
+    const losers = g.members.filter((m) => m.id !== winnerId);
+    if (
+      !window.confirm(
+        `Merge ${losers.length} variant${losers.length === 1 ? "" : "s"} (${losers
+          .map((m) => `"${m.name}"`)
+          .join(", ")}) into "${target}"?\n\nThis updates ${g.total_backlinks} links plus tasks, rates, scoring and the Google Sheet tab names. The change is logged and merged names keep redirecting.`
+      )
+    )
+      return;
+    setBusyGroup(gi);
+    try {
+      let links = 0;
+      let tabs = 0;
+      let tabFails = 0;
+      for (const loser of losers) {
+        const r = await api<{ changed: Record<string, number>; tab_renames: Array<{ ok: boolean }> }>(
+          `/link-types/${loser.id}/merge`,
+          { token, method: "POST", body: JSON.stringify({ winner_id: winnerId, rename_tabs: true }) }
+        );
+        links += r.changed?.backlinks ?? 0;
+        tabs += (r.tab_renames || []).filter((t) => t.ok).length;
+        tabFails += (r.tab_renames || []).filter((t) => !t.ok).length;
+      }
+      if (target !== winner.name) {
+        const r = await api<{ changed: Record<string, number>; tab_renames: Array<{ ok: boolean }> }>(
+          `/link-types/${winnerId}/rename`,
+          { token, method: "POST", body: JSON.stringify({ name: target, rename_tabs: true }) }
+        );
+        links += r.changed?.backlinks ?? 0;
+        tabs += (r.tab_renames || []).filter((t) => t.ok).length;
+        tabFails += (r.tab_renames || []).filter((t) => !t.ok).length;
+      }
+      setDoneGroups((d) => ({
+        ...d,
+        [gi]: `Done — ${links} links updated, ${tabs} sheet tabs renamed${tabFails ? `, ${tabFails} tab rename${tabFails === 1 ? "" : "s"} failed (see audit log)` : ""}`
+      }));
+      onNotice(`"${target}" standardized (${links} links)`);
+      invalidate();
+    } catch (e) {
+      onNotice((e as Error).message);
+    } finally {
+      setBusyGroup(null);
+    }
+  };
+
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
       <SectionTitle title="Link types (workspace catalog)" />
       <div className="space-y-3 p-4">
         <p className="text-xs text-muted">
           The catalog of backlink types (Web 2.0, Profile, Guest Post…). Used by scoring, filters,
-          and competitor analysis. Imports auto‑add types they encounter.
+          and competitor analysis. Imports auto‑add types they encounter — misspellings are folded
+          back into the master automatically once merged here.
         </p>
         <div className="flex flex-wrap gap-2">
           {(types.data || []).map((t) => (
@@ -11609,6 +11709,14 @@ function LinkTypesCard({
             >
               {t.name}
               <span className="text-xs text-muted">({t.backlink_count})</span>
+              <button
+                onClick={() => setRenameFor({ id: t.id, name: t.name })}
+                aria-label="Rename link type everywhere"
+                title="Rename everywhere (links, tasks, rates, sheet tabs)"
+                className="text-muted transition hover:text-ink"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
               <button
                 onClick={() => remove.mutate(t.id)}
                 aria-label="Remove link type"
@@ -11622,6 +11730,33 @@ function LinkTypesCard({
             <span className="text-sm text-muted">No link types yet — add one below.</span>
           ) : null}
         </div>
+        {renameFor ? (
+          <form
+            className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-field/50 p-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (renameFor.name.trim()) renameOne.mutate({ id: renameFor.id, name: renameFor.name.trim() });
+            }}
+          >
+            <span className="text-xs font-semibold text-muted">Rename everywhere:</span>
+            <input
+              className="h-8 w-56 rounded-md border border-line bg-panel px-2 text-sm"
+              value={renameFor.name}
+              maxLength={60}
+              autoFocus
+              onChange={(e) => setRenameFor({ ...renameFor, name: e.target.value })}
+            />
+            <button className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white dark:text-slate-900">
+              {renameOne.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Apply"}
+            </button>
+            <button type="button" onClick={() => setRenameFor(null)} className="h-8 rounded-md border border-line px-3 text-xs">
+              Cancel
+            </button>
+            <span className="w-full text-[11px] text-muted">
+              Updates every link, task, rate, scoring rule and the Google Sheet tab names using this type.
+            </span>
+          </form>
+        ) : null}
         <form
           className="flex gap-2"
           onSubmit={(event) => {
@@ -11640,6 +11775,91 @@ function LinkTypesCard({
             Add
           </button>
         </form>
+
+        {/* ── Standardization: scan → REVIEW → merge (nothing runs unreviewed) ── */}
+        <div className="border-t border-line pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                Clean up duplicates &amp; misspellings
+                <HelpTip text="Scans the catalog for spelling mistakes, casing/plural variants and abbreviations of the same link type (e.g. 'Busniess Listing' → 'Business Listing'). You review every group and pick the final name — merging updates all links, tasks, rates, scoring and renames the Google Sheet tabs. Merged names keep redirecting, so old sheets can't re-create them." />
+              </div>
+              <p className="text-xs text-muted">Review each group and choose the final master name before merging.</p>
+            </div>
+            <button
+              onClick={() => scan.mutate()}
+              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+            >
+              {scan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
+              Scan for duplicates
+            </button>
+          </div>
+          {proposal && proposal.length ? (
+            <div className="mt-3 space-y-3">
+              {proposal.map((g, gi) => {
+                const winnerId = winnerPick[gi] || g.suggested_master_id;
+                return (
+                  <div key={gi} className="rounded-lg border border-line bg-field/40 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold uppercase tracking-wide text-muted">Group {gi + 1}</span>
+                      <span className="text-xs text-muted">{g.total_backlinks} links affected</span>
+                      {doneGroups[gi] ? (
+                        <span className="ml-auto text-xs font-medium text-ocean">{doneGroups[gi]}</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {g.members.map((m) => (
+                        <span
+                          key={m.id}
+                          className={clsx(
+                            "rounded-full border px-2.5 py-0.5 text-xs",
+                            m.id === winnerId
+                              ? "border-ocean bg-ocean/10 font-semibold text-ocean"
+                              : "border-line bg-panel text-muted"
+                          )}
+                        >
+                          {m.name} · {m.backlinks}
+                        </span>
+                      ))}
+                    </div>
+                    {!doneGroups[gi] ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <label className="text-xs text-muted">Keep:</label>
+                        <select
+                          value={winnerId}
+                          onChange={(e) => setWinnerPick((w) => ({ ...w, [gi]: e.target.value }))}
+                          className="h-8 rounded-md border border-line bg-panel px-2 text-xs"
+                        >
+                          {g.members.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                        <label className="text-xs text-muted">Final name:</label>
+                        <input
+                          className="h-8 w-52 rounded-md border border-line bg-panel px-2 text-xs"
+                          value={finalName[gi] ?? g.suggested_master}
+                          maxLength={60}
+                          onChange={(e) => setFinalName((f) => ({ ...f, [gi]: e.target.value }))}
+                        />
+                        <button
+                          onClick={() => applyGroup(gi, g)}
+                          disabled={busyGroup !== null}
+                          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+                        >
+                          {busyGroup === gi ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                          Merge group
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {proposal && !proposal.length ? (
+            <p className="mt-2 text-sm text-muted">Catalog is clean — no duplicate groups detected.</p>
+          ) : null}
+        </div>
       </div>
     </section>
   );
