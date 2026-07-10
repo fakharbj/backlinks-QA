@@ -76,9 +76,12 @@ async def conflict_summary(
     db: ReadSession,
     created_from: date | None = None,
     created_to: date | None = None,
+    granularity: str = "week",
 ) -> ConflictSummaryOut:
     return ConflictSummaryOut(
-        **await conflict_service.summary(db, ctx, created_from=created_from, created_to=created_to)
+        **await conflict_service.summary(
+            db, ctx, created_from=created_from, created_to=created_to, granularity=granularity
+        )
     )
 
 

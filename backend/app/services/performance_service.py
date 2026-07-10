@@ -109,6 +109,7 @@ async def user_dashboard(
     link_type: str | None = None,
     date_type: str = "created",
     compare: bool = True,
+    granularity: str = "week",
 ) -> dict:
     """Everything an admin needs about ONE person in a single payload: hours &
     plan completion (excusal-aware, any window length), link production +
@@ -133,6 +134,9 @@ async def user_dashboard(
         "sheet": "b.sheet_created_date",
     }
     dcol = _DATE_COL.get(date_type, _LINK_TS)
+    # Chart bucket — whitelisted from a fixed set; interpolated into date_trunc,
+    # never bound (the :param::type cast gotcha). Default 'week'.
+    bucket = granularity if granularity in ("day", "week", "month") else "week"
 
     where, params = _scope(ctx, project_id)
     params |= {"label": user_label}
@@ -307,7 +311,7 @@ async def user_dashboard(
     # Weekly series (links / new domains / indexed / qualified / not qualified) + plan trend.
     wk_sql = _bind(
         f"""
-        SELECT to_char(date_trunc('week', {dcol}), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('{bucket}', {dcol}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
                count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
                count(*) FILTER (WHERE {_EFF} = 'PASS')            AS pass,
@@ -342,7 +346,7 @@ async def user_dashboard(
     by_type = [dict(r) for r in (await db.execute(type_sql, p2)).mappings().all()]
 
     plan_wk_sql = text(
-        """
+        f"""
         WITH actuals AS (
             SELECT project_id, coalesce(placement_date, created_at::date) AS d, count(*) AS n
             FROM backlink_records
@@ -351,7 +355,7 @@ async def user_dashboard(
               AND coalesce(placement_date, created_at) < CAST(:t AS date) + INTERVAL '1 day'
             GROUP BY 1, 2
         )
-        SELECT to_char(date_trunc('week', a.day), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('{bucket}', a.day), 'YYYY-MM-DD') AS week,
                coalesce(sum(a.expected_links), 0) AS target,
                coalesce(sum(act.n), 0)            AS done
         FROM task_assignments a
@@ -490,12 +494,14 @@ async def project_effort(
     date_to: datetime | None = None,
     user_label: str | None = None,
     link_type: str | None = None,
+    granularity: str = "week",
 ) -> dict:
     """Project-effort rollup: who worked how much on THIS project, target vs
     done, quality split per person, link-type distribution and a weekly trend."""
     ctx.assert_project(project_id)
     t1 = date_to or datetime.now(timezone.utc)
     t0 = date_from or (t1 - timedelta(days=max(1, min(days, 3660))))
+    bucket = granularity if granularity in ("day", "week", "month") else "week"
 
     p: dict = {"ws": ctx.workspace_id, "pid": project_id, "t0": t0, "t1": t1,
                "f": t0.date(), "t": t1.date()}
@@ -579,14 +585,14 @@ async def project_effort(
     trend_sql = text(
         f"""
         WITH actuals AS (
-            SELECT to_char(date_trunc('week', {_LINK_TS}), 'YYYY-MM-DD') AS week, count(*) AS done
+            SELECT to_char(date_trunc('{bucket}', {_LINK_TS}), 'YYYY-MM-DD') AS week, count(*) AS done
             FROM backlink_records b
             WHERE b.workspace_id = :ws AND b.project_id = :pid
               AND {_LINK_TS} >= :t0 AND {_LINK_TS} < :t1{user_clause_b}{lt_clause}
             GROUP BY 1
         ),
         plan AS (
-            SELECT to_char(date_trunc('week', a.day), 'YYYY-MM-DD') AS week,
+            SELECT to_char(date_trunc('{bucket}', a.day), 'YYYY-MM-DD') AS week,
                    coalesce(sum(a.expected_links), 0) AS target
             FROM task_assignments a
             WHERE a.workspace_id = :ws AND a.project_id = :pid
@@ -624,6 +630,7 @@ async def users(
     compare: bool = True,
     compare_from: datetime | None = None,
     compare_to: datetime | None = None,
+    granularity: str = "week",
 ) -> dict:
     """Per-user performance for a window (default: last N days) with an optional
     comparison window — the previous equal-length period by default, or any
@@ -663,11 +670,12 @@ async def users(
                 }
             )
     # GSC-style weekly series over the same window (links / new domains / indexed).
+    bucket = granularity if granularity in ("day", "week", "month") else "week"
     where, wparams = _scope(ctx, project_id)
     wparams |= {"t0": t0, "t1": t1}
     weekly_sql = _bind(
         f"""
-        SELECT to_char(date_trunc('week', {_LINK_TS}), 'YYYY-MM-DD') AS week,
+        SELECT to_char(date_trunc('{bucket}', {_LINK_TS}), 'YYYY-MM-DD') AS week,
                count(*) AS links,
                count(*) FILTER (WHERE b.index_status = 'indexed') AS indexed,
                count(*) FILTER (WHERE b.source_domain IS NOT NULL AND NOT EXISTS (

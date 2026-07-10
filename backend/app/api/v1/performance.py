@@ -25,6 +25,7 @@ async def user_dashboard(
     link_type: str | None = Query(None, max_length=80),
     date_type: str = Query("created", pattern="^(created|checked|sheet)$"),
     compare: bool = Query(True),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
 ) -> dict:
     """The admin's one-page view of a person: hours, plan completion, links,
     quality (full KPI vocabulary + HTTP buckets), per-project & per-link-type
@@ -40,6 +41,7 @@ async def user_dashboard(
     return await performance_service.user_dashboard(
         db, ctx, user_label=user_label, days=days, date_from=date_from, date_to=date_to,
         project_id=project_id, link_type=link_type, date_type=date_type, compare=compare,
+        granularity=granularity,
     )
 
 
@@ -53,11 +55,12 @@ async def project_effort(
     date_to: datetime | None = Query(None),
     user_label: str | None = Query(None, max_length=200),
     link_type: str | None = Query(None, max_length=80),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
 ) -> dict:
     """Project-effort rollup (hours/target/done/quality per person + trends)."""
     return await performance_service.project_effort(
         db, ctx, project_id=project_id, days=days, date_from=date_from, date_to=date_to,
-        user_label=user_label, link_type=link_type,
+        user_label=user_label, link_type=link_type, granularity=granularity,
     )
 
 
@@ -72,9 +75,10 @@ async def user_performance(
     compare: bool = Query(True),
     compare_from: datetime | None = Query(None),
     compare_to: datetime | None = Query(None),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
 ) -> dict:
     return await performance_service.users(
         db, ctx, days=days, date_from=date_from, date_to=date_to,
         project_id=project_id, compare=compare,
-        compare_from=compare_from, compare_to=compare_to,
+        compare_from=compare_from, compare_to=compare_to, granularity=granularity,
     )

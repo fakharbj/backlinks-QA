@@ -4827,6 +4827,47 @@ function StackedBar({
 // crosshair + a floating card with the human date and each series' exact value;
 // points are clickable; the latest point is emphasised; a subtle mount fade
 // respects prefers-reduced-motion. Upgrading this lifts all charts at once.
+// Reusable Day/Week/Month segmented control for every trend chart. `allowDay=false`
+// disables Day so a long window (e.g. all-time) can't render thousands of daily dots;
+// callers compute an effective granularity that falls back to week when Day is off.
+function GranularityToggle({
+  value,
+  onChange,
+  allowDay = true
+}: {
+  value: string;
+  onChange: (g: string) => void;
+  allowDay?: boolean;
+}) {
+  return (
+    <div className="inline-flex overflow-hidden rounded-lg border border-line" role="group" aria-label="Chart detail">
+      {(
+        [["day", "Day"], ["week", "Week"], ["month", "Month"]] as Array<[string, string]>
+      ).map(([v, l]) => {
+        const disabled = v === "day" && !allowDay;
+        return (
+          <button
+            key={v}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(v)}
+            title={disabled ? "Pick a shorter timeframe to see day-by-day detail" : undefined}
+            className={`h-8 px-2.5 text-xs font-medium transition-colors ${
+              value === v
+                ? "bg-ocean text-white dark:text-slate-900"
+                : disabled
+                ? "cursor-not-allowed bg-panel text-muted/40"
+                : "bg-panel text-muted hover:bg-field"
+            }`}
+          >
+            {l}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function TrendChart({
   labels,
   series,
@@ -4983,7 +5024,9 @@ function BarCompare({
   aVar = "--line",
   bVar = "--ocean",
   height = 170,
-  onClickIndex
+  onClickIndex,
+  labelFmt,
+  tickFmt
 }: {
   labels: string[];
   a: number[];
@@ -4994,6 +5037,8 @@ function BarCompare({
   bVar?: string;
   height?: number;
   onClickIndex?: (i: number) => void;
+  labelFmt?: (raw: string) => string;
+  tickFmt?: (raw: string) => string;
 }) {
   const W = 640;
   const H = height;
@@ -5004,6 +5049,8 @@ function BarCompare({
   const slot = (W - PADX * 2) / n;
   const bw = Math.max(3, Math.min(22, slot * 0.32));
   const y = (v: number) => H - PADY - (v / max) * (H - PADY * 2);
+  const fmtL = labelFmt || ((s: string) => s);
+  const fmtT = tickFmt || ((s: string) => (s.length > 10 ? `${s.slice(0, 9)}…` : s));
   if (!labels.length) return <Empty label="Not enough data for a chart yet." />;
   return (
     <div>
@@ -5039,15 +5086,15 @@ function BarCompare({
             >
               <rect x={cx - bw - 1} y={y(av)} width={bw} height={Math.max(0, H - PADY - y(av))}
                 rx="2" fill={`rgb(var(${aVar}) / 0.55)`}>
-                <title>{`${l} — ${aName}: ${av}`}</title>
+                <title>{`${fmtL(l)} — ${aName}: ${av}`}</title>
               </rect>
               <rect x={cx + 1} y={y(bv)} width={bw} height={Math.max(0, H - PADY - y(bv))}
                 rx="2" fill={`rgb(var(${bVar}))`}>
-                <title>{`${l} — ${bName}: ${bv}`}</title>
+                <title>{`${fmtL(l)} — ${bName}: ${bv}`}</title>
               </rect>
               {labels.length <= 10 || i === 0 || i === labels.length - 1 || i % Math.ceil(labels.length / 6) === 0 ? (
                 <text x={cx} y={H - 6} textAnchor="middle" fontSize="9" fill="rgb(var(--muted))">
-                  {l.length > 10 ? `${l.slice(0, 9)}…` : l}
+                  {fmtT(l)}
                 </text>
               ) : null}
             </g>
@@ -5279,6 +5326,16 @@ function UserDashboard({
   const [projSort, setProjSort] = useState("links");
   const [projSortDir, setProjSortDir] = useState<"asc" | "desc">("desc");
   const [dashTab, setDashTab] = useState<"overview" | "projects" | "calendar" | "rates">("overview");
+  const [gran, setGran] = useState("week");
+  // Disable "Day" on windows long enough to render thousands of dots; fall back to week.
+  const windowDays =
+    days === "custom"
+      ? customFrom && customTo
+        ? Math.max(1, Math.round((Date.parse(customTo) - Date.parse(customFrom)) / 86400000))
+        : 30
+      : Number(days);
+  const allowDay = windowDays <= 180;
+  const effGran = gran === "day" && !allowDay ? "week" : gran;
 
   const projectsQ = useQuery({
     queryKey: ["projects", token],
@@ -5311,10 +5368,10 @@ function UserDashboard({
     leaves: Array<{ id: string; start_date: string; end_date: string; reason: string | null; status: string }>;
   };
   const dash = useQuery({
-    queryKey: ["user-dashboard", token, userLabel, days, customFrom, customTo, projFilter, ltFilter, dateType],
+    queryKey: ["user-dashboard", token, userLabel, days, customFrom, customTo, projFilter, ltFilter, dateType, effGran],
     enabled: Boolean(token) && customReady,
     queryFn: () => {
-      const p = new URLSearchParams({ user_label: userLabel, compare: "true" });
+      const p = new URLSearchParams({ user_label: userLabel, compare: "true", granularity: effGran });
       if (days === "custom") {
         p.set("date_from", `${customFrom}T00:00:00Z`);
         p.set("date_to", `${customTo}T23:59:59Z`);
@@ -5700,12 +5757,23 @@ function UserDashboard({
           ) : null}
 
           {/* Trends */}
+          <div className="flex items-center justify-end">
+            <GranularityToggle value={gran} onChange={setGran} allowDay={allowDay} />
+          </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
-              <SectionTitle title="Production trend (weekly)" flush />
+              <SectionTitle title="Production trend" flush />
               <div className="pt-2">
                 <TrendChart
                   labels={d.weekly.map((w) => w.week)}
+                  labelFmt={(w) => bucketLabel(w, effGran)}
+                  tickFmt={(w) => bucketTick(w, effGran)}
+                  onPointClick={(i) => {
+                    const w = d.weekly[i]?.week;
+                    if (!w) return;
+                    const r = bucketRange(w, effGran);
+                    open({ placement_from: r.from, placement_to: r.to });
+                  }}
                   series={[
                     { name: "Links created", cssVar: "--ocean", values: d.weekly.map((w) => w.links) },
                     { name: "Qualified", cssVar: "--plum", values: d.weekly.map((w) => w.pass) },
@@ -5716,10 +5784,12 @@ function UserDashboard({
               </div>
             </section>
             <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
-              <SectionTitle title="Target vs done (weekly)" flush />
+              <SectionTitle title="Target vs done" flush />
               <div className="pt-2">
                 <BarCompare
-                  labels={d.plan_weekly.map((w) => w.week.slice(5))}
+                  labels={d.plan_weekly.map((w) => w.week)}
+                  labelFmt={(w) => bucketLabel(w, effGran)}
+                  tickFmt={(w) => bucketTick(w, effGran)}
                   a={d.plan_weekly.map((w) => w.target)}
                   b={d.plan_weekly.map((w) => w.done)}
                   aName="Target"
@@ -6129,6 +6199,9 @@ function ProjectEffort({
   const [days, setDays] = useState("30");
   const [userF, setUserF] = useState("");
   const [ltF, setLtF] = useState("");
+  const [gran, setGran] = useState("week");
+  const allowDay = Number(days) <= 180;
+  const effGran = gran === "day" && !allowDay ? "week" : gran;
   const knownLabels = useQuery({
     queryKey: ["workforce-labels", token],
     enabled: Boolean(token),
@@ -6146,10 +6219,10 @@ function ProjectEffort({
     weekly: Array<{ week: string; done: number; target: number }>;
   };
   const eff = useQuery({
-    queryKey: ["project-effort", token, projectId, days, userF, ltF],
+    queryKey: ["project-effort", token, projectId, days, userF, ltF, effGran],
     enabled: Boolean(token) && Boolean(projectId),
     queryFn: () => {
-      const p = new URLSearchParams({ project_id: projectId, days });
+      const p = new URLSearchParams({ project_id: projectId, days, granularity: effGran });
       if (userF) p.set("user_label", userF);
       if (ltF) p.set("link_type", ltF);
       return api<Effort>(`/performance/project-effort?${p.toString()}`, { token });
@@ -6179,6 +6252,7 @@ function ProjectEffort({
             placeholder="Link type: all"
             width="w-40"
           />
+          <GranularityToggle value={gran} onChange={setGran} allowDay={allowDay} />
           <select value={days} onChange={(e) => setDays(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
             {TIMEFRAMES.map(([v, l]) => (
               <option key={v} value={v}>{l}</option>
@@ -6209,11 +6283,19 @@ function ProjectEffort({
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Target vs done — weekly</p>
               <BarCompare
-                labels={d.weekly.map((w) => w.week.slice(5))}
+                labels={d.weekly.map((w) => w.week)}
+                labelFmt={(w) => bucketLabel(w, effGran)}
+                tickFmt={(w) => bucketTick(w, effGran)}
                 a={d.weekly.map((w) => w.target)}
                 b={d.weekly.map((w) => w.done)}
                 aName="Target"
                 bName="Done"
+                onClickIndex={(i) => {
+                  const w = d.weekly[i]?.week;
+                  if (!w) return;
+                  const r = bucketRange(w, effGran);
+                  onOpenBacklinks({ placement_from: r.from, placement_to: r.to });
+                }}
               />
             </div>
             <div>
@@ -6484,13 +6566,22 @@ function PerformanceDesk({
     previous: Omit<PerfUser, "previous"> | null;
   };
   // "Custom" choices only fire once both dates are picked (no half-built queries).
+  const [gran, setGran] = useState("week");
   const customReady = days !== "custom" || Boolean(customFrom && customTo);
   const cmpReady = cmpMode !== "custom" || Boolean(cmpFrom && cmpTo);
+  const windowDays =
+    days === "custom"
+      ? customFrom && customTo
+        ? Math.max(1, Math.round((Date.parse(customTo) - Date.parse(customFrom)) / 86400000))
+        : 30
+      : Number(days);
+  const allowDay = windowDays <= 180;
+  const effGran = gran === "day" && !allowDay ? "week" : gran;
   const perf = useQuery({
-    queryKey: ["performance", token, days, customFrom, customTo, cmpMode, cmpFrom, cmpTo, projectId],
+    queryKey: ["performance", token, days, customFrom, customTo, cmpMode, cmpFrom, cmpTo, projectId, effGran],
     enabled: Boolean(token) && customReady && cmpReady,
     queryFn: () => {
-      const p = new URLSearchParams();
+      const p = new URLSearchParams({ granularity: effGran });
       if (days === "custom") {
         p.set("date_from", `${customFrom}T00:00:00Z`);
         p.set("date_to", `${customTo}T23:59:59Z`);
@@ -6609,8 +6700,19 @@ function PerformanceDesk({
 
       {weekly.length ? (
         <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <div className="mb-2 flex items-center justify-end">
+            <GranularityToggle value={gran} onChange={setGran} allowDay={allowDay} />
+          </div>
           <TrendChart
             labels={weekly.map((w) => w.week)}
+            labelFmt={(w) => bucketLabel(w, effGran)}
+            tickFmt={(w) => bucketTick(w, effGran)}
+            onPointClick={(i) => {
+              const w = weekly[i]?.week;
+              if (!w) return;
+              const r = bucketRange(w, effGran);
+              onOpenBacklinks({ placement_from: r.from, placement_to: r.to });
+            }}
             series={[
               { name: "Links created", cssVar: "--ocean", values: weekly.map((w) => w.links) },
               { name: "New source domains", cssVar: "--plum", values: weekly.map((w) => w.new_domains) },
@@ -12513,6 +12615,13 @@ function ConflictsDesk({
   // Comparison view + bulk selection.
   const [openId, setOpenId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [gran, setGran] = useState("week");
+  const _cwDays =
+    createdFrom && createdTo
+      ? Math.max(1, Math.round((Date.parse(createdTo) - Date.parse(createdFrom)) / 86400000))
+      : 365;
+  const allowDay = _cwDays <= 180;
+  const effGran = gran === "day" && !allowDay ? "week" : gran;
 
   const query = useMemo(() => {
     const p = new URLSearchParams();
@@ -12531,15 +12640,14 @@ function ConflictsDesk({
   }, [scopeF, statusF, minMembers, minSim, targetDomains, sourcePages, userF, search, createdFrom, createdTo]);
 
   const summary = useQuery({
-    queryKey: ["conflict-summary", token, createdFrom, createdTo],
+    queryKey: ["conflict-summary", token, createdFrom, createdTo, effGran],
     enabled: Boolean(token),
     queryFn: () => {
       // Date range drives the KPI cards + weekly chart too (not just the list).
-      const p = new URLSearchParams();
+      const p = new URLSearchParams({ granularity: effGran });
       if (createdFrom) p.set("created_from", createdFrom);
       if (createdTo) p.set("created_to", createdTo);
-      const qs = p.toString();
-      return api<ConflictSummary>(`/conflicts/summary${qs ? `?${qs}` : ""}`, { token });
+      return api<ConflictSummary>(`/conflicts/summary?${p.toString()}`, { token });
     }
   });
   const conflictsRaw = useQuery({
@@ -12677,10 +12785,20 @@ function ConflictsDesk({
                 ? `${createdFrom ? fmtChartLabel(createdFrom, true) : "start"} → ${createdTo ? fmtChartLabel(createdTo, true) : "now"}`
                 : "last 12 months"}
             </span>
+            <GranularityToggle value={gran} onChange={setGran} allowDay={allowDay} />
           </div>
           <TrendChart
             height={130}
             labels={(s?.weekly || []).map((w) => w.week)}
+            labelFmt={(w) => bucketLabel(w, effGran)}
+            tickFmt={(w) => bucketTick(w, effGran)}
+            onPointClick={(i) => {
+              const w = (s?.weekly || [])[i]?.week;
+              if (!w) return;
+              const r = bucketRange(w, effGran);
+              setCreatedFrom(r.from);
+              setCreatedTo(r.to);
+            }}
             series={[
               { name: "New duplicate groups", cssVar: "--ember", values: (s?.weekly || []).map((w) => w.new_groups) }
             ]}

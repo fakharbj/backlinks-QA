@@ -537,6 +537,7 @@ async def summary(
     *,
     created_from: date | datetime | None = None,
     created_to: date | datetime | None = None,
+    granularity: str = "week",
 ) -> dict:
     # Optional date filter = the duplicate's real link CREATION day (earliest
     # member placement/created), so KPI cards AND the weekly chart both reflect
@@ -591,6 +592,7 @@ async def summary(
     # member placement/creation date), not when the duplicate was detected/imported.
     from sqlalchemy import text as _text
 
+    bucket = granularity if granularity in ("day", "week", "month") else "week"
     wk_params: dict = {"ws": ctx.workspace_id}
     if created_from is not None or created_to is not None:
         wk_where = "g.first_seen IS NOT NULL"
@@ -608,7 +610,7 @@ async def summary(
             await db.execute(
                 _text(
                     f"""
-                    SELECT to_char(date_trunc('week', g.first_seen), 'YYYY-MM-DD') AS week,
+                    SELECT to_char(date_trunc('{bucket}', g.first_seen), 'YYYY-MM-DD') AS week,
                            count(*) AS new_groups
                     FROM (
                         SELECT c.id,
