@@ -22,6 +22,7 @@ import {
   History,
   Info,
   Layers,
+  Lightbulb,
   Link2,
   Loader2,
   LogOut,
@@ -2802,7 +2803,7 @@ function BacklinkDetailDrawer({
             ) : null}
 
             {data.score_breakdown.length ? (
-              <DetailBlock title="Score breakdown">
+              <DetailBlock title="Why this score">
                 {(() => {
                   // Rule-set version, if the payload exposes it. We only have the
                   // id (a uuid) — show that it exists without inventing a number.
@@ -2812,6 +2813,8 @@ function BacklinkDetailDrawer({
                   ) : null;
                 })()}
                 <div className="space-y-1.5">
+                  {/* Server orders the steps: baseline, biggest deduction first, gains, cap.
+                      Each losing step carries a plain "How to improve" line. */}
                   {data.score_breakdown.map((step, i) => {
                     // Human line: prefer parameter/outcome labels; else code + note.
                     const label = step.code === "START" ? "Baseline" : step.code;
@@ -2821,31 +2824,45 @@ function BacklinkDetailDrawer({
                         : step.parameter_label || null;
                     const srcTag = SCORE_SOURCE_LABEL[step.source ?? ""] ?? null;
                     return (
-                      <div key={`${step.code}-${i}`} className="flex items-start justify-between gap-3 text-sm">
-                        <span className="min-w-0 text-muted">
-                          {human ? (
-                            <span className="text-ink">{human}</span>
-                          ) : (
-                            <>
-                              {label}
-                              {step.note ? <span className="ml-2 text-xs">{step.note}</span> : null}
-                            </>
-                          )}
-                          {srcTag ? (
-                            <span className="ml-2 rounded bg-field px-1 py-0.5 text-[10px] uppercase tracking-wide text-muted">
-                              {srcTag}
-                            </span>
-                          ) : null}
-                          {step.configured_points !== null && step.configured_points !== undefined ? (
-                            <span className="ml-2 text-[11px] text-muted">
-                              ({step.configured_points > 0 ? "+" : ""}
-                              {step.configured_points} pts)
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className={clsx("shrink-0 font-semibold", step.delta < 0 ? "text-danger" : "text-ink")}>
-                          {step.cap_applied !== null ? `cap → ${step.cap_applied}` : step.delta === 0 ? "100" : step.delta}
-                        </span>
+                      <div key={`${step.code}-${i}`}>
+                        <div className="flex items-start justify-between gap-3 text-sm">
+                          <span className="min-w-0 text-muted">
+                            {human ? (
+                              <span className="text-ink">{human}</span>
+                            ) : (
+                              <>
+                                {label}
+                                {step.note ? <span className="ml-2 text-xs">{step.note}</span> : null}
+                              </>
+                            )}
+                            {srcTag ? (
+                              <span className="ml-2 rounded bg-field px-1 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                                {srcTag}
+                              </span>
+                            ) : null}
+                            {step.configured_points !== null && step.configured_points !== undefined ? (
+                              <span className="ml-2 text-[11px] text-muted">
+                                ({step.configured_points > 0 ? "+" : ""}
+                                {step.configured_points} pts)
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className={clsx("shrink-0 font-semibold", step.delta < 0 ? "text-danger" : "text-ink")}>
+                            {step.cap_applied !== null && step.cap_applied !== undefined
+                              ? `cap → ${step.cap_applied}`
+                              : step.delta === 0
+                              ? "100"
+                              : step.delta > 0
+                              ? `+${step.delta}`
+                              : step.delta}
+                          </span>
+                        </div>
+                        {step.recommendation ? (
+                          <p className="mt-0.5 flex items-start gap-1 pl-3 text-xs text-muted">
+                            <Lightbulb className="mt-0.5 h-3 w-3 shrink-0 text-ember" />
+                            <span>{step.recommendation}</span>
+                          </p>
+                        ) : null}
                       </div>
                     );
                   })}
