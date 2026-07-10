@@ -77,6 +77,48 @@ _INTERVAL_HOURS = {
 }
 
 
+def _is_relaxed_link_type(link_type: str | None) -> bool:
+    """Owner rule: link types whose NAME contains gbp/gmb (configurable) get the
+    relaxed GBP/citation matcher. Matched on the denormalized name string —
+    same convention as the GBP dedup exclusion."""
+    if not settings.RELAXED_MATCH_ENABLED or not link_type:
+        return False
+    low = link_type.lower()
+    return any(
+        s.strip() and s.strip() in low
+        for s in settings.RELAXED_MATCH_LINK_TYPE_SUBSTRINGS.lower().split(",")
+    )
+
+
+def _relaxed_fields(record: BacklinkRecord, project: Project | None) -> dict:
+    """CrawlRequest kwargs for the relaxed GBP/citation matcher (empty when the
+    link type doesn't qualify). Business identity = per-project business name +
+    aliases (crawl_settings JSONB) with project name + target-domain label as
+    the fallback, stoplist-guarded in crawler.relaxed."""
+    if not _is_relaxed_link_type(record.link_type):
+        return {}
+    from app.crawler.relaxed import business_tokens
+
+    cs = (project.crawl_settings or {}) if project else {}
+    aliases = cs.get("business_aliases") or []
+    dom_label = ""
+    if project and project.target_domain:
+        dom_label = project.target_domain.split(".")[0]
+    tokens = business_tokens(
+        cs.get("business_name"),
+        *[a for a in aliases if isinstance(a, str)],
+        project.name if project else None,
+        dom_label,
+    )
+    return {
+        "relaxed_match": True,
+        "business_tokens": tokens,
+        "owned_directory_domains": [
+            d.strip() for d in settings.OWNED_DIRECTORY_DOMAINS.split(",") if d.strip()
+        ],
+    }
+
+
 def _build_request(record: BacklinkRecord, project: Project | None, allow_render: bool) -> CrawlRequest:  # noqa: E501
     return CrawlRequest(
         source_url=record.source_page_url,
@@ -91,6 +133,7 @@ def _build_request(record: BacklinkRecord, project: Project | None, allow_render
         trailing_slash_policy=settings.QA_TRAILING_SLASH_POLICY,
         respect_robots=settings.CRAWL_RESPECT_ROBOTS,
         allow_render=allow_render,
+        **_relaxed_fields(record, project),
     )
 
 

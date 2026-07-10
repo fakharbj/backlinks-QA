@@ -37,6 +37,25 @@ _VALID_RELS = ("dofollow", "nofollow", "sponsored", "ugc")
 def _build_request(item: BatchItem) -> CrawlRequest:
     mapped = (item.payload or {}).get("mapped") or {}
     rel = (mapped.get("expected_rel") or "dofollow").strip().lower()
+    # Relaxed GBP/citation matching for staged rows too (same owner rule as the
+    # main crawl path) — link type from the mapped row, business tokens derived
+    # from the target domain's label (no project loaded in this isolated path).
+    relaxed_kwargs: dict = {}
+    from app.workers.tasks.crawl import _is_relaxed_link_type
+
+    if _is_relaxed_link_type(mapped.get("link_type")):
+        from app.crawler.normalize import normalize_url as _norm
+        from app.crawler.relaxed import business_tokens
+
+        tgt = mapped.get("target_url") or ""
+        dom = _norm(tgt).registrable_domain if tgt else ""
+        relaxed_kwargs = {
+            "relaxed_match": True,
+            "business_tokens": business_tokens(dom.split(".")[0] if dom else None),
+            "owned_directory_domains": [
+                d.strip() for d in settings.OWNED_DIRECTORY_DOMAINS.split(",") if d.strip()
+            ],
+        }
     return CrawlRequest(
         source_url=mapped.get("source_page_url") or item.label,
         target_url=mapped.get("target_url") or "",
@@ -48,6 +67,7 @@ def _build_request(item: BatchItem) -> CrawlRequest:
         trailing_slash_policy=settings.QA_TRAILING_SLASH_POLICY,
         respect_robots=settings.CRAWL_RESPECT_ROBOTS,
         allow_render=True,
+        **relaxed_kwargs,
     )
 
 

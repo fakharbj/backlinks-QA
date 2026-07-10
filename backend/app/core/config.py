@@ -317,6 +317,17 @@ class Settings(BaseSettings):
     # through the IPRoyal proxy (Google blocks datacenter IPs). Deduped by source
     # URL and re-checked at most every INDEX_RECHECK_DAYS. Failures → UNCERTAIN,
     # never a false "not indexed".
+    # ── Relaxed matching (GBP/GMB link types; owner rule 2026-07) ────────────
+    # Link types whose NAME contains one of these substrings (case-insensitive,
+    # comma list) get the relaxed matcher: when the main-domain link is absent, a
+    # Google Maps/GBP listing link — or an owned-directory link carrying the
+    # business-name tokens — counts as present (with an LNK-18 disclosure).
+    RELAXED_MATCH_ENABLED: bool = True
+    RELAXED_MATCH_LINK_TYPE_SUBSTRINGS: str = "gbp,gmb"
+    # OUR OWN directory sites (comma list of registrable domains). A link to one
+    # of these + business tokens in the URL validates a citation placement.
+    OWNED_DIRECTORY_DOMAINS: str = "discoverlocalnow.com,citybizlocal.com"
+
     INDEX_CHECK_ENABLED: bool = True
     INDEX_RECHECK_DAYS: int = 7
     INDEX_STAGGER_SECONDS: float = 6.0     # delay between checks (anti-block)
