@@ -111,6 +111,26 @@ async def resolve_or_create(
     db: AsyncSession, workspace_id: uuid.UUID, name: str, cache: dict[str, uuid.UUID] | None = None
 ) -> uuid.UUID | None:
     """Import helper: free-text link type → catalog id (get-or-create, cached)."""
+    lt = await resolve_canonical(db, workspace_id, name, cache=None)
+    if lt is None:
+        return None
+    if cache is not None:
+        cache[f"{workspace_id}:{slugify(name)}"] = lt.id
+    return lt.id
+
+
+async def resolve_canonical(
+    db: AsyncSession, workspace_id: uuid.UUID, name: str,
+    cache: dict[str, "LinkType"] | None = None,
+) -> LinkType | None:
+    """Free-text link type → the CANONICAL catalog row (get-or-create).
+
+    Follows ``merged_into_id`` redirects so a sheet still carrying a merged-away
+    tab name resolves to the surviving master (and its corrected NAME — callers
+    store ``.name`` as the denormalized string, which is how misspellings stop
+    re-entering the system). A plainly soft-deleted type (no merge target) is
+    restored rather than duplicated — the slug is unique, and "the sheet still
+    uses it" outranks a stale deletion."""
     name = (name or "").strip()
     if not name:
         return None
@@ -120,13 +140,30 @@ async def resolve_or_create(
         return cache[key]
     lt = (
         await db.execute(
-            select(LinkType).where(LinkType.workspace_id == workspace_id, LinkType.slug == slug)
+            select(LinkType)
+            .where(LinkType.workspace_id == workspace_id, LinkType.slug == slug)
+            .order_by(LinkType.deleted_at.is_(None).desc(), LinkType.created_at.asc())
+            .limit(1)
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if lt is None:
         lt = LinkType(workspace_id=workspace_id, name=name, slug=slug)
         db.add(lt)
         await db.flush()
+    else:
+        # Follow merge redirects (bounded — cycles are prevented at merge time).
+        hops = 0
+        while lt.merged_into_id is not None and hops < 10:
+            target = await db.get(LinkType, lt.merged_into_id)
+            if target is None or target.workspace_id != workspace_id:
+                break
+            lt = target
+            hops += 1
+        if lt.deleted_at is not None and lt.merged_into_id is None:
+            lt.deleted_at = None
+            lt.deleted_by = None
+            lt.is_active = True
+            await db.flush()
     if cache is not None:
-        cache[key] = lt.id
-    return lt.id
+        cache[key] = lt
+    return lt

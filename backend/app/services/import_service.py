@@ -136,7 +136,7 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     dirty_canonicals: set[uuid.UUID] = set()
     identity_cache: dict[str, uuid.UUID] = {}
     canonical_cache: dict[str, uuid.UUID] = {}
-    link_type_cache: dict[str, uuid.UUID] = {}
+    link_type_cache: dict = {}  # slug key → canonical LinkType row
     processed = 0
 
     # Resolve the sheet "User" label to an app user when it matches an account
@@ -214,7 +214,7 @@ async def _process_row(
     identity_cache: dict[str, uuid.UUID],
     canonical_cache: dict[str, uuid.UUID],
     dirty_canonicals: set[uuid.UUID],
-    link_type_cache: dict[str, uuid.UUID],
+    link_type_cache: dict,
     project_domain: str | None,
     label_aliases: dict[str, str],
 ) -> uuid.UUID | None:
@@ -315,9 +315,14 @@ async def _process_row(
         old_label = existing.assigned_user_label
         _apply_input_fields(existing, data, imp, row, user_map, vendor_id, campaign_id, label_aliases)
         existing.canonical_url_id = canonical_id
-        existing.link_type_id = await link_type_service.resolve_or_create(
+        # Canonical catalog row: follows merge redirects, so the STORED name is the
+        # corrected master (a still-misspelled sheet can't re-split a merged type).
+        _clt = await link_type_service.resolve_canonical(
             db, imp.workspace_id, existing.link_type, link_type_cache
         )
+        existing.link_type_id = _clt.id if _clt is not None else None
+        if _clt is not None:
+            existing.link_type = _clt.name[:60]
         if _is_gbp(existing.link_type):
             # GBP is excluded from the duplicate system (owner rule): detach from any
             # identity this row held, re-roll that identity so a former peer can fall
@@ -375,9 +380,12 @@ async def _process_row(
     # First assignment on insert: record when the link got an owner.
     if backlink.assigned_user_label:
         backlink.assigned_at = datetime.now(timezone.utc)
-    backlink.link_type_id = await link_type_service.resolve_or_create(
+    _clt = await link_type_service.resolve_canonical(
         db, imp.workspace_id, backlink.link_type, link_type_cache
     )
+    backlink.link_type_id = _clt.id if _clt is not None else None
+    if _clt is not None:
+        backlink.link_type = _clt.name[:60]
     if _is_gbp(backlink.link_type):
         # GBP is excluded from the duplicate system (owner rule): never joins an
         # identity and is always unique.

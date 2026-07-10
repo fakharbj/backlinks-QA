@@ -36,3 +36,9 @@ class LinkType(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # Alias/redirect layer (Phase 10): set (with deleted_at) when this type was
+    # merged into another — resolve_or_create follows the chain, so old sheet tab
+    # names keep resolving to the surviving master instead of re-creating the dup.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("link_types.id", ondelete="SET NULL")
+    )

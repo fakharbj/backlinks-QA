@@ -169,6 +169,32 @@ def list_worksheets(spreadsheet_id: str) -> list[dict]:
     ]
 
 
+def rename_worksheet(spreadsheet_id: str, gid: str, new_title: str) -> bool:
+    """Rename ONE tab, located by its stable gid (survives prior renames).
+
+    Returns False (never raises for flow control) when the tab is gone or the
+    target title is already taken in that spreadsheet — the caller records the
+    failure per-tab and moves on (link-type standardization renames many tabs
+    fail-open). On success the read cache for the spreadsheet is invalidated."""
+    client = _client()
+    _throttle_read()
+    sheet = client.open_by_key(spreadsheet_id)
+    target = None
+    taken = False
+    for ws in sheet.worksheets():
+        if str(ws.id) == str(gid):
+            target = ws
+        elif ws.title.strip().lower() == (new_title or "").strip().lower():
+            taken = True
+    if target is None or taken:
+        return False
+    if target.title == new_title:
+        return True  # already renamed (idempotent re-run)
+    target.update_title(new_title)
+    invalidate_sheet_cache(spreadsheet_id)
+    return True
+
+
 def read_main_sheet() -> list[dict[str, str]]:
     """Rows of the global main sheet as dicts keyed by header."""
     client = _client()

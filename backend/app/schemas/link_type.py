@@ -28,3 +28,14 @@ class LinkTypeUpdate(BaseModel):
     color: str | None = None
     description: str | None = None
     is_active: bool | None = None
+
+
+class LinkTypeMergeIn(BaseModel):
+    winner_id: uuid.UUID
+    # Also rename the matching Google Sheet tabs (after the DB merge commits).
+    rename_tabs: bool = True
+
+
+class LinkTypeRenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)  # backlink storage limit
+    rename_tabs: bool = True
