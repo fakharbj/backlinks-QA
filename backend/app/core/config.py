@@ -217,7 +217,11 @@ class Settings(BaseSettings):
     CRAWL_JOB_STALE_MINUTES: int = 20
 
     # ── Retention (days) ─────────────────────────────────────────────────────
-    RETENTION_HISTORY_DAYS: int = 365
+    # backlink_history now carries manual-action events (create/edit/override/
+    # reassign/delete/rescore — Phase 10 P5), which must live as long as
+    # audit_logs (730). NOTE: the same cutoff also governs crawl_results
+    # partition drops (tasks/maintenance.py uses one setting for both).
+    RETENTION_HISTORY_DAYS: int = 730
     RETENTION_SNAPSHOT_DAYS: int = 30
     RETENTION_AUDIT_DAYS: int = 730
 

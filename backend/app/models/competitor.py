@@ -84,9 +84,13 @@ class CompetitorDomainDecision(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     Kept separate from ``competitor_source_domains`` because that table is
     rebuilt (DELETE+INSERT) on every recompute — decisions must survive it.
-    ``status``: dismissed (hidden from the active opportunity list) | open
-    (explicitly re-opened). "Used" is never stored: it is derived live from the
-    project actually having a backlink on that domain, so it can't go stale.
+    ``status``: the legacy pair dismissed (hidden from the active opportunity
+    list) | open (explicitly re-opened), plus the Phase 10 workflow vocabulary
+    (``competitor_service.OPPORTUNITY_STATUSES``: new/under_review/validated/…).
+    "used" and "duplicate" are never stored manually: they are derived live
+    (the project actually has a backlink on the domain / the domain collapsed
+    into another), so they can't go stale. ``reason`` doubles as the workflow
+    note; ``assigned_to`` is the user working the opportunity.
     """
 
     __tablename__ = "competitor_domain_decisions"
@@ -98,8 +102,10 @@ class CompetitorDomainDecision(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     project_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     domain_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="dismissed", nullable=False)
+    # VARCHAR(30): 'needs_link_type_review' (22 chars) outgrew the original 20 (0044).
+    status: Mapped[str] = mapped_column(String(30), default="dismissed", nullable=False)
     reason: Mapped[str | None] = mapped_column(String(300))
+    assigned_to: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     decided_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

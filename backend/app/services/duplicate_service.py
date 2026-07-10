@@ -120,6 +120,25 @@ async def recompute(db: AsyncSession, identity_ids: set[uuid.UUID]) -> int:
         targets = r.targets if r else 0
         status = classify_duplicate(occ, projects, users)
 
+        # Timeline events for links whose classification actually FLIPS (a prior
+        # non-NULL status that differs). First-time classification (NULL → x) is
+        # skipped on purpose — it fires for every new link and is pure noise.
+        # One cheap indexed SELECT per identity; usually returns 0 rows.
+        flips = (
+            await db.execute(
+                select(
+                    BacklinkRecord.id,
+                    BacklinkRecord.workspace_id,
+                    BacklinkRecord.project_id,
+                    BacklinkRecord.duplicate_status,
+                ).where(
+                    BacklinkRecord.link_identity_id == identity_id,
+                    BacklinkRecord.duplicate_status.is_not(None),
+                    BacklinkRecord.duplicate_status != status,
+                )
+            )
+        ).all()
+
         await db.execute(
             text(
                 "UPDATE link_identity SET occurrence_count=:occ, project_count=:projects, "
@@ -134,4 +153,16 @@ async def recompute(db: AsyncSession, identity_ids: set[uuid.UUID]) -> int:
             ),
             {"is_dup": occ > 1, "status": status, "id": identity_id},
         )
+        if flips:
+            from app.models.enums import HistoryEventType
+            from app.services import history_service
+
+            for flip in flips:
+                await history_service.record_event_for_ids(
+                    db, backlink_id=flip.id, workspace_id=flip.workspace_id,
+                    project_id=flip.project_id,
+                    event_type=HistoryEventType.DEDUP_STATUS_CHANGED,
+                    field="duplicate_status", old_value=flip.duplicate_status,
+                    new_value=status, source="system",
+                )
     return len(ids)

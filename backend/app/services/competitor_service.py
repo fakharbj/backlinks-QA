@@ -347,6 +347,25 @@ async def list_sheets(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID)
     )
 
 
+# ── Opportunity workflow vocabulary (Phase 10 P2) ─────────────────────────────
+# Statuses live in competitor_domain_decisions (the side-table that survives
+# recompute). 'used' and 'duplicate' are DERIVED facts (the project actually has
+# a backlink on the domain / the domain collapsed into another) — displayable
+# but never manually set. The legacy pair open/dismissed stays valid so the
+# existing dismiss/re-open flow keeps working unchanged.
+OPPORTUNITY_STATUSES: tuple[str, ...] = (
+    "new", "under_review", "validated", "approved", "rejected", "duplicate",
+    "blocked", "needs_metrics", "needs_link_type_review", "ready", "assigned",
+    "used", "archived",
+)
+_LEGACY_DECISION_STATUSES: tuple[str, ...] = ("open", "dismissed")
+_DERIVED_ONLY_STATUSES: frozenset[str] = frozenset({"used", "duplicate"})
+FILTERABLE_STATUSES: frozenset[str] = (
+    frozenset(OPPORTUNITY_STATUSES) | frozenset(_LEGACY_DECISION_STATUSES)
+)
+SETTABLE_STATUSES: frozenset[str] = FILTERABLE_STATUSES - _DERIVED_ONLY_STATUSES
+
+
 # Guest-post label variants: "Guest Post", "guestpost", "guest-post", "GP".
 _GUEST_MATCH = r"(g.link_type_label ILIKE '%guest%' OR g.link_type_label ~* '^\s*gp\s*$')"
 _GUEST_MATCH_CB = _GUEST_MATCH.replace("g.", "cb.")
@@ -371,6 +390,7 @@ async def list_domains(
     include_dismissed: bool = True,
     exclude_guest_posts: bool = False,
     search: str | None = None,
+    status: str | None = None,
     sort: str | None = None,
     direction: str = "desc",
     limit: int = 500,
@@ -378,13 +398,22 @@ async def list_domains(
 ) -> list[dict]:
     """Domain rows + manual decision + guest-post tag. 'Used' is derived live
     (category = existing); manual dismissals survive recomputes via the
-    decisions table. Searchable, sortable (whitelist) and paginated."""
+    decisions table. Searchable, sortable (whitelist) and paginated.
+    ``status`` narrows on the workflow status (comma list, whitelisted;
+    undecided rows read as 'open')."""
     await _ensure_project(db, ctx, project_id)
     conds = ["d.workspace_id = :ws", "d.project_id = :pid"]
     if category in ("existing", "new_opportunity"):
         conds.append("d.category = :cat")
     if not include_dismissed:
         conds.append("coalesce(dec.status, 'open') <> 'dismissed'")
+    wanted_statuses: list[str] = []
+    if status:
+        wanted_statuses = [s.strip().lower() for s in status.split(",") if s.strip()]
+        bad = sorted(set(wanted_statuses) - FILTERABLE_STATUSES)
+        if bad:
+            raise ValidationAppError(f"Unknown status filter value(s): {', '.join(bad)}")
+        conds.append("coalesce(dec.status, 'open') IN :statuses")
     if exclude_guest_posts:
         conds.append(
             "NOT EXISTS (SELECT 1 FROM competitor_backlinks g WHERE g.project_id = d.project_id "
@@ -402,7 +431,9 @@ async def list_domains(
                d.our_link_count, d.our_indexed_pct, d.is_new,
                coalesce(d.da, sd.da) AS da, coalesce(d.pa, sd.pa) AS pa,
                coalesce(dec.status, 'open') AS decision,
+               coalesce(dec.status, 'open') AS status,
                dec.reason AS decision_reason,
+               dec.assigned_to::text AS assigned_to,
                EXISTS (
                  SELECT 1 FROM competitor_backlinks cb
                  WHERE cb.project_id = d.project_id AND cb.source_domain = d.domain_key
@@ -427,6 +458,9 @@ async def list_domains(
         params["cat"] = category
     if search and search.strip():
         params["q"] = f"%{search.strip()}%"
+    if wanted_statuses:
+        sql = sql.bindparams(bindparam("statuses", expanding=True))
+        params["statuses"] = wanted_statuses
     rows = (await db.execute(sql, params)).mappings().all()
     return [dict(r) for r in rows]
 
@@ -632,6 +666,75 @@ async def decide(
     )
     await db.execute(stmt)
     await db.flush()
+
+
+def validate_settable_status(status: str) -> str:
+    """Normalize + validate a manually-set workflow status. Pure (no DB) so the
+    transition rule is unit-testable: 'used'/'duplicate' are derived-only and
+    always rejected; anything outside the vocabulary is rejected."""
+    status = (status or "").strip().lower()
+    if status in _DERIVED_ONLY_STATUSES:
+        raise ValidationAppError(
+            f"'{status}' is derived automatically and cannot be set manually."
+        )
+    if status not in SETTABLE_STATUSES:
+        raise ValidationAppError(
+            "Unknown status. Allowed: " + ", ".join(sorted(SETTABLE_STATUSES))
+        )
+    return status
+
+
+async def set_domain_status(
+    db: AsyncSession,
+    ctx: AuthContext,
+    project_id: uuid.UUID,
+    domain: str,
+    *,
+    status: str,
+    note: str | None = None,
+    assigned_to: uuid.UUID | None = None,
+) -> dict:
+    """Set the workflow status for one competitor domain (Phase 10 P2). Upserts
+    the decisions side-table so recomputes never lose it — same durability as
+    dismiss/re-open, which stays on :func:`decide` unchanged. ``note`` lands in
+    the existing ``reason`` column; ``assigned_to`` is the user working it.
+    The router gates who may call this (Manager+)."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    # Validate BEFORE any DB access so the rule is enforced no matter the caller.
+    status = validate_settable_status(status)
+    await _ensure_project(db, ctx, project_id)
+    now = datetime.now(timezone.utc)
+    reason = (note or "").strip()[:300] or None
+    stmt = (
+        pg_insert(CompetitorDomainDecision)
+        .values(
+            workspace_id=ctx.workspace_id, project_id=project_id,
+            domain_key=domain.lower().strip()[:255], status=status,
+            reason=reason, assigned_to=assigned_to,
+            decided_by=ctx.user.id, decided_at=now,
+        )
+        .on_conflict_do_update(
+            constraint="uq_comp_domain_decision",
+            set_={
+                "status": status,
+                "reason": reason,
+                "assigned_to": assigned_to,
+                "decided_by": ctx.user.id,
+                "decided_at": now,
+            },
+        )
+    )
+    await db.execute(stmt)
+    await db.flush()
+    return {
+        "domain_key": domain.lower().strip()[:255],
+        "status": status,
+        "note": reason,
+        "assigned_to": str(assigned_to) if assigned_to else None,
+    }
 
 
 async def check_metrics(

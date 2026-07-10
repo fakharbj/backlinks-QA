@@ -42,15 +42,16 @@ from app.services import source_domain_service as svc
 
 router = APIRouter(prefix="/source-domains", tags=["source-domains"])
 
-# The rich range-filter query params (names → the service's _RANGE_PARAMS keys).
-_RANGE_PARAM_NAMES = list(svc._RANGE_PARAMS)
+# The rich filter query params: the service's _RANGE_PARAMS keys plus the
+# string filters (robots_band/market/country — comma list = multi-select).
+_FILTER_PARAM_NAMES = [*svc._RANGE_PARAMS, *svc._STRING_FILTER_COLUMNS]
 
 
 def _collect_filters(request: Request) -> dict:
-    """Pull the whitelisted range params off the query string into a plain dict.
+    """Pull the whitelisted filter params off the query string into a plain dict.
     Only recognized keys are kept; everything else is ignored (never trusted)."""
     qp = request.query_params
-    return {name: qp[name] for name in _RANGE_PARAM_NAMES if qp.get(name) not in (None, "")}
+    return {name: qp[name] for name in _FILTER_PARAM_NAMES if qp.get(name) not in (None, "")}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

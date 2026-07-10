@@ -7,7 +7,8 @@ A rule's ``definition`` is a whitelisted condition tree:
                      "value": <num>, "value2"?: <num>, "value_str"?: <str>}]}
 
 Whitelisted fields are the SAME metric/pct set the Source-Domains list filters use
-(``source_domain_service._NUMERIC_FILTER_COLUMNS``) plus ``origin`` (string). The
+(``source_domain_service._NUMERIC_FILTER_COLUMNS``) plus the string fields:
+``origin`` and the Phase 10 ``robots_band``/``market``/``country``. The
 definition is validated against the whitelist BOTH on write and at apply-time, and
 translated into the very same column comparisons the list builder uses — user
 input is never interpolated into SQL.
@@ -30,8 +31,13 @@ from app.services import source_domain_service as sd_svc
 
 # Whitelisted numeric fields = the same set the list filters expose.
 _NUMERIC_FIELDS = set(sd_svc._NUMERIC_FILTER_COLUMNS)
-# origin is a string field with its own operators.
-_STRING_FIELDS = {"origin"}
+# String fields ('==' only): origin plus the Phase 10 string filters
+# (robots_band / market / country) — same lockstep source as the list.
+_STRING_FIELDS = {"origin"} | set(sd_svc._STRING_FILTER_COLUMNS)
+_STRING_COLUMNS: dict[str, ColumnElement] = {
+    "origin": SourceDomain.origin,
+    **sd_svc._STRING_FILTER_COLUMNS,
+}
 _ALL_FIELDS = _NUMERIC_FIELDS | _STRING_FIELDS
 _MATCH = {"all", "any"}
 _OPS = sd_svc._OPS
@@ -67,7 +73,14 @@ def _validate_definition(definition: dict) -> dict:
             val = str(c.get("value_str") or c.get("value") or "").strip()
             if field == "origin" and val not in ("derived", "imported"):
                 raise ValidationAppError("origin must be 'derived' or 'imported'")
-            entry["value_str"] = val
+            if field == "robots_band" and val not in sd_svc.ROBOTS_BANDS:
+                raise ValidationAppError(
+                    "robots_band must be one of: " + ", ".join(sd_svc.ROBOTS_BANDS)
+                )
+            if field in ("market", "country") and not val:
+                raise ValidationAppError(f"Condition on {field!r} needs a value")
+            # Cap free-text labels at the column width (market/country VARCHAR(80)).
+            entry["value_str"] = val[:80]
         else:
             val = sd_svc._num(c.get("value"))
             if val is None:
@@ -91,7 +104,12 @@ def _definition_to_clauses(definition: dict) -> ColumnElement:
         field = c["field"]
         op = c["op"]
         if field in _STRING_FIELDS:
-            parts.append(SourceDomain.origin == c["value_str"])
+            col = _STRING_COLUMNS[field]
+            if field in ("market", "country"):
+                # Case-insensitive, matching the list filter's behavior.
+                parts.append(func.lower(col) == c["value_str"].lower())
+            else:
+                parts.append(col == c["value_str"])
         else:
             col = sd_svc._NUMERIC_FILTER_COLUMNS[field]
             parts.append(sd_svc._cmp(col, op, c.get("value"), c.get("value2")))

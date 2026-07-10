@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
@@ -29,9 +30,43 @@ from app.schemas.backlink import (
     RecheckResponse,
 )
 from app.schemas.common import KeysetPage, Message
-from app.services import audit_service, backlink_service, crawl_service
+from app.services import audit_service, backlink_service, crawl_service, history_service
 
 router = APIRouter(prefix="/backlinks", tags=["backlinks"])
+
+
+# ── Timeline/checks envelopes (Phase 10 P5) — endpoint-local response models ────
+class LinkTimelineEvent(BaseModel):
+    """One normalized entry of the merged per-link timeline (backlink_history +
+    assignment_history)."""
+
+    at: datetime
+    event_type: str
+    severity: str | None = None
+    field: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    score_delta: float | None = None
+    actor_user_id: uuid.UUID | None = None
+    actor_role: str | None = None
+    source: str | None = None
+    note: str | None = None
+
+
+class LinkTimelinePage(BaseModel):
+    items: list[LinkTimelineEvent]
+    has_more: bool = False
+
+
+class LinkCheckOut(BaseModel):
+    """One crawl check (every run — repeated same-outcome checks stay visible)."""
+
+    id: uuid.UUID
+    crawled_at: datetime
+    crawl_mode: str
+    status: str
+    score: int
+    http_status: int | None = None
 
 
 @router.get("", response_model=KeysetPage[BacklinkRow])
@@ -316,6 +351,53 @@ async def backlink_assignment_history(
         )
         for e in events
     ]
+
+
+@router.get("/{backlink_id}/history", response_model=LinkTimelinePage)
+async def backlink_history_timeline(
+    backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    # Comma list of event types ("edited,reassigned"); invalid parts are ignored.
+    event_type: str | None = None,
+    # Substring search over old/new values + note.
+    q: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> LinkTimelinePage:
+    """Complete merged per-link timeline (newest first): crawl-diff + manual-action
+    events from backlink_history, plus assignment_history rows normalized as
+    'reassigned'. ADDITIVE — the detail endpoint's embedded history is unchanged."""
+    await backlink_service.get_backlink(db, ctx, backlink_id)  # scope check
+    entries, has_more = await history_service.list_history(
+        db, backlink_id, event_type=event_type, q=q, limit=limit, offset=offset
+    )
+    return LinkTimelinePage(
+        items=[LinkTimelineEvent(**e) for e in entries], has_more=has_more
+    )
+
+
+@router.get("/{backlink_id}/checks", response_model=KeysetPage[LinkCheckOut])
+async def backlink_checks(
+    backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: str | None = None,
+) -> KeysetPage[LinkCheckOut]:
+    """Every crawl check for a backlink (keyset-paged, newest first) — repeated
+    same-outcome checks are all visible, unlike the change-only history."""
+    await backlink_service.get_backlink(db, ctx, backlink_id)  # scope check
+    rows, next_cursor, has_more = await history_service.list_checks(
+        db, backlink_id, limit=limit, cursor=cursor
+    )
+    return KeysetPage[LinkCheckOut](
+        items=[
+            LinkCheckOut(
+                id=r.id, crawled_at=r.crawled_at, crawl_mode=r.crawl_mode.value,
+                status=r.status.value, score=r.score, http_status=r.http_status,
+            )
+            for r in rows
+        ],
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
 
 
 @router.patch("/{backlink_id}", response_model=BacklinkRow)

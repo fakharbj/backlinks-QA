@@ -54,9 +54,12 @@ class CompetitorDomainOut(BaseModel):
     is_new: bool
     da: int | None = None           # checked (or reused from our own domains)
     pa: int | None = None
-    decision: str = "open"          # open | dismissed (manual, survives recompute)
+    decision: str = "open"          # workflow status (new/under_review/…; survives recompute)
     decision_reason: str | None = None
     has_guest_post: bool = False
+    # Phase 10 P2: opportunity-workflow assignment (who owns this domain's review).
+    status: str | None = None
+    assigned_to: uuid.UUID | None = None
 
 
 class CompetitorDecisionRequest(BaseModel):

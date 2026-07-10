@@ -121,7 +121,14 @@ class NotificationStatus(str, enum.Enum):
 
 
 class HistoryEventType(str, enum.Enum):
-    """Typed change-detection events (PRD §8.10)."""
+    """Typed change-detection events (PRD §8.10).
+
+    The crawl-diff events are emitted by ``result_service._diff``; the
+    manual/action events (Phase 10 P5) are emitted by the mutation paths via
+    ``history_service.record_link_event`` so the per-link timeline is complete.
+    New values must ALSO be added to the native pg enum in a migration
+    (``ALTER TYPE history_event_type_enum ADD VALUE IF NOT EXISTS`` — see 0045).
+    """
 
     LINK_REMOVED = "link_removed"
     LINK_ADDED = "link_added"
@@ -140,6 +147,19 @@ class HistoryEventType(str, enum.Enum):
     ISSUE_COUNT_CHANGED = "issue_count_changed"
     TARGET_CHANGED = "target_changed"
     FIRST_CRAWL = "first_crawl"
+    # ── Manual/action events (Phase 10 P5 — complete per-link history) ──────
+    CREATED = "created"
+    EDITED = "edited"
+    OVERRIDE_SET = "override_set"
+    OVERRIDE_CLEARED = "override_cleared"
+    REASSIGNED = "reassigned"
+    LINK_TYPE_CHANGED = "link_type_changed"
+    DELETED = "deleted"
+    RECHECK_REQUESTED = "recheck_requested"
+    RESCORED = "rescored"
+    INDEX_STATUS_CHANGED = "index_status_changed"
+    METRICS_CHANGED = "metrics_changed"
+    DEDUP_STATUS_CHANGED = "dedup_status_changed"
 
 
 class AuditAction(str, enum.Enum):

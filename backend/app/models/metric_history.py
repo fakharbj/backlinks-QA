@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Index, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +24,9 @@ class MetricCheckHistory(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         Index("ix_metric_history_entity", "entity_kind", "entity_key", "fetched_at"),
         Index("ix_metric_history_batch", "batch_id"),
+        # Workspace/time audit index (0044) — fetched_at is this table's creation
+        # stamp (no TimestampMixin here).
+        Index("ix_metric_check_history_ws", "workspace_id", "fetched_at"),
     )
 
     workspace_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
@@ -32,6 +36,9 @@ class MetricCheckHistory(UUIDPrimaryKeyMixin, Base):
     from_cache: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ok: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     batch_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # What the check actually changed: {"old": {...}, "new": {...}} with
+    # da/pa/spam_score/semrush_as before and after (0044). NULL on legacy rows.
+    values: Mapped[dict | None] = mapped_column(JSONB)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

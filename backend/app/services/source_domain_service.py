@@ -31,6 +31,7 @@ _UPSERT = text(
         project_count, user_count,
         qualified_count, not_qualified_count, warning_count, fail_count,
         pending_count, referring_domains_count,
+        robots_allowed_count, robots_blocked_count, robots_unknown_count, robots_band,
         last_recomputed_at, created_at, updated_at)
     SELECT gen_random_uuid(), workspace_id, source_domain, 'registrable',
         count(*),
@@ -52,6 +53,24 @@ _UPSERT = text(
         count(*) FILTER (WHERE coalesce(override_status, status)::text = 'FAIL'),
         count(*) FILTER (WHERE coalesce(override_status, status)::text = 'PENDING'),
         count(DISTINCT target_domain),
+        -- Robots buckets: never-QA'd rows (NULL) read as unknown so the three
+        -- counters sum to backlink_count. The band CASE mirrors the pure helper
+        -- derive_robots_band — keep the two in lockstep.
+        count(*) FILTER (WHERE robots_status = 'allowed'),
+        count(*) FILTER (WHERE robots_status = 'blocked'),
+        count(*) FILTER (WHERE robots_status = 'unknown' OR robots_status IS NULL),
+        CASE
+            WHEN count(*) FILTER (WHERE robots_status IN ('allowed', 'blocked')) = 0
+                THEN 'unknown'
+            WHEN count(*) FILTER (WHERE robots_status = 'allowed') = 0
+                THEN 'fully_blocked'
+            WHEN count(*) FILTER (WHERE robots_status = 'blocked')
+               > count(*) FILTER (WHERE robots_status = 'allowed')
+                THEN 'mostly_blocked'
+            WHEN count(*) FILTER (WHERE robots_status = 'blocked') > 0
+                THEN 'partially_blocked'
+            ELSE 'allowed'
+        END,
         now(), now(), now()
     FROM backlink_records
     WHERE workspace_id = :ws AND source_domain IS NOT NULL AND source_domain <> ''
@@ -74,6 +93,10 @@ _UPSERT = text(
         fail_count = EXCLUDED.fail_count,
         pending_count = EXCLUDED.pending_count,
         referring_domains_count = EXCLUDED.referring_domains_count,
+        robots_allowed_count = EXCLUDED.robots_allowed_count,
+        robots_blocked_count = EXCLUDED.robots_blocked_count,
+        robots_unknown_count = EXCLUDED.robots_unknown_count,
+        robots_band = EXCLUDED.robots_band,
         last_recomputed_at = now(),
         updated_at = now();
     """
@@ -135,6 +158,58 @@ _DISCOVERY = text(
     """
 )
 
+# ── Robots band (Phase 10 P2) ─────────────────────────────────────────────────
+# The full band vocabulary — the whitelist for filters/rules on robots_band.
+ROBOTS_BANDS: tuple[str, ...] = (
+    "unknown", "fully_blocked", "mostly_blocked", "partially_blocked", "allowed"
+)
+
+
+def derive_robots_band(allowed: int, blocked: int) -> str:
+    """Band ladder for a domain's robots rollup — the pure mirror of the CASE in
+    ``_UPSERT`` (keep the two in lockstep). 'unknown' rows don't participate:
+    a band only reflects links whose robots verdict is actually known."""
+    if allowed + blocked == 0:
+        return "unknown"
+    if allowed == 0:  # blocked > 0 here, since at least one row was checked
+        return "fully_blocked"
+    if blocked > allowed:
+        return "mostly_blocked"
+    if blocked > 0:
+        return "partially_blocked"
+    return "allowed"
+
+
+# ── First-metrics snapshot (Phase 10 P2) — live metric field → *_first column ─
+_FIRST_SNAPSHOT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("da", "da_first"),
+    ("pa", "pa_first"),
+    ("spam_score", "spam_first"),
+    ("semrush_as", "as_first"),
+    ("semrush_traffic", "traffic_first"),
+)
+
+
+def apply_first_snapshot(sd, metrics: dict, *, source: str, now=None) -> bool:
+    """Write-once original-metrics snapshot: fills the ``*_first`` columns plus
+    ``first_metrics_at``/``first_metrics_source`` ONLY while ``first_metrics_at``
+    IS NULL and the payload actually carries at least one metric value — the
+    first values ever seen win, forever. Returns True when the snapshot was
+    taken. Pure attribute logic (works on any object with the metric fields) so
+    it is unit-testable without a database."""
+    from datetime import datetime, timezone
+
+    if getattr(sd, "first_metrics_at", None) is not None:
+        return False
+    if not any(metrics.get(live) is not None for live, _ in _FIRST_SNAPSHOT_FIELDS):
+        return False
+    for live, first in _FIRST_SNAPSHOT_FIELDS:
+        setattr(sd, first, metrics.get(live))
+    sd.first_metrics_at = now or datetime.now(timezone.utc)
+    sd.first_metrics_source = source  # 'checked' (API fetch) | 'imported'
+    return True
+
+
 # ── Computed SQL expressions (percentages over the stored backlink_count) ─────
 # NULLIF avoids divide-by-zero → NULL for zero-backlink catalog rows, which
 # coalesce()es to 0.0. These are reused by list sort, stats, filters and rules.
@@ -165,10 +240,23 @@ _SORT_COLUMNS: dict[str, ColumnElement] = {
     "indexed_pct": _INDEXED_PCT,
     "qualified_pct": _QUALIFIED_PCT,
     "not_qualified_pct": _NOT_QUALIFIED_PCT,
+    "robots_band": SourceDomain.robots_band,
+    "robots_blocked": SourceDomain.robots_blocked_count,
+    "da_first": SourceDomain.da_first,
+    "pa_first": SourceDomain.pa_first,
+    "spam_first": SourceDomain.spam_first,
+    "as_first": SourceDomain.as_first,
+    "traffic_first": SourceDomain.traffic_first,
+    "market": SourceDomain.market,
+    "country": SourceDomain.country,
 }
 
 # Nullable metric columns → NULLS LAST on sort so blanks never lead the list.
-_NULLABLE_SORTS = {"avg_score", "da", "pa", "spam_score", "semrush_as"}
+_NULLABLE_SORTS = {
+    "avg_score", "da", "pa", "spam_score", "semrush_as",
+    "robots_band", "da_first", "pa_first", "spam_first", "as_first",
+    "traffic_first", "market", "country",
+}
 
 # ── Whitelisted numeric filter fields → (column, is_computed_pct) ─────────────
 # Each key maps to a stored column or a computed pct expression. NEVER interpolate
@@ -184,6 +272,21 @@ _NUMERIC_FILTER_COLUMNS: dict[str, ColumnElement] = {
     "qualified_pct": _QUALIFIED_PCT,
     "not_qualified_pct": _NOT_QUALIFIED_PCT,
     "indexed_pct": _INDEXED_PCT,
+    "da_first": SourceDomain.da_first,
+    "pa_first": SourceDomain.pa_first,
+    "spam_first": SourceDomain.spam_first,
+    "as_first": SourceDomain.as_first,
+    "traffic_first": SourceDomain.traffic_first,
+}
+
+# ── Whitelisted string filter fields (Phase 10 P2) ────────────────────────────
+# Comma lists = multi-select. robots_band accepts only the ROBOTS_BANDS
+# vocabulary; market/country match case-insensitively on the stored label.
+# Values are always bound params — never interpolated.
+_STRING_FILTER_COLUMNS: dict[str, ColumnElement] = {
+    "robots_band": SourceDomain.robots_band,
+    "market": SourceDomain.market,
+    "country": SourceDomain.country,
 }
 
 # min/max query-param name → (whitelisted field, ">=" | "<=")
@@ -202,6 +305,12 @@ _RANGE_PARAMS: dict[str, tuple[str, str]] = {
     "not_qualified_pct_max": ("not_qualified_pct", "<="),
     "indexed_pct_min": ("indexed_pct", ">="),
     "indexed_pct_max": ("indexed_pct", "<="),
+    "da_first_min": ("da_first", ">="), "da_first_max": ("da_first", "<="),
+    "pa_first_min": ("pa_first", ">="), "pa_first_max": ("pa_first", "<="),
+    "spam_first_min": ("spam_first", ">="), "spam_first_max": ("spam_first", "<="),
+    "as_first_min": ("as_first", ">="), "as_first_max": ("as_first", "<="),
+    "traffic_first_min": ("traffic_first", ">="),
+    "traffic_first_max": ("traffic_first", "<="),
 }
 
 _OPS = {">=", "<=", ">", "<", "==", "between"}
@@ -284,6 +393,19 @@ def _to_dict(sd: SourceDomain) -> dict:
         "semrush_keywords": sd.semrush_keywords,
         "domain_age_days": sd.domain_age_days,
         "metrics_updated_at": sd.metrics_updated_at,
+        "robots_allowed_count": sd.robots_allowed_count,
+        "robots_blocked_count": sd.robots_blocked_count,
+        "robots_unknown_count": sd.robots_unknown_count,
+        "robots_band": sd.robots_band,
+        "da_first": sd.da_first,
+        "pa_first": sd.pa_first,
+        "spam_first": sd.spam_first,
+        "as_first": sd.as_first,
+        "traffic_first": sd.traffic_first,
+        "first_metrics_at": sd.first_metrics_at,
+        "first_metrics_source": sd.first_metrics_source,
+        "market": sd.market,
+        "country": sd.country,
     }
 
 
@@ -308,8 +430,9 @@ def _build_filters(
 
     Every clause compares a whitelisted column against a bound param — user input
     is never interpolated into SQL. ``filters`` carries the da_min/max… range
-    params (keys from ``_RANGE_PARAMS``); ``search`` is an ilike on the domain;
-    ``origin`` restricts to 'derived' | 'imported'.
+    params (keys from ``_RANGE_PARAMS``) plus the string params (keys from
+    ``_STRING_FILTER_COLUMNS``, comma-list = multi-select); ``search`` is an
+    ilike on the domain; ``origin`` restricts to 'derived' | 'imported'.
     """
     clauses: list[ColumnElement] = [SourceDomain.workspace_id == ctx.workspace_id]
     if search and search.strip():
@@ -323,6 +446,24 @@ def _build_filters(
         if val is None:
             continue
         clauses.append(_cmp(_NUMERIC_FILTER_COLUMNS[field], op, val))
+
+    for param, col in _STRING_FILTER_COLUMNS.items():
+        raw = (filters or {}).get(param)
+        if raw is None or not str(raw).strip():
+            continue
+        wanted = [v.strip() for v in str(raw).split(",") if v.strip()]
+        if not wanted:
+            continue
+        if param == "robots_band":
+            bad = [v for v in wanted if v not in ROBOTS_BANDS]
+            if bad:
+                raise ValidationAppError(
+                    f"Unknown robots_band value(s): {', '.join(bad)}"
+                )
+            clauses.append(col.in_(wanted))
+        else:
+            # Free-text labels (market/country) match case-insensitively.
+            clauses.append(func.lower(col).in_([v.lower() for v in wanted]))
     return clauses
 
 
@@ -464,11 +605,23 @@ _EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("qualified", "qualified_count"),
     ("qualified %", "qualified_pct"),
     ("not-qualified %", "not_qualified_pct"),
+    ("robots band", "robots_band"),
+    ("robots allowed", "robots_allowed_count"),
+    ("robots blocked", "robots_blocked_count"),
+    ("robots unknown", "robots_unknown_count"),
     ("DA", "da"),
     ("PA", "pa"),
     ("Spam", "spam_score"),
     ("AS", "semrush_as"),
     ("traffic", "semrush_traffic"),
+    ("DA first", "da_first"),
+    ("PA first", "pa_first"),
+    ("Spam first", "spam_first"),
+    ("AS first", "as_first"),
+    ("traffic first", "traffic_first"),
+    ("first checked", "first_metrics_at"),
+    ("market", "market"),
+    ("country", "country"),
     ("age days", "domain_age_days"),
     ("projects", "project_count"),
     ("users", "user_count"),
@@ -645,6 +798,7 @@ async def fetch_metrics(
     import httpx
 
     from app.integrations import domain_metrics
+    from app.models.metric_history import MetricCheckHistory
 
     cap = limit or settings.DOMAIN_METRICS_BATCH_LIMIT
     stmt = select(SourceDomain).where(SourceDomain.workspace_id == ctx.workspace_id)
@@ -658,12 +812,27 @@ async def fetch_metrics(
     if not domains:
         return 0
 
+    # provider records the scope of the combined fetch (fetch_all spans Moz +
+    # Semrush + RDAP); column is VARCHAR(30).
+    provider_label = ("+".join(sorted(providers)) if providers else "all")[:30]
+    audit_keys = ("da", "pa", "spam_score", "semrush_as")
     timeout = httpx.Timeout(settings.DOMAIN_METRICS_TIMEOUT_SECONDS)
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
         for sd in domains:
             metrics = await domain_metrics.fetch_all(sd.domain_key, client, providers=providers)
+            old = {k: getattr(sd, k) for k in audit_keys}
+            # First value ever seen wins — snapshot BEFORE overwriting the live columns.
+            apply_first_snapshot(sd, metrics, source="checked")
             for field, value in metrics.items():
                 setattr(sd, field, value)
+            # Audit row: what this check changed. "new" is the post-write state —
+            # a provider that returned nothing leaves the old value in place.
+            db.add(MetricCheckHistory(
+                workspace_id=ctx.workspace_id, entity_kind="domain",
+                entity_key=sd.domain_key[:600], provider=provider_label,
+                from_cache=False, ok=bool(metrics),
+                values={"old": old, "new": {k: metrics.get(k, old[k]) for k in audit_keys}},
+            ))
     await db.flush()
     return len(domains)
 

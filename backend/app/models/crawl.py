@@ -226,3 +226,9 @@ class BacklinkHistory(Base):
     new_value: Mapped[str | None] = mapped_column(Text)
     score_delta: Mapped[float | None] = mapped_column(Float)
     detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # ── Actor/provenance (0045 — manual-action events; NULL on crawl-diff rows) ──
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    actor_role: Mapped[str | None] = mapped_column(String(20))
+    source: Mapped[str | None] = mapped_column(String(12))  # ui|sheet|import|worker|system
+    note: Mapped[str | None] = mapped_column(String(300))

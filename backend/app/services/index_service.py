@@ -80,6 +80,24 @@ async def check_source(
             {"now": now, "ws": workspace_id, "src": source_url_normalized},
         )
     else:
+        # Timeline events for links whose denormalised status actually FLIPS
+        # (prior non-NULL verdict that differs). First-time verdicts (NULL → x)
+        # are skipped — they fire for every link on the first weekly sweep.
+        flips = (
+            await db.execute(
+                select(
+                    BacklinkRecord.id,
+                    BacklinkRecord.workspace_id,
+                    BacklinkRecord.project_id,
+                    BacklinkRecord.index_status,
+                ).where(
+                    BacklinkRecord.workspace_id == workspace_id,
+                    BacklinkRecord.source_url_normalized == source_url_normalized,
+                    BacklinkRecord.index_status.is_not(None),
+                    BacklinkRecord.index_status != verdict,
+                )
+            )
+        ).all()
         await db.execute(
             text(
                 "UPDATE backlink_records SET index_status=:v, index_result_count=:c, "
@@ -87,6 +105,18 @@ async def check_source(
             ),
             {"v": verdict, "c": count, "now": now, "ws": workspace_id, "src": source_url_normalized},
         )
+        if flips:
+            from app.models.enums import HistoryEventType
+            from app.services import history_service
+
+            for flip in flips:
+                await history_service.record_event_for_ids(
+                    db, backlink_id=flip.id, workspace_id=flip.workspace_id,
+                    project_id=flip.project_id,
+                    event_type=HistoryEventType.INDEX_STATUS_CHANGED,
+                    field="index_status", old_value=flip.index_status,
+                    new_value=verdict, source="worker",
+                )
     await db.flush()
     return {"verdict": verdict, "result_count": count, "cached": False}
 

@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.crawler.types import CrawlArtifact, CrawlRequest, FetchError
 from app.models.backlink import BacklinkRecord
 from app.models.crawl import CrawlResult
+from app.models.enums import HistoryEventType
 from app.models.source_domain import SourceDomain
 from app.qa.classification import classify
 from app.qa.enums import IssueCategory, IssueLabel, Severity
@@ -158,6 +159,8 @@ async def rescore(
 
     records = (await db.execute(stmt)).scalars().all()
 
+    from app.services import history_service  # local: avoids import-time cycles
+
     total = changed = 0
     score_delta_sum = 0
     transitions: dict[str, int] = {}
@@ -184,12 +187,26 @@ async def rescore(
         status = classify(_artifact_from_result(cr), issues, score, bands=ruleset.bands)
 
         total += 1
-        if score != (rec.score or 0) or status != rec.status:
+        row_changed = score != (rec.score or 0) or status != rec.status
+        if row_changed:
             changed += 1
             score_delta_sum += score - (rec.score or 0)
             key = f"{rec.status.value}→{status.value}"
             transitions[key] = transitions.get(key, 0) + 1
         if not preview:
+            if row_changed:
+                # Timeline event ONLY when the verdict actually moved (an applied
+                # rescore over an unchanged row stays silent — no history spam).
+                await history_service.record_link_event(
+                    db, backlink=rec, event_type=HistoryEventType.RESCORED,
+                    field="score", old_value=rec.score, new_value=score,
+                    score_delta=float(score - (rec.score or 0)),
+                    note=(
+                        f"status {rec.status.value} → {status.value}"
+                        if status != rec.status else None
+                    ),
+                    source="system",
+                )
             rec.score = score
             rec.status = status
             rec.scoring_rule_version_id = ruleset.version_id

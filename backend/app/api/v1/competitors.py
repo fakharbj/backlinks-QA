@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
 from app.core.rbac import Permission
@@ -135,6 +136,7 @@ async def list_domains(
     include_dismissed: bool = Query(True),
     exclude_guest_posts: bool = Query(False),
     search: str | None = Query(None),
+    status: str | None = Query(None, max_length=400),  # comma list, whitelisted in the service
     sort: str | None = Query(None, pattern="^(domain|links|ours|indexed|da|pa)$"),
     direction: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(500, ge=1, le=2000),
@@ -143,7 +145,8 @@ async def list_domains(
     rows = await competitor_service.list_domains(
         db, ctx, project_id, category=category,
         include_dismissed=include_dismissed, exclude_guest_posts=exclude_guest_posts,
-        search=search, sort=sort, direction=direction, limit=limit, offset=offset,
+        search=search, status=status, sort=sort, direction=direction,
+        limit=limit, offset=offset,
     )
     return [CompetitorDomainOut(**r) for r in rows]
 
@@ -175,6 +178,39 @@ async def decide_domain(
     )
     await db.commit()
     return CompetitorSummary(**await competitor_service.summary(db, ctx, payload.project_id))
+
+
+class OpportunityStatusRequest(BaseModel):
+    project_id: uuid.UUID
+    domain_key: str = Field(min_length=1, max_length=255)
+    status: str = Field(min_length=2, max_length=30)
+    note: str | None = Field(default=None, max_length=300)
+    assigned_to: uuid.UUID | None = None
+
+
+@router.patch("/opportunities/status")
+async def set_opportunity_status(
+    payload: OpportunityStatusRequest, db: DbSession,
+    # ASSIGN_MEMBERS = the Manager+ gate (QA/Viewer don't hold it) — setting a
+    # workflow status/assignee is member-assignment work, unlike the plain
+    # dismiss/re-open toggle which stays on EDIT_BACKLINKS above.
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> dict:
+    """Workflow status for one competitor opportunity domain (Phase 10 P2).
+    'used' and 'duplicate' are derived automatically and rejected here; the
+    decision survives recomputes (same side-table as dismiss/re-open)."""
+    result = await competitor_service.set_domain_status(
+        db, ctx, payload.project_id, payload.domain_key,
+        status=payload.status, note=payload.note, assigned_to=payload.assigned_to,
+    )
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="competitor_domain", entity_id=payload.project_id,
+        summary=f"Opportunity {payload.domain_key} → {result['status']}",
+    )
+    await db.commit()
+    result["summary"] = await competitor_service.summary(db, ctx, payload.project_id)
+    return result
 
 
 @router.get("/summary", response_model=CompetitorSummary)

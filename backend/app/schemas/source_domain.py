@@ -42,6 +42,20 @@ class SourceDomainOut(BaseModel):
     semrush_keywords: int | None = None
     domain_age_days: int | None = None
     metrics_updated_at: datetime | None = None
+    # ── Phase 10 P2: robots rollup + first-snapshot (old vs current) metrics ──
+    robots_allowed_count: int = 0
+    robots_blocked_count: int = 0
+    robots_unknown_count: int = 0
+    robots_band: str | None = None       # allowed|partially|mostly|fully_blocked|unknown
+    da_first: int | None = None          # ORIGINAL values — never overwritten by refresh
+    pa_first: int | None = None
+    spam_first: int | None = None
+    as_first: int | None = None
+    traffic_first: int | None = None
+    first_metrics_at: datetime | None = None
+    first_metrics_source: str | None = None  # imported | checked
+    market: str | None = None
+    country: str | None = None
 
 
 class SourceDomainListOut(BaseModel):

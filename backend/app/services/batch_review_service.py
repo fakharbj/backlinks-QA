@@ -27,7 +27,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 import httpx
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import and_, case, func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,7 @@ from app.integrations import domain_metrics
 from app.models.backlink import BacklinkRecord
 from app.models.batch import Batch, BatchItem, BatchLog
 from app.models.enums import ImportSource
+from app.models.metric_history import MetricCheckHistory
 from app.models.source_domain import SourceDomain
 
 log = get_logger("services.batch_review")
@@ -589,12 +590,16 @@ async def check_domain_items(
     todo, remaining = items[:cap], max(0, len(items) - cap)
 
     checked = 0
+    # provider records the scope of the combined fetch (column is VARCHAR(30)).
+    provider_label = ("+".join(sorted(providers)) if providers else "all")[:30]
+    audit_keys = ("da", "pa", "spam_score", "semrush_as")
     timeout = httpx.Timeout(settings.DOMAIN_METRICS_TIMEOUT_SECONDS)
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
         for it in todo:
             try:
                 metrics = await domain_metrics.fetch_all(it.label, client, providers=providers)
                 payload = dict(it.payload or {})
+                prev = payload.get("metrics") or {}
                 stored = {
                     k: (v.isoformat() if isinstance(v, (datetime, date)) else v)
                     for k, v in metrics.items()
@@ -605,6 +610,17 @@ async def check_domain_items(
                 it.error = None
                 it.checked_at = _now()
                 checked += 1
+                # Audit row: what this check changed for the staged domain. "new"
+                # is the merged state — an absent provider keeps the old value.
+                db.add(MetricCheckHistory(
+                    workspace_id=ctx.workspace_id, entity_kind="domain",
+                    entity_key=it.label[:600], provider=provider_label,
+                    from_cache=False, ok=bool(metrics), batch_id=batch.id,
+                    values={
+                        "old": {k: prev.get(k) for k in audit_keys},
+                        "new": {k: stored.get(k, prev.get(k)) for k in audit_keys},
+                    },
+                ))
             except Exception as exc:  # noqa: BLE001 — one bad domain must not kill the run
                 it.state = "failed"
                 it.error = f"Metrics check failed: {exc!r}"[:500]
@@ -705,6 +721,12 @@ async def approve_items(
         inserted = 0
         for it in items:
             m = it.payload.get("metrics") or {}
+            # Import-supplied values are the domain's FIRST metrics when no
+            # snapshot exists yet (write-once; guard below on conflict).
+            has_metrics = any(
+                m.get(k) is not None
+                for k in ("da", "pa", "spam_score", "semrush_as", "semrush_traffic")
+            )
             values = {
                 "workspace_id": ctx.workspace_id,
                 "domain_key": it.label,
@@ -726,10 +748,25 @@ async def approve_items(
                     datetime.fromisoformat(m["metrics_updated_at"])
                     if m.get("metrics_updated_at") else None
                 ),
+                "da_first": m.get("da"), "pa_first": m.get("pa"),
+                "spam_first": m.get("spam_score"), "as_first": m.get("semrush_as"),
+                "traffic_first": m.get("semrush_traffic"),
+                "first_metrics_at": now if has_metrics else None,
+                "first_metrics_source": "imported" if has_metrics else None,
                 # Discovery = when this domain was added to the catalog by import.
                 "discovery_date": now,
             }
             stmt = pg_insert(SourceDomain).values(**values)
+            # First snapshot is write-once: fill only when the existing row has
+            # never recorded one AND this approval actually carries values.
+            first_guard = and_(
+                SourceDomain.first_metrics_at.is_(None),
+                stmt.excluded.first_metrics_at.is_not(None),
+            )
+
+            def _first(excluded_col, existing_col):
+                return case((first_guard, excluded_col), else_=existing_col)
+
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_source_domains_ws_domain",
                 set_={
@@ -748,6 +785,17 @@ async def approve_items(
                     "domain_age_days": func.coalesce(stmt.excluded.domain_age_days, SourceDomain.domain_age_days),
                     "domain_created_on": func.coalesce(stmt.excluded.domain_created_on, SourceDomain.domain_created_on),
                     "metrics_updated_at": func.coalesce(stmt.excluded.metrics_updated_at, SourceDomain.metrics_updated_at),
+                    "da_first": _first(stmt.excluded.da_first, SourceDomain.da_first),
+                    "pa_first": _first(stmt.excluded.pa_first, SourceDomain.pa_first),
+                    "spam_first": _first(stmt.excluded.spam_first, SourceDomain.spam_first),
+                    "as_first": _first(stmt.excluded.as_first, SourceDomain.as_first),
+                    "traffic_first": _first(stmt.excluded.traffic_first, SourceDomain.traffic_first),
+                    "first_metrics_at": _first(
+                        stmt.excluded.first_metrics_at, SourceDomain.first_metrics_at
+                    ),
+                    "first_metrics_source": _first(
+                        stmt.excluded.first_metrics_source, SourceDomain.first_metrics_source
+                    ),
                     "updated_at": func.now(),
                 },
             )

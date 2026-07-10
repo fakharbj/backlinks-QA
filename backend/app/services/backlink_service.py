@@ -19,7 +19,7 @@ from app.core.errors import NotFoundError, PermissionDeniedError
 from app.crawler.normalize import normalize_url, registrable_domain
 from app.models.backlink import BacklinkRecord
 from app.models.crawl import BacklinkHistory, BacklinkIssue, CrawlResult
-from app.models.enums import OverallStatus, RelType
+from app.models.enums import HistoryEventType, OverallStatus, RelType
 from app.models.source_domain import SourceDomain
 from app.schemas.backlink import BacklinkCreate, BacklinkFilters, BacklinkUpdate
 
@@ -260,6 +260,16 @@ async def delete_backlink(db: AsyncSession, ctx: AuthContext, backlink_id: uuid.
         raise NotFoundError("Backlink not found")
     ctx.assert_project(bl.project_id)
     source_url = bl.source_page_url
+
+    # Tombstone BEFORE the delete — backlink_history has no FK to
+    # backlink_records, so the event outlives the row (retention-grade audit).
+    from app.services import history_service
+
+    await history_service.record_link_event(
+        db, backlink=bl, event_type=HistoryEventType.DELETED,
+        old_value=source_url, actor_user_id=ctx.user.id, actor_role=ctx.role.value,
+        source="ui",
+    )
 
     await db.execute(sa_delete(BacklinkIssue).where(BacklinkIssue.backlink_id == backlink_id))
     conflict_ids = list(
@@ -602,8 +612,33 @@ async def update_backlink(
             amap = await employee_service.alias_map(db, ctx.workspace_id)
             cleaned = employee_service.normalize_label(cleaned, amap)
         data["assigned_user_label"] = cleaned or None
+    # Track REAL changes only (old != new) so the history stays signal, not noise.
+    changes: list[tuple[str, object, object]] = []
     for field, value in data.items():
+        old = getattr(bl, field)
+        if old != value:
+            changes.append((field, old, value))
         setattr(bl, field, value)
+    for field, old, new in changes:
+        if field == "assigned_user_label":
+            # Align the single-PATCH path with bulk_edit: a user change stamps
+            # assigned_at + logs AssignmentHistory (feeds performance/tasks).
+            from app.models.link_identity import AssignmentHistory
+
+            bl.assigned_at = datetime.now(timezone.utc)
+            db.add(AssignmentHistory(
+                workspace_id=ctx.workspace_id, project_id=bl.project_id, backlink_id=bl.id,
+                link_identity_id=bl.link_identity_id, old_user_label=old, new_user_label=new,
+                source="ui",
+            ))
+    from app.services import history_service
+
+    for field, old, new in changes:
+        await history_service.record_link_event(
+            db, backlink=bl, event_type=HistoryEventType.EDITED, field=field,
+            old_value=old, new_value=new, actor_user_id=ctx.user.id,
+            actor_role=ctx.role.value, source="ui",
+        )
     await db.flush()
     return bl
 
@@ -627,7 +662,7 @@ async def bulk_edit(
     if not ids:
         return 0
     from app.models.link_identity import AssignmentHistory
-    from app.services import employee_service
+    from app.services import employee_service, history_service
 
     label: str | None = None
     if set_user:
@@ -655,9 +690,21 @@ async def bulk_edit(
                 link_identity_id=bl.link_identity_id, old_user_label=old, new_user_label=label,
                 source="ui",
             ))
+            # One timeline event per row per action (coalesced, never per-cell spam).
+            await history_service.record_link_event(
+                db, backlink=bl, event_type=HistoryEventType.REASSIGNED,
+                field="assigned_user_label", old_value=old, new_value=label,
+                actor_user_id=ctx.user.id, actor_role=ctx.role.value, source="ui",
+            )
             touched = True
         if set_placement and bl.placement_date != placement_date:
+            old_placement = bl.placement_date
             bl.placement_date = placement_date
+            await history_service.record_link_event(
+                db, backlink=bl, event_type=HistoryEventType.EDITED,
+                field="placement_date", old_value=old_placement, new_value=placement_date,
+                actor_user_id=ctx.user.id, actor_role=ctx.role.value, source="ui",
+            )
             touched = True
         if touched:
             changed += 1
@@ -719,10 +766,23 @@ async def override_verdict(
     db: AsyncSession, ctx: AuthContext, backlink_id: uuid.UUID, status: OverallStatus, note: str
 ) -> BacklinkRecord:
     bl = await get_backlink(db, ctx, backlink_id)
+    old_effective = bl.override_status or bl.status  # what the user saw before
     bl.override_status = status
     bl.override_note = note
     bl.overridden_by = ctx.user.id
     bl.overridden_at = datetime.now(timezone.utc)
+    from app.services import history_service
+
+    await history_service.record_link_event(
+        db, backlink=bl,
+        # Defensive: today's API always sends a status; a null would be a clear.
+        event_type=(
+            HistoryEventType.OVERRIDE_CLEARED if status is None
+            else HistoryEventType.OVERRIDE_SET
+        ),
+        field="override_status", old_value=old_effective, new_value=status,
+        actor_user_id=ctx.user.id, actor_role=ctx.role.value, source="ui", note=note,
+    )
     await db.flush()
     return bl
 
@@ -761,4 +821,11 @@ async def create_backlink(
     )
     db.add(bl)
     await db.flush()
+    from app.services import history_service
+
+    await history_service.record_link_event(
+        db, backlink=bl, event_type=HistoryEventType.CREATED,
+        new_value=bl.source_page_url, actor_user_id=ctx.user.id,
+        actor_role=ctx.role.value, source="ui",
+    )
     return bl
