@@ -496,14 +496,21 @@ async def export_rows(
 
 
 async def project_view(
-    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, *, limit: int = 500
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, *, limit: int = 500, offset: int = 0
 ) -> dict:
     """Project-wise source-domain usage (Phase 9 P1, owner rule):
     ``used`` — domains this project already has backlinks from (with per-project
     counts); ``available`` — domains known globally in the workspace but NOT yet
-    used by this project ("new source domain for this project" candidates)."""
+    used by this project ("new source domain for this project" candidates).
+
+    ``used_count``/``available_count`` are the TRUE totals (dedicated COUNT queries,
+    no LIMIT) — never the page size — so the tabs read e.g. "Available (2006)" not the
+    capped page. ``used``/``available`` are one page (``limit``/``offset``) for
+    load-more; ``*_has_more`` tells the UI when to stop paging."""
     ctx.assert_project(project_id)
     from sqlalchemy import text as _text
+
+    params = {"ws": ctx.workspace_id, "pid": project_id, "lim": limit, "off": offset}
 
     used_rows = (
         await db.execute(
@@ -520,10 +527,10 @@ async def project_view(
                 WHERE b.workspace_id = :ws AND b.project_id = :pid AND b.source_domain IS NOT NULL
                 GROUP BY b.source_domain, sd.da, sd.backlink_count
                 ORDER BY project_links DESC
-                LIMIT :lim
+                LIMIT :lim OFFSET :off
                 """
             ),
-            {"ws": ctx.workspace_id, "pid": project_id, "lim": limit},
+            params,
         )
     ).mappings().all()
 
@@ -540,18 +547,55 @@ async def project_view(
                       WHERE b.project_id = :pid AND b.source_domain = sd.domain_key
                   )
                 ORDER BY sd.backlink_count DESC
-                LIMIT :lim
+                LIMIT :lim OFFSET :off
                 """
             ),
-            {"ws": ctx.workspace_id, "pid": project_id, "lim": limit},
+            params,
         )
     ).mappings().all()
 
+    # TRUE totals — dedicated COUNT queries with NO LIMIT. A page size must never be
+    # reported as a total (the old len(rows) capped both tabs at `limit`).
+    used_count = (
+        await db.execute(
+            _text(
+                """
+                SELECT count(DISTINCT b.source_domain)
+                FROM backlink_records b
+                WHERE b.workspace_id = :ws AND b.project_id = :pid AND b.source_domain IS NOT NULL
+                """
+            ),
+            params,
+        )
+    ).scalar() or 0
+    available_count = (
+        await db.execute(
+            _text(
+                """
+                SELECT count(*)
+                FROM source_domains sd
+                WHERE sd.workspace_id = :ws
+                  AND NOT EXISTS (
+                      SELECT 1 FROM backlink_records b
+                      WHERE b.project_id = :pid AND b.source_domain = sd.domain_key
+                  )
+                """
+            ),
+            params,
+        )
+    ).scalar() or 0
+
+    used_count = int(used_count)
+    available_count = int(available_count)
     return {
         "used": [dict(r) for r in used_rows],
         "available": [dict(r) for r in available_rows],
-        "used_count": len(used_rows),
-        "available_count": len(available_rows),
+        "used_count": used_count,
+        "available_count": available_count,
+        "limit": limit,
+        "offset": offset,
+        "used_has_more": offset + len(used_rows) < used_count,
+        "available_has_more": offset + len(available_rows) < available_count,
     }
 
 

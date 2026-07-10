@@ -9565,16 +9565,34 @@ function ProjectDomainsPanel({
   onOpenBacklinks: (filters: Record<string, string>) => void;
 }) {
   const [mode, setMode] = useState<"used" | "available">("used");
-  const view = useQuery({
+  const PAGE = 200;
+  type PV = {
+    used: ProjectDomainRow[]; available: ProjectDomainRow[];
+    used_count: number; available_count: number;
+    used_has_more?: boolean; available_has_more?: boolean;
+  };
+  const view = useInfiniteQuery({
     queryKey: ["sd-project-view", token, projectId],
     enabled: Boolean(token) && Boolean(projectId),
-    queryFn: () =>
-      api<{ used: ProjectDomainRow[]; available: ProjectDomainRow[]; used_count: number; available_count: number }>(
-        `/source-domains/project-view?project_id=${projectId}`,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      api<PV>(
+        `/source-domains/project-view?project_id=${projectId}&limit=${PAGE}&offset=${pageParam}`,
         { token }
-      )
+      ),
+    // Keep paging while EITHER tab still has rows; each page carries the next slice
+    // of both lists (true totals live on page 0), so we flatten per tab below.
+    getNextPageParam: (last, all) =>
+      last.used_has_more || last.available_has_more ? all.length * PAGE : undefined
   });
-  const rows = mode === "used" ? view.data?.used || [] : view.data?.available || [];
+  const pages = useMemo(() => view.data?.pages || [], [view.data]);
+  const usedRows = useMemo(() => pages.flatMap((p) => p.used || []), [pages]);
+  const availRows = useMemo(() => pages.flatMap((p) => p.available || []), [pages]);
+  const rows = mode === "used" ? usedRows : availRows;
+  const usedCount = pages[0]?.used_count ?? 0;
+  const availCount = pages[0]?.available_count ?? 0;
+  const last = pages[pages.length - 1];
+  const modeHasMore = mode === "used" ? Boolean(last?.used_has_more) : Boolean(last?.available_has_more);
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
@@ -9587,7 +9605,7 @@ function ProjectDomainsPanel({
               mode === "used" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
             )}
           >
-            Used here ({view.data?.used_count ?? 0})
+            Used here ({usedCount})
           </button>
           <button
             onClick={() => setMode("available")}
@@ -9597,7 +9615,7 @@ function ProjectDomainsPanel({
               mode === "available" ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
             )}
           >
-            Available — not used yet ({view.data?.available_count ?? 0})
+            Available — not used yet ({availCount})
           </button>
         </div>
       </div>
@@ -9632,6 +9650,18 @@ function ProjectDomainsPanel({
         ) : null}
         {!view.isLoading && !rows.length ? (
           <Empty label={mode === "used" ? "No domains used yet." : "Every known domain is already used here."} />
+        ) : null}
+        {modeHasMore ? (
+          <div className="flex justify-center border-t border-line p-2">
+            <button
+              onClick={() => view.fetchNextPage()}
+              disabled={view.isFetchingNextPage}
+              className="flex h-8 items-center gap-2 rounded-lg border border-line px-3 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-60"
+            >
+              {view.isFetchingNextPage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              Load more ({mode === "used" ? usedCount - usedRows.length : availCount - availRows.length} more)
+            </button>
+          </div>
         ) : null}
       </div>
     </section>

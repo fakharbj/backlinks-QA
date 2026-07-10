@@ -264,10 +264,13 @@ async def import_source_domains(
 
 @router.get("/project-view")
 async def project_view(
-    project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession, limit: int = 500
+    project_id: uuid.UUID, ctx: AuthCtx, db: ReadSession, limit: int = 500, offset: int = 0
 ) -> dict:
-    """Domains used by this project vs domains known globally but not used here."""
-    return await svc.project_view(db, ctx, project_id, limit=min(max(limit, 1), 1000))
+    """Domains used by this project vs domains known globally but not used here.
+    Counts are true totals; ``limit``/``offset`` page the rows for load-more."""
+    return await svc.project_view(
+        db, ctx, project_id, limit=min(max(limit, 1), 1000), offset=max(offset, 0)
+    )
 
 
 @router.get("/{domain_id}", response_model=SourceDomainDetailOut)
