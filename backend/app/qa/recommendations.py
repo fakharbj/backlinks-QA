@@ -43,3 +43,70 @@ RECOMMENDATIONS: dict[IssueLabel, str] = {
 
 def recommend(label: IssueLabel) -> str | None:
     return RECOMMENDATIONS.get(label)
+
+
+# ── Score-breakdown explainability (enrich-on-read) ──────────────────────────
+# "How to improve" text for METRIC-parameter steps (DA/AS/age/index/duplicate) —
+# these aren't QA issues, so they have no IssueLabel recommendation of their own.
+PARAM_REMEDIATION: dict[str, str] = {
+    "da_band": "Prefer placements on higher-DA domains; run a DA/PA metrics check so the value is known.",
+    "semrush_as_band": "Prefer placements on higher Authority Score domains; run an AS metrics check so the value is known.",  # noqa: E501
+    "domain_age_band": "Older, established domains score better. Prefer aged domains for placements.",
+    "external_index": "Get the source page indexed (internal links / sitemap / share it) and run an index check.",  # noqa: E501
+    "duplicate": "Same source URL used more than once — place each link on a distinct page.",
+}
+
+
+def enrich_breakdown(steps: list[dict], issues: list | None = None) -> list[dict]:
+    """Attach ``impact`` (points lost, ≥0), ``reason`` and ``recommendation`` to stored
+    ScoreStep dicts and order them for humans: baseline first, then biggest deduction
+    → smallest, then gains, cap last. Pure + tolerant of old rows lacking new keys;
+    the stored JSONB is never mutated (copies only)."""
+    by_code: dict[str, object] = {}
+    for iss in issues or []:
+        by_code.setdefault(getattr(iss, "code", ""), iss)
+
+    def _rec(step: dict) -> str | None:
+        src = step.get("source") or "severity"
+        if src == "metric_signal":
+            return PARAM_REMEDIATION.get(step.get("parameter_key") or "")
+        if src == "cap":
+            code = (step.get("code") or "").strip()
+            return f"Fix the blocking issue ({code}) to lift the score ceiling." if code else None
+        iss = by_code.get(step.get("code") or "")
+        if iss is not None:
+            rec = getattr(iss, "recommendation", None)
+            if rec:
+                return rec
+            label = getattr(iss, "label", None)
+            if label is not None:
+                return RECOMMENDATIONS.get(label)
+        # Fall back to the label registry via the stored note (label.value for issues).
+        note = step.get("note") or ""
+        try:
+            return RECOMMENDATIONS.get(IssueLabel(note))
+        except ValueError:
+            return None
+
+    out: list[dict] = []
+    for s in steps or []:
+        s2 = dict(s)
+        delta = int(s2.get("delta") or 0)
+        s2["impact"] = max(0, -delta)
+        s2["reason"] = s2.get("outcome_label") or s2.get("note") or s2.get("code")
+        rec = _rec(s2)
+        if rec and delta < 0:
+            s2["recommendation"] = rec
+        out.append(s2)
+
+    def _rank(s: dict) -> tuple[int, int]:
+        if s.get("code") == "START":
+            return (0, 0)
+        if (s.get("source") or "") == "cap" or s.get("cap_applied") is not None:
+            return (3, 0)
+        d = int(s.get("delta") or 0)
+        if d < 0:
+            return (1, d)          # deductions: most negative (biggest loss) first
+        return (2, -d)             # gains after deductions, biggest first
+    out.sort(key=_rank)
+    return out

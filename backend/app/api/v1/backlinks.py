@@ -261,8 +261,13 @@ async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
         for i in issues
     ]
     if latest is not None:
+        from app.qa.recommendations import enrich_breakdown
+
         detail.recommendations = latest.recommendations or []
-        detail.score_breakdown = latest.score_breakdown or []
+        # Enrich-on-read: impact + reason + "how to improve" per step, ordered
+        # biggest-deduction-first. Works for historical rows (keys are derived
+        # from stored code/parameter_key), no re-crawl needed.
+        detail.score_breakdown = enrich_breakdown(latest.score_breakdown or [], issues)
         detail.latest_result = CrawlResultOut(
             id=latest.id, crawled_at=latest.crawled_at, crawl_mode=latest.crawl_mode.value,
             http_status=latest.http_status, final_url=latest.final_url,

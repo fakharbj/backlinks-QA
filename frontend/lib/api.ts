@@ -723,6 +723,10 @@ export type ScoreStep = {
   // where the delta came from: "severity" | "ruleset" | "metric_signal" | "cap"
   source?: string | null;
   configured_points?: number | null;
+  // ── Enrich-on-read (server-computed; ordered biggest-deduction-first) ──
+  impact?: number;                    // points lost by this step (≥ 0)
+  reason?: string | null;             // human line for the step
+  recommendation?: string | null;     // plain "how to improve" (deductions only)
 };
 
 export type CrawlResultOut = {

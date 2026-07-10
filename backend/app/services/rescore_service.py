@@ -178,7 +178,7 @@ async def rescore(
                 db, workspace_id, rec.project_id, rec.link_type_id
             )
             ruleset_cache[cache_key] = ruleset
-        score, _ = score_issues(
+        score, breakdown = score_issues(
             issues, ruleset=ruleset, signals=_signals(rec, domain_metrics)
         )
         status = classify(_artifact_from_result(cr), issues, score, bands=ruleset.bands)
@@ -193,6 +193,12 @@ async def rescore(
             rec.score = score
             rec.status = status
             rec.scoring_rule_version_id = ruleset.version_id
+            # Persist the recomputed breakdown too — otherwise the stored
+            # crawl_results.score_breakdown drifts from the displayed score after
+            # any ruleset change (the drawer would "explain" a stale number).
+            cr.score = score
+            cr.status = status
+            cr.score_breakdown = [s.to_dict() for s in breakdown]
 
     if not preview:
         await db.commit()
