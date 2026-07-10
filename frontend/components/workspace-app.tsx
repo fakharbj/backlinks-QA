@@ -107,7 +107,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -437,6 +437,7 @@ export function WorkspaceApp() {
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} /> : null}
         </section>
       </section>
     </main>
@@ -640,7 +641,13 @@ const PROJECT_NAV: NavGroup[] = [
 // Standard users (Viewer role) get their OWN focused surface — tasks, targets,
 // completion and leave — never the team-wide/admin desks.
 const MY_NAV: NavGroup[] = [
-  { label: "My Work", items: [["mywork", "My Work", CalendarDays]] }
+  {
+    label: "My Work",
+    items: [
+      ["mywork", "My Work", CalendarDays],
+      ["mydash", "My Dashboard", Gauge]
+    ]
+  }
 ];
 
 // Role-safe navigation: hide what a role cannot use so nobody clicks into 403s.
@@ -3355,6 +3362,319 @@ function ColorLegend() {
 
 // The standard-user home: their OWN tasks, targets, completion and leave —
 // nothing team-wide, nothing admin.
+// ── My task calendar (Phase 10 P6) ──────────────────────────────────────────
+// The signed-in person's assigned work on a real calendar: month / week / day
+// views with free prev/next navigation (covers "one month back, current, one
+// ahead" and beyond). Read-only — statuses derive client-side so FUTURE tasks
+// read as "upcoming", never "behind". Click a task → full details.
+type MyCalRow = {
+  id: string; day: string; project_id: string; hours: number;
+  link_type_names: string[]; expected_links: number; actual_links: number;
+  completion_pct: number | null; excused: boolean; excuse_reason: string | null;
+  priority: string | null; note: string | null;
+};
+
+function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; cls: string } {
+  if (r.excused) return { key: "excused", label: r.excuse_reason || "Excused", cls: "border-line bg-field text-muted" };
+  if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-ocean/40 bg-ocean/10 text-ocean" };
+  if (r.day > today) return { key: "upcoming", label: "Upcoming", cls: "border-line bg-panel text-ink" };
+  if (r.day === today) return { key: "today", label: "In progress", cls: "border-ember/40 bg-ember/10 text-ember" };
+  return { key: "missed", label: "Behind", cls: "border-danger/40 bg-danger/10 text-danger" };
+}
+
+function MyTaskCalendar({ token }: { token: string | null }) {
+  const fmtIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const today = fmtIso(new Date());
+  const [mode, setMode] = useState<"month" | "week" | "day">("month");
+  const [anchor, setAnchor] = useState(() => new Date());
+  const [openTask, setOpenTask] = useState<MyCalRow | null>(null);
+
+  // Visible window per mode (month view fetches the whole month; ≤ 31 days/call).
+  const range = useMemo(() => {
+    const a = new Date(anchor);
+    if (mode === "month") {
+      const from = new Date(a.getFullYear(), a.getMonth(), 1);
+      const to = new Date(a.getFullYear(), a.getMonth() + 1, 0);
+      return { from: fmtIso(from), to: fmtIso(to) };
+    }
+    if (mode === "week") {
+      const mon = new Date(a);
+      mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+      const sun = new Date(mon);
+      sun.setDate(sun.getDate() + 6);
+      return { from: fmtIso(mon), to: fmtIso(sun) };
+    }
+    return { from: fmtIso(a), to: fmtIso(a) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor, mode]);
+
+  const me = useQuery({
+    queryKey: ["my-cal", token, range.from, range.to],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ labels: string[]; rows: MyCalRow[]; leaves: Array<{ start_date: string; end_date: string; status: string }> }>(
+        `/workforce/me?date_from=${range.from}&date_to=${range.to}`,
+        { token }
+      )
+  });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const projectName = (id: string) => (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+  const rows = me.data?.rows || [];
+  const byDay = useMemo(() => {
+    const m: Record<string, MyCalRow[]> = {};
+    for (const r of rows) (m[r.day] ||= []).push(r);
+    return m;
+  }, [rows]);
+  const onLeave = (day: string) =>
+    (me.data?.leaves || []).some((l) => l.status === "approved" && l.start_date <= day && day <= l.end_date);
+
+  const step = (dir: number) => {
+    const a = new Date(anchor);
+    if (mode === "month") a.setMonth(a.getMonth() + dir);
+    else a.setDate(a.getDate() + dir * (mode === "week" ? 7 : 1));
+    setAnchor(a);
+  };
+  const title =
+    mode === "month"
+      ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
+      : mode === "week"
+      ? `Week of ${formatDay(range.from)}`
+      : formatDay(range.from);
+
+  // Month grid: Monday-first with leading offset padding.
+  const monthCells = useMemo(() => {
+    if (mode !== "month") return [];
+    const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const daysIn = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).getDate();
+    const offset = (first.getDay() + 6) % 7;
+    const cells: Array<string | null> = Array(offset).fill(null);
+    for (let d = 1; d <= daysIn; d++)
+      cells.push(fmtIso(new Date(anchor.getFullYear(), anchor.getMonth(), d)));
+    return cells;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor, mode]);
+
+  const chip = (r: MyCalRow, full = false) => {
+    const st = myCalStatus(r, today);
+    return (
+      <button
+        key={r.id}
+        onClick={() => setOpenTask(r)}
+        title={`${projectName(r.project_id)} — ${st.label}. Click for details.`}
+        className={clsx(
+          "block w-full truncate rounded border px-1 py-0.5 text-left font-medium leading-tight",
+          full ? "text-xs" : "text-[9px]",
+          st.cls
+        )}
+      >
+        {r.priority === "high" ? "⬤ " : ""}
+        {projectName(r.project_id)}
+        {full ? ` · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"} · ${r.actual_links}/${r.expected_links}` : ""}
+      </button>
+    );
+  };
+
+  const weekDays = useMemo(() => {
+    if (mode !== "week") return [];
+    const out: string[] = [];
+    const d = new Date(`${range.from}T00:00:00`);
+    for (let i = 0; i < 7; i++) {
+      out.push(fmtIso(d));
+      d.setDate(d.getDate() + 1);
+    }
+    return out;
+  }, [mode, range.from]);
+
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-ink">My calendar</h3>
+          <HelpTip text="All your assigned work — past, current and upcoming. Colors: green = done, orange = today, red = behind (past target not reached), plain = upcoming, grey = excused/leave. Click any task for full details." />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-lg border border-line" role="group">
+            {(["day", "week", "month"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={clsx(
+                  "h-8 px-2.5 text-xs font-medium capitalize transition-colors",
+                  mode === m ? "bg-ocean text-white dark:text-slate-900" : "bg-panel text-muted hover:bg-field"
+                )}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => step(-1)} className="h-8 rounded-lg border border-line px-2 text-sm hover:bg-field">‹</button>
+          <span className="min-w-[130px] text-center text-sm font-semibold text-ink">{title}</span>
+          <button onClick={() => step(1)} className="h-8 rounded-lg border border-line px-2 text-sm hover:bg-field">›</button>
+          <button onClick={() => setAnchor(new Date())} className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium hover:bg-field">
+            Today
+          </button>
+        </div>
+      </div>
+      <div className="p-3">
+        {me.isLoading ? (
+          <div className="flex justify-center p-6"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+        ) : mode === "month" ? (
+          <>
+            <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-muted">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+                <span key={d}>{d}</span>
+              ))}
+            </div>
+            <div className="mt-1 grid grid-cols-7 gap-1">
+              {monthCells.map((day, i) =>
+                day === null ? (
+                  <div key={`pad-${i}`} />
+                ) : (
+                  <div
+                    key={day}
+                    className={clsx(
+                      "min-h-[64px] rounded-lg border p-1",
+                      day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className={clsx("text-[10px] font-semibold", day === today ? "text-ocean" : "text-muted")}>
+                        {Number(day.slice(8))}
+                      </span>
+                      {onLeave(day) ? (
+                        <span className="rounded bg-plum/15 px-1 text-[8px] font-semibold text-plum">Leave</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-0.5 space-y-0.5">
+                      {(byDay[day] || []).slice(0, 3).map((r) => chip(r))}
+                      {(byDay[day] || []).length > 3 ? (
+                        <button
+                          onClick={() => { setMode("day"); setAnchor(new Date(`${day}T00:00:00`)); }}
+                          className="block w-full rounded px-1 text-left text-[9px] text-muted hover:text-ink"
+                        >
+                          +{(byDay[day] || []).length - 3} more
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </>
+        ) : mode === "week" ? (
+          <div className="grid gap-1 sm:grid-cols-7">
+            {weekDays.map((day) => (
+              <div key={day} className={clsx("min-h-[90px] rounded-lg border p-1.5", day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel")}>
+                <div className="flex items-center justify-between">
+                  <span className={clsx("text-[10px] font-semibold", day === today ? "text-ocean" : "text-muted")}>{formatDay(day)}</span>
+                  {onLeave(day) ? <span className="rounded bg-plum/15 px-1 text-[8px] font-semibold text-plum">Leave</span> : null}
+                </div>
+                <div className="mt-1 space-y-1">{(byDay[day] || []).map((r) => chip(r))}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {(byDay[range.from] || []).map((r) => chip(r, true))}
+            {!(byDay[range.from] || []).length ? <Empty label="Nothing planned on this day." /> : null}
+          </div>
+        )}
+        {!me.isLoading && mode !== "day" && !rows.length ? (
+          <p className="mt-2 text-center text-sm text-muted">No tasks in this {mode}.</p>
+        ) : null}
+      </div>
+      {openTask ? (
+        <div className="border-t border-line bg-field/40 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-ink">{projectName(openTask.project_id)}</span>
+            <span className={clsx("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
+              openTask.priority === "high" ? "bg-danger/10 text-danger" : openTask.priority === "low" ? "bg-field text-muted" : "bg-ember/10 text-ember")}>
+              {openTask.priority || "medium"} priority
+            </span>
+            <span className={clsx("rounded px-1.5 py-0.5 text-[10px] font-semibold", myCalStatus(openTask, today).cls)}>
+              {myCalStatus(openTask, today).label}
+            </span>
+            <button onClick={() => setOpenTask(null)} className="ml-auto text-xs text-muted hover:text-ink">Close ×</button>
+          </div>
+          <div className="mt-1.5 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+            <span className="text-muted">Date <span className="float-right text-ink">{formatDay(openTask.day)}</span></span>
+            <span className="text-muted">Hours <span className="float-right text-ink">{openTask.hours}h</span></span>
+            <span className="text-muted">Link types <span className="float-right text-ink">{openTask.link_type_names.map(linkTypeLabel).join(", ") || "Any"}</span></span>
+            <span className="text-muted">Target <span className="float-right text-ink">{openTask.actual_links} / {openTask.expected_links} links{openTask.completion_pct != null ? ` (${openTask.completion_pct}%)` : ""}</span></span>
+          </div>
+          {openTask.note ? <p className="mt-1 text-xs text-muted">📝 {openTask.note}</p> : null}
+          {openTask.excused ? <p className="mt-1 text-xs text-muted">Excused: {openTask.excuse_reason}</p> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+// Viewer "My Dashboard": the admin person-dashboard scoped to the signed-in
+// person (backend self-scopes via visible_labels; UI hides admin mutations).
+function MySelfDashboard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const [label, setLabel] = useState("");
+  const me = useQuery({
+    queryKey: ["my-labels", token],
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      return api<{ labels: string[] }>(`/workforce/me?date_from=${today}&date_to=${today}`, { token });
+    }
+  });
+  const labels = me.data?.labels || [];
+  const active = label || labels[0] || "";
+  if (me.isLoading) {
+    return <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>;
+  }
+  if (!labels.length) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
+        <Gauge className="mx-auto mb-3 h-8 w-8 text-muted" />
+        <h2 className="text-base font-semibold text-ink">No dashboard yet</h2>
+        <p className="mx-auto mt-1 max-w-md text-sm text-muted">
+          Your account isn&apos;t linked to a team member name, so there are no stats to show.
+          Ask your admin to link you on the Employees desk.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {labels.length > 1 ? (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-muted">Working as:</span>
+          {labels.map((l) => (
+            <button
+              key={l}
+              onClick={() => setLabel(l)}
+              className={clsx(
+                "rounded-full border px-3 py-1 text-xs font-medium",
+                l === active ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+              )}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <UserDashboard
+        token={token}
+        userLabel={active}
+        selfView
+        onClose={() => undefined}
+        onOpenBacklinks={() => onNotice("Ask a manager to open the full Backlinks list for you.")}
+        onNotice={onNotice}
+      />
+    </div>
+  );
+}
+
 function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   const fmtIso = (d: Date) =>
@@ -3514,6 +3834,9 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
           {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
         </div>
       </section>
+
+      {/* Full task calendar: past, current and upcoming months (day/week/month). */}
+      <MyTaskCalendar token={token} />
 
       {/* Week at a glance + the company working-days calendar */}
       <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
@@ -5321,7 +5644,8 @@ function UserDashboard({
   onClose,
   onOpenBacklinks,
   onNotice,
-  onPlanWork
+  onPlanWork,
+  selfView = false
 }: {
   token: string | null;
   userLabel: string;
@@ -5330,6 +5654,10 @@ function UserDashboard({
   onOpenBacklinks: (filters: Record<string, string>) => void;
   onNotice: (text: string) => void;
   onPlanWork?: () => void;
+  // Viewer "My Dashboard": same KPIs/charts scoped to the signed-in person,
+  // with every admin mutation (quick-plan, mark-leave, rate editing) hidden.
+  // The backend enforces self-scoping regardless (visible_labels).
+  selfView?: boolean;
 }) {
   const queryClient = useQueryClient();
   // Default to All time — a person's dashboard should show their whole record,
@@ -5466,6 +5794,7 @@ function UserDashboard({
   const [qTarget, setQTarget] = useState("");
   const [qNote, setQNote] = useState("");
   const openQuick = (day: string, row?: DayRow) => {
+    if (selfView) return; // read-only calendar for the person's own view
     setQuick({ day, row });
     setQProject(row?.project_id || projFilter || "");
     setQHours(row ? String(row.hours) : "2");
@@ -5580,15 +5909,19 @@ function UserDashboard({
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={onClose}
-          className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
-        >
-          ← All people
-        </button>
+        {!selfView ? (
+          <button
+            onClick={onClose}
+            className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            ← All people
+          </button>
+        ) : null}
         <div>
-          <h2 className="text-base font-semibold text-ink">{userLabel}</h2>
-          <p className="text-xs text-muted">User dashboard — hours, targets, production, quality</p>
+          <h2 className="text-base font-semibold text-ink">{selfView ? "My Dashboard" : userLabel}</h2>
+          <p className="text-xs text-muted">
+            {selfView ? "Your hours, targets, production and quality" : "User dashboard — hours, targets, production, quality"}
+          </p>
         </div>
         {projFilter ? (
           <span className="flex items-center gap-1 rounded-full border border-ocean/40 bg-ocean/10 px-2.5 py-1 text-xs font-medium text-ocean">
@@ -5953,35 +6286,41 @@ function UserDashboard({
                               {ov.links_per_hour}/h personal
                             </span>
                             <span className="text-xs text-muted line-through">{g.links_per_hour}/h global</span>
-                            <button
-                              onClick={() => removeRate.mutate(ov.link_type_name)}
-                              disabled={removeRate.isPending}
-                              title="Drop the personal rate — the global rate applies again"
-                              className="text-xs text-muted hover:text-danger hover:underline disabled:opacity-40"
-                            >
-                              Remove
-                            </button>
+                            {!selfView ? (
+                              <button
+                                onClick={() => removeRate.mutate(ov.link_type_name)}
+                                disabled={removeRate.isPending}
+                                title="Drop the personal rate — the global rate applies again"
+                                className="text-xs text-muted hover:text-danger hover:underline disabled:opacity-40"
+                              >
+                                Remove
+                              </button>
+                            ) : null}
                           </>
                         ) : (
                           <span className="text-xs text-muted">{g.links_per_hour}/h global</span>
                         )}
-                        <input
-                          type="number"
-                          min={0.1}
-                          step={0.5}
-                          value={draft}
-                          onChange={(e) => setRateDrafts((x) => ({ ...x, [g.link_type_name]: e.target.value }))}
-                          placeholder={ov ? String(ov.links_per_hour) : "own rate"}
-                          title={`Personal ${linkTypeLabel(g.link_type_name)} rate for ${userLabel}`}
-                          className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
-                        />
-                        <button
-                          onClick={() => saveRate.mutate({ link_type_name: g.link_type_name, links_per_hour: Number(draft) })}
-                          disabled={saveRate.isPending || !(Number(draft) > 0)}
-                          className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
-                        >
-                          Save
-                        </button>
+                        {!selfView ? (
+                          <>
+                            <input
+                              type="number"
+                              min={0.1}
+                              step={0.5}
+                              value={draft}
+                              onChange={(e) => setRateDrafts((x) => ({ ...x, [g.link_type_name]: e.target.value }))}
+                              placeholder={ov ? String(ov.links_per_hour) : "own rate"}
+                              title={`Personal ${linkTypeLabel(g.link_type_name)} rate for ${userLabel}`}
+                              className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
+                            />
+                            <button
+                              onClick={() => saveRate.mutate({ link_type_name: g.link_type_name, links_per_hour: Number(draft) })}
+                              disabled={saveRate.isPending || !(Number(draft) > 0)}
+                              className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field disabled:opacity-40"
+                            >
+                              Save
+                            </button>
+                          </>
+                        ) : null}
                       </span>
                     </div>
                   );
@@ -6040,7 +6379,7 @@ function UserDashboard({
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-semibold text-muted">{Number(cd.day.slice(8))}</span>
                   <span className="flex items-center gap-0.5">
-                    {!onLeave && cd.is_working ? (
+                    {!selfView && !onLeave && cd.is_working ? (
                       <button
                         onClick={() => markLeave.mutate(cd.day)}
                         title={`Mark ${cd.day} as approved leave for ${userLabel}`}
@@ -6049,13 +6388,15 @@ function UserDashboard({
                         lv
                       </button>
                     ) : null}
-                    <button
-                      onClick={() => openQuick(cd.day)}
-                      title={`Plan work for ${userLabel} on ${cd.day}`}
-                      className="rounded px-1 text-[11px] text-muted hover:bg-ocean/10 hover:text-ocean"
-                    >
-                      +
-                    </button>
+                    {!selfView ? (
+                      <button
+                        onClick={() => openQuick(cd.day)}
+                        title={`Plan work for ${userLabel} on ${cd.day}`}
+                        className="rounded px-1 text-[11px] text-muted hover:bg-ocean/10 hover:text-ocean"
+                      >
+                        +
+                      </button>
+                    ) : null}
                   </span>
                 </div>
                 {onLeave ? (
