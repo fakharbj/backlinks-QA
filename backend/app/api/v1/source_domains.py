@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import date as _dt_date
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -261,6 +261,60 @@ async def import_source_domains(
         "existing": int(c.get("existing", 0)),
         "duplicate": int(c.get("duplicate", 0)),
         "message": f"Review batch #B-{batch.seq} created — approve domains to add them to the catalog",
+    }
+
+
+@router.post("/import-file", status_code=status.HTTP_202_ACCEPTED)
+async def import_source_domains_file(
+    db: DbSession,
+    file: UploadFile = File(...),
+    label: str | None = Form(default=None),
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> dict:
+    """Stage a CSV/XLSX of market domains into a review batch — the file-upload
+    twin of POST /import. The domain column is auto-detected by header
+    (domain/url/website/site/source) with the first column as the fallback; every
+    other pipeline step (in-file dedup, catalog-presence check, metric checks,
+    approve → Opportunity/catalog) is identical to the paste path."""
+    from app.services import import_parse
+
+    raw = await file.read()
+    name = (file.filename or "").lower()
+    if name.endswith((".xlsx", ".xls")):
+        headers, rows = import_parse.parse_xlsx(raw)
+    else:
+        headers, rows = import_parse.parse_csv(raw)
+    if not rows:
+        raise ValidationAppError("The file has no data rows.")
+    wanted = ("domain", "url", "website", "site", "source")
+    col = next(
+        (h for h in headers if any(w in (h or "").strip().lower() for w in wanted)),
+        headers[0] if headers else None,
+    )
+    if col is None:
+        raise ValidationAppError("Couldn't find a domain column in the file.")
+    text_block = "\n".join(str(r.get(col) or "").strip() for r in rows if str(r.get(col) or "").strip())
+    if not text_block:
+        raise ValidationAppError(f'The "{col}" column is empty.')
+    batch = await batch_review_service.stage_domain_import(
+        db, ctx, text_block=text_block, label=label or (file.filename or "Domain file"),
+    )
+    await audit_service.record(
+        db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="batch", entity_id=batch.id,
+        summary=f"Staged domain import from file {file.filename} (#B-{batch.seq})",
+    )
+    await db.commit()
+    c = batch.counters or {}
+    return {
+        "batch_id": str(batch.id),
+        "seq": batch.seq,
+        "column_used": col,
+        "total": int((batch.totals or {}).get("total", 0)),
+        "new": int(c.get("new", 0)),
+        "existing": int(c.get("existing", 0)),
+        "duplicate": int(c.get("duplicate", 0)),
+        "message": f"Review batch #B-{batch.seq} created from {file.filename}",
     }
 
 

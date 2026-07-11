@@ -8626,6 +8626,22 @@ function DomainImportDesk({
     },
     onError: (err: Error) => onNotice(err.message)
   });
+  const uploadFile = useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return api<{ batch_id: string; seq: number; total: number; new: number; existing: number; duplicate: number; message: string; column_used: string }>(
+        "/source-domains/import-file",
+        { token, method: "POST", body: form }
+      );
+    },
+    onSuccess: (r) => {
+      setStaged(r);
+      onNotice(`${r.message} (domain column: ${r.column_used})`);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
 
   return (
     <section className="space-y-4">
@@ -8684,6 +8700,20 @@ function DomainImportDesk({
               <span className="text-xs text-muted">
                 URLs are reduced to their main domain (blog.example.com/page → example.com); repeats are collapsed.
               </span>
+              <label className="flex h-10 cursor-pointer items-center gap-2 rounded-md border border-line px-3 text-sm font-medium text-ink transition hover:bg-field">
+                {uploadFile.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                …or upload CSV / Excel
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls,.txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadFile.mutate(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
             </div>
           </div>
         </div>
