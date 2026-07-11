@@ -38,6 +38,7 @@ from app.models.link_type import LinkType  # noqa: F401
 from app.models.metric_history import MetricCheckHistory  # noqa: F401
 from app.models.project import Campaign, Project, ProjectMember, Vendor  # noqa: F401
 from app.models.project_settings import ProjectDomain, ProjectSettings  # noqa: F401
+from app.models.recommendation import DomainRecommendation  # noqa: F401
 from app.models.report import Report  # noqa: F401
 from app.models.scoring import ScoringParameter, ScoringRuleVersion  # noqa: F401
 from app.models.source_domain import SourceDomain  # noqa: F401

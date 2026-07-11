@@ -53,9 +53,11 @@ async def public_branding(db: AsyncSession) -> dict:
         )
     ).scalar_one_or_none()
     if primary is None:
-        return {"company_name": None, "logo_data_uri": None}
+        return {"company_name": None, "logo_data_uri": None, "announcement": None}
     value = await get_branding(db, primary.id)
     return {
         "company_name": value.get("company_name") or primary.name,
         "logo_data_uri": value.get("logo_data_uri") or None,
+        # Admin-controlled login-page banner (safe: admin-authored text only).
+        "announcement": (value.get("announcement") or "").strip() or None,
     }

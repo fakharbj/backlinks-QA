@@ -16,6 +16,7 @@ Permissions (all existing rbac perms — no new ones added):
 from __future__ import annotations
 
 import uuid
+from datetime import date as _dt_date
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
@@ -272,6 +273,124 @@ async def project_view(
     return await svc.project_view(
         db, ctx, project_id, limit=min(max(limit, 1), 1000), offset=max(offset, 0)
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Recommendations (Phase 10 P4) — literal paths, declared before /{domain_id}
+# ═══════════════════════════════════════════════════════════════════════════════
+class RecommendActionIn(BaseModel):
+    domain_key: str = Field(min_length=1, max_length=255)
+    status: str = Field(pattern="^(viewed|accepted|skipped)$")
+    project_id: uuid.UUID | None = None
+    assignment_id: uuid.UUID | None = None
+    recommended_to: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=300)
+
+
+class RecommendManualIn(BaseModel):
+    domain_key: str = Field(min_length=1, max_length=255)
+    user_label: str = Field(min_length=1, max_length=200)
+    project_id: uuid.UUID | None = None
+    assignment_id: uuid.UUID | None = None
+    link_type_name: str | None = Field(default=None, max_length=80)
+    priority: str | None = Field(default=None, pattern="^(high|medium|low)$")
+    due_date: _dt_date | None = None
+    reason: str | None = Field(default=None, max_length=300)
+    note: str | None = Field(default=None, max_length=300)
+
+
+@router.get("/recommend")
+async def recommend_browse(
+    ctx: AuthCtx, db: ReadSession, project_id: uuid.UUID,
+    link_types: str | None = None, limit: int = 20,
+) -> dict:
+    """The recommendation engine without a task: best unused, unblocked domains
+    for a project, optionally biased to link types (comma list)."""
+    from app.services import recommendation_service
+
+    lts = [p.strip() for p in (link_types or "").split(",") if p.strip()]
+    return await recommendation_service.suggest_for_scope(
+        db, ctx, project_id=project_id, link_types=lts, limit=min(max(limit, 1), 50)
+    )
+
+
+@router.get("/recommendations")
+async def list_domain_recommendations(
+    ctx: AuthCtx, db: ReadSession,
+    user_label: str | None = None, project_id: uuid.UUID | None = None,
+    status_filter: str | None = None, source: str | None = None,
+    limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    """Recommendation rows (auto + manual) with their view/accept/skip state.
+    Viewer-scoped to their own labels."""
+    from app.services import recommendation_service
+
+    return await recommendation_service.list_recommendations(
+        db, ctx, user_label=user_label, project_id=project_id,
+        status=status_filter, source=source, limit=limit, offset=offset,
+    )
+
+
+@router.get("/recommendations/export")
+async def export_domain_recommendations(
+    db: ReadSession, ctx: AuthContext = Depends(require(Permission.EXPORT_REPORTS)),
+    user_label: str | None = None, project_id: uuid.UUID | None = None,
+    status_filter: str | None = None, source: str | None = None,
+) -> StreamingResponse:
+    from app.services import recommendation_service
+
+    rows = await recommendation_service.list_recommendations(
+        db, ctx, user_label=user_label, project_id=project_id,
+        status=status_filter, source=source, limit=500,
+    )
+    headers = ["Domain", "Person", "Project", "Link type", "Source", "Status",
+               "Priority", "Due", "Reason", "Note", "Updated"]
+    data = [
+        [r["domain_key"], r["recommended_to"], r["project_id"], r["link_type_name"],
+         r["source"], r["status"], r["priority"], r["due_date"], r["reason"],
+         r["note"], r["updated_at"]]
+        for r in rows
+    ]
+    return _export_response("csv", headers, data, "domain-recommendations")
+
+
+@router.post("/recommendations/action")
+async def act_on_recommendation(
+    payload: RecommendActionIn, ctx: AuthCtx, db: DbSession
+) -> dict:
+    """The person acted on a suggestion: viewed / accepted / skipped."""
+    from app.services import recommendation_service
+
+    row = await recommendation_service.record_action(
+        db, ctx, domain_key=payload.domain_key, status=payload.status,
+        project_id=payload.project_id, assignment_id=payload.assignment_id,
+        recommended_to=payload.recommended_to, note=payload.note,
+    )
+    await db.commit()
+    return {"ok": True, "status": row.status}
+
+
+@router.post("/recommendations", status_code=status.HTTP_201_CREATED)
+async def create_manual_recommendation(
+    payload: RecommendManualIn, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> dict:
+    """Admin hand-picks a domain for a person (labeled MANUAL, audited)."""
+    from app.services import recommendation_service
+
+    row = await recommendation_service.recommend_manual(
+        db, ctx, domain_key=payload.domain_key, user_label=payload.user_label,
+        project_id=payload.project_id, assignment_id=payload.assignment_id,
+        link_type_name=payload.link_type_name, priority=payload.priority,
+        due_date=payload.due_date, reason=payload.reason, note=payload.note,
+    )
+    await audit_service.record(
+        db, action=AuditAction.CREATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="domain_recommendation", entity_id=row.id,
+        summary=f"Recommended {payload.domain_key} to {payload.user_label}",
+    )
+    await db.commit()
+    return {"ok": True, "id": str(row.id)}
 
 
 @router.get("/{domain_id}", response_model=SourceDomainDetailOut)

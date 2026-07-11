@@ -24,6 +24,7 @@ import {
   Layers,
   Lightbulb,
   Link2,
+  ClipboardCopy,
   Pencil,
   Loader2,
   LogOut,
@@ -445,19 +446,24 @@ export function WorkspaceApp() {
 }
 
 function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register" | "forgot" | "reset">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [fullName, setFullName] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
+  const [resetCode, setResetCode] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
 
-  // Public branding (company name + logo) — no auth required on this endpoint.
+  // Public branding (company name/logo/announcement) — no auth on this endpoint.
   const branding = useQuery({
     queryKey: ["branding"],
     queryFn: () =>
-      api<{ company_name: string | null; logo_data_uri: string | null }>("/auth/branding"),
+      api<{
+        company_name: string | null; logo_data_uri: string | null;
+        announcement?: string | null; smtp_ready?: boolean;
+      }>("/auth/branding"),
     staleTime: 300000
   });
 
@@ -476,6 +482,63 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
     onSuccess: onToken,
     onError: (err: Error) => setError(err.message)
   });
+  const forgot = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/auth/forgot-password", {
+        method: "POST", body: JSON.stringify({ email })
+      }),
+    onSuccess: () => {
+      setError("");
+      setInfo("If that account exists, a reset code is on its way — check the inbox, then paste the code below.");
+      setMode("reset");
+    },
+    onError: (err: Error) => setError(err.message)
+  });
+  const reset = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/auth/reset-password", {
+        method: "POST", body: JSON.stringify({ token: resetCode.trim(), new_password: password })
+      }),
+    onSuccess: (d) => {
+      setError("");
+      setInfo(d.message || "Password updated — sign in with your new password.");
+      setPassword("");
+      setResetCode("");
+      setMode("login");
+    },
+    onError: (err: Error) => setError(err.message)
+  });
+
+  const title =
+    mode === "login" ? "Sign in"
+    : mode === "register" ? "Create workspace"
+    : mode === "forgot" ? "Reset your password"
+    : "Enter your reset code";
+
+  const passwordField = (autoComplete: string, label = "Password") => (
+    <label className="block">
+      <span className="mb-1 block text-xs font-semibold uppercase text-muted">{label}</span>
+      <span className="relative block">
+        <input
+          type={showPw ? "text" : "password"}
+          name="password"
+          autoComplete={autoComplete}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="h-10 w-full rounded-md border border-line bg-panel px-3 pr-10 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+        />
+        <button
+          type="button"
+          onClick={() => setShowPw((v) => !v)}
+          title={showPw ? "Hide password" : "Show password"}
+          aria-label={showPw ? "Hide password" : "Show password"}
+          className="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded text-muted hover:bg-field hover:text-ink"
+        >
+          {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </span>
+    </label>
+  );
 
   return (
     <main className="grid min-h-screen place-items-center px-5">
@@ -483,9 +546,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
         <div className="mb-5 flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold uppercase text-ocean">Performance by Techsa</p>
-            <h1 className="mt-1 text-2xl font-semibold text-ink">
-              {mode === "login" ? "Sign in" : "Create workspace"}
-            </h1>
+            <h1 className="mt-1 text-2xl font-semibold text-ink">{title}</h1>
             {branding.data?.company_name ? (
               <p className="mt-1 text-sm text-muted">{branding.data.company_name}</p>
             ) : null}
@@ -501,59 +562,105 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
             <ShieldAlert className="h-7 w-7 text-plum" aria-hidden />
           )}
         </div>
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit.mutate();
-          }}
-        >
-          {mode === "register" ? (
-            <>
-              <Field label="Full name" value={fullName} onChange={setFullName} name="name" autoComplete="name" />
-              <Field label="Workspace" value={workspaceName} onChange={setWorkspaceName} name="organization" autoComplete="organization" />
-            </>
-          ) : null}
-          <Field label="Email" type="email" value={email} onChange={setEmail} name="email" autoComplete="email" />
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold uppercase text-muted">Password</span>
-            <span className="relative block">
-              <input
-                type={showPw ? "text" : "password"}
-                name="password"
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="h-10 w-full rounded-md border border-line bg-panel px-3 pr-10 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
-              />
+        {branding.data?.announcement ? (
+          <p className="mb-4 rounded-lg border border-ocean/30 bg-ocean/5 p-2.5 text-sm text-ink">
+            📢 {branding.data.announcement}
+          </p>
+        ) : null}
+        {info ? <p className="mb-3 rounded bg-ocean/10 p-2 text-sm text-ocean">{info}</p> : null}
+        {mode === "forgot" ? (
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (email.trim()) forgot.mutate();
+            }}
+          >
+            <p className="text-sm text-muted">
+              Enter your account email — we&apos;ll send a one-time reset code.
+            </p>
+            <Field label="Email" type="email" value={email} onChange={setEmail} name="email" autoComplete="email" />
+            {error ? <p className="rounded bg-danger/10 p-2 text-sm text-danger">{error}</p> : null}
+            <button
+              type="submit"
+              disabled={forgot.isPending || !email.trim()}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+            >
+              {forgot.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Email me a reset code
+            </button>
+            <button type="button" onClick={() => { setMode("login"); setError(""); setInfo(""); }}
+              className="w-full rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:bg-field">
+              Back to sign in
+            </button>
+          </form>
+        ) : mode === "reset" ? (
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (resetCode.trim() && password.length >= 8) reset.mutate();
+            }}
+          >
+            <Field label="Reset code (from the email)" value={resetCode} onChange={setResetCode} name="one-time-code" autoComplete="one-time-code" />
+            {passwordField("new-password", "New password (min 8 characters)")}
+            {error ? <p className="rounded bg-danger/10 p-2 text-sm text-danger">{error}</p> : null}
+            <button
+              type="submit"
+              disabled={reset.isPending || !resetCode.trim() || password.length < 8}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+            >
+              {reset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Set new password
+            </button>
+            <button type="button" onClick={() => { setMode("login"); setError(""); setInfo(""); }}
+              className="w-full rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:bg-field">
+              Back to sign in
+            </button>
+          </form>
+        ) : (
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit.mutate();
+            }}
+          >
+            {mode === "register" ? (
+              <>
+                <Field label="Full name" value={fullName} onChange={setFullName} name="name" autoComplete="name" />
+                <Field label="Workspace" value={workspaceName} onChange={setWorkspaceName} name="organization" autoComplete="organization" />
+              </>
+            ) : null}
+            <Field label="Email" type="email" value={email} onChange={setEmail} name="email" autoComplete="email" />
+            {passwordField(mode === "login" ? "current-password" : "new-password")}
+            {error ? <p className="rounded bg-danger/10 p-2 text-sm text-danger">{error}</p> : null}
+            <button
+              type="submit"
+              disabled={submit.isPending || !email.trim() || !password}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+            >
+              {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              {mode === "login" ? "Sign in" : "Create account"}
+            </button>
+            {mode === "login" && branding.data?.smtp_ready ? (
               <button
                 type="button"
-                onClick={() => setShowPw((v) => !v)}
-                title={showPw ? "Hide password" : "Show password"}
-                aria-label={showPw ? "Hide password" : "Show password"}
-                className="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded text-muted hover:bg-field hover:text-ink"
+                onClick={() => { setMode("forgot"); setError(""); setInfo(""); }}
+                className="w-full text-center text-sm font-medium text-ocean hover:underline"
               >
-                {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                Forgot password?
               </button>
-            </span>
-          </label>
-          {error ? <p className="rounded bg-danger/10 p-2 text-sm text-danger">{error}</p> : null}
-          <button
-            type="submit"
-            disabled={submit.isPending || !email.trim() || !password}
-            className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
-          >
-            {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-            {mode === "login" ? "Sign in" : "Create account"}
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode(mode === "login" ? "register" : "login")}
-            className="w-full rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:bg-field"
-          >
-            {mode === "login" ? "Create a new workspace" : "Use existing account"}
-          </button>
-        </form>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setMode(mode === "login" ? "register" : "login")}
+              className="w-full rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              {mode === "login" ? "Create a new workspace" : "Use existing account"}
+            </button>
+          </form>
+        )}
         <p className="mt-4 text-center text-[11px] font-medium tracking-wide text-muted">
           Powered by <span className="font-semibold text-ink">Techsa</span>
         </p>
@@ -2611,7 +2718,10 @@ function BacklinkDetailDrawer({
         <div className="sticky top-0 flex items-center justify-between border-b border-line bg-panel px-5 py-4">
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold text-ink">Backlink detail</h2>
-            <p className="truncate text-xs text-muted">{data?.source_page_url}</p>
+            <p className="flex items-center gap-1 text-xs text-muted">
+              <span className="min-w-0 truncate">{data?.source_page_url}</span>
+              {data?.source_page_url ? <CopyButton text={data.source_page_url} title="Copy source URL" /> : null}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -3609,9 +3719,96 @@ function MyTaskCalendar({ token }: { token: string | null }) {
           </div>
           {openTask.note ? <p className="mt-1 text-xs text-muted">📝 {openTask.note}</p> : null}
           {openTask.excused ? <p className="mt-1 text-xs text-muted">Excused: {openTask.excuse_reason}</p> : null}
+          <TaskDomainSuggestions token={token} assignmentId={openTask.id} projectId={openTask.project_id} />
         </div>
       ) : null}
     </section>
+  );
+}
+
+// Recommended source domains for ONE task (Phase 10 P4): filtered to the task's
+// project + link types, quality-ranked, robots-blocked/used/spammy excluded.
+// Copy the domain, or Accept/Skip — skips never come back.
+function TaskDomainSuggestions({
+  token,
+  assignmentId,
+  projectId
+}: {
+  token: string | null;
+  assignmentId: string;
+  projectId: string;
+}) {
+  const queryClient = useQueryClient();
+  type Suggestion = {
+    domain_key: string; da: number | null; pa: number | null; spam_score: number | null;
+    semrush_as: number | null; robots_band: string | null; qualified_pct: number | null;
+    link_type_match: boolean; reasons: string[];
+  };
+  const sugg = useQuery({
+    queryKey: ["task-domain-suggestions", token, assignmentId],
+    enabled: Boolean(token && assignmentId),
+    retry: false,
+    queryFn: () =>
+      api<{ items: Suggestion[]; link_types: string[] }>(
+        `/workforce/assignments/${assignmentId}/domain-suggestions?limit=8`,
+        { token }
+      )
+  });
+  const act = useMutation({
+    mutationFn: (v: { domain_key: string; status: "accepted" | "skipped" }) =>
+      api("/source-domains/recommendations/action", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          domain_key: v.domain_key, status: v.status,
+          project_id: projectId, assignment_id: assignmentId
+        })
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["task-domain-suggestions"] })
+  });
+  if (sugg.isError) return null;
+  const items = sugg.data?.items || [];
+  return (
+    <div className="mt-3 border-t border-line pt-2">
+      <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+        Suggested domains for this task
+        <HelpTip text="Source domains matching this task's link type and project, ranked by quality (DA, qualified %, low spam). Domains that block links (robots.txt), are spammy, or were already used in this project are excluded. Accept = you'll use it; Skip = don't show it again." />
+      </div>
+      {sugg.isLoading ? (
+        <div className="flex justify-center p-2"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      ) : !items.length ? (
+        <p className="text-xs text-muted">No suitable unused domains right now — ask your manager for a manual recommendation.</p>
+      ) : (
+        <div className="space-y-1">
+          {items.map((s) => (
+            <div key={s.domain_key} className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-panel px-2 py-1.5">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink" title={s.reasons.join(" · ")}>
+                {s.domain_key}
+              </span>
+              {s.da != null ? <MetricTag label="DA" value={s.da} /> : null}
+              {s.pa != null ? <MetricTag label="PA" value={s.pa} /> : null}
+              {s.spam_score != null ? <SpamTag value={s.spam_score} /> : null}
+              {s.link_type_match ? (
+                <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean">type match</span>
+              ) : null}
+              <CopyButton text={s.domain_key} title="Copy domain" />
+              <button
+                onClick={() => act.mutate({ domain_key: s.domain_key, status: "accepted" })}
+                className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
+              >
+                Accept
+              </button>
+              <button
+                onClick={() => act.mutate({ domain_key: s.domain_key, status: "skipped" })}
+                className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
+              >
+                Skip
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -5462,6 +5659,52 @@ function downloadCsv(
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// Copy text to the clipboard with an execCommand fallback (older browsers /
+// non-secure contexts). Used by every CopyButton across the app.
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// One-click copy with inline check feedback. Wrap any value users need to paste
+// elsewhere (URLs, domains, task/recommendation details).
+function CopyButton({ text, title = "Copy" }: { text: string; title?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async (e) => {
+        e.stopPropagation();
+        if (await copyToClipboard(text)) {
+          setDone(true);
+          setTimeout(() => setDone(false), 1200);
+        }
+      }}
+      title={title}
+      aria-label={title}
+      className="inline-flex shrink-0 items-center text-muted transition hover:text-ink"
+    >
+      {done ? <CheckCircle2 className="h-3.5 w-3.5 text-ocean" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
+    </button>
+  );
 }
 
 function ExportButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
@@ -10098,7 +10341,12 @@ function ProjectDomainsPanel({
                 onClick={() => onOpenBacklinks({ source_domain: r.domain_key })}
                 className="cursor-pointer hover:bg-field/60"
               >
-                <Td><span className="break-all text-ocean hover:underline">{r.domain_key}</span></Td>
+                <Td>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="break-all text-ocean hover:underline">{r.domain_key}</span>
+                    <CopyButton text={r.domain_key} title="Copy domain" />
+                  </span>
+                </Td>
                 <Td>{mode === "used" ? r.project_links : r.global_links}</Td>
                 <Td>{mode === "used" ? (r.indexed ?? 0) : (r.project_count ?? 0)}</Td>
                 <Td>{r.da != null ? <MetricTag label="DA" value={r.da} /> : "-"}</Td>
@@ -10865,6 +11113,7 @@ function SourceDomainRow({
               <ChevronDown className="h-4 w-4 shrink-0 text-muted" />
             )}
             <span className="font-medium text-ink">{d.domain_key}</span>
+            <CopyButton text={d.domain_key} title="Copy domain" />
             {d.origin === "imported" ? (
               <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-plum">
                 imported
@@ -11375,7 +11624,11 @@ function SourceDomainRules({
                       {applied.items.map((d) => (
                         <tr key={d.id}>
                           <Td>
-                            <span className="font-medium text-ink">{d.domain_key}</span>
+                            <span className="inline-flex items-center gap-1">
+                              <span className="font-medium text-ink">{d.domain_key}</span>
+                              <CopyButton text={d.domain_key} title="Copy domain" />
+                            </span>
+            <CopyButton text={d.domain_key} title="Copy domain" />
                           </Td>
                           <Td>{d.backlink_count}</Td>
                           <Td>{d.da ?? "—"}</Td>
@@ -12545,6 +12798,7 @@ function BrandingCard({
   const [companyName, setCompanyName] = useState("");
   const [companyDomain, setCompanyDomain] = useState("");
   const [logoDataUri, setLogoDataUri] = useState("");
+  const [announcement, setAnnouncement] = useState("");
 
   const settings = useQuery({
     queryKey: ["workspace-settings", token],
@@ -12557,12 +12811,13 @@ function BrandingCard({
   // Prefill the form from the stored "branding" setting once it loads.
   useEffect(() => {
     const branding = settings.data?.find((s) => s.key === "branding")?.value as
-      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null }
+      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null; announcement?: string | null }
       | undefined;
     if (branding) {
       setCompanyName(branding.company_name || "");
       setCompanyDomain(branding.company_domain || "");
       setLogoDataUri(branding.logo_data_uri || "");
+      setAnnouncement(branding.announcement || "");
     }
   }, [settings.data]);
 
@@ -12593,7 +12848,8 @@ function BrandingCard({
           value: {
             company_name: companyName.trim() || null,
             company_domain: companyDomain.trim() || null,
-            logo_data_uri: logoDataUri || null
+            logo_data_uri: logoDataUri || null,
+            announcement: announcement.trim() || null
           },
           is_secret: false
         })
@@ -12644,6 +12900,19 @@ function BrandingCard({
               placeholder="techsa.com — used for auto-created user emails"
               value={companyDomain}
               onChange={(event) => setCompanyDomain(event.target.value)}
+            />
+          </label>
+          <label className="block flex-1 min-w-[260px]">
+            <span className="mb-1 flex items-center gap-1 text-xs font-semibold uppercase text-muted">
+              Login-page announcement
+              <HelpTip text="Optional one-liner shown to everyone on the sign-in page (e.g. maintenance notice, welcome message). Leave empty to hide." />
+            </span>
+            <input
+              className="h-9 w-full rounded-md border border-line bg-panel px-3 text-sm"
+              placeholder="e.g. Maintenance window Sunday 02:00–03:00 UTC"
+              maxLength={200}
+              value={announcement}
+              onChange={(event) => setAnnouncement(event.target.value)}
             />
           </label>
         </div>
@@ -16274,7 +16543,12 @@ function Td({ children }: { children: React.ReactNode }) {
 }
 
 function Url({ value }: { value: string }) {
-  return <div className="max-w-[330px] truncate font-medium text-ink" title={value}>{value}</div>;
+  return (
+    <div className="flex max-w-[330px] items-center gap-1">
+      <span className="min-w-0 truncate font-medium text-ink" title={value}>{value}</span>
+      <CopyButton text={value} title="Copy URL" />
+    </div>
+  );
 }
 
 // One-line date+time, e.g. "04 Jul, 10:32 PM" — never wraps.
@@ -16678,6 +16952,197 @@ function GmailAccountsCard({
   );
 }
 
+// ── Admin→user email composer (Phase 10 P8; SEND_EMAILS = Admin) ─────────────
+function EmailUsersCard({
+  token,
+  members,
+  projects,
+  onNotice
+}: {
+  token: string | null;
+  members: Array<{ user_id: string; email: string; full_name: string; role: string }>;
+  projects: Project[];
+  onNotice: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [roleTarget, setRoleTarget] = useState("");
+  const [projectTarget, setProjectTarget] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const statusQ = useQuery({
+    queryKey: ["email-status", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () => api<{ smtp_configured: boolean }>("/emails/status", { token })
+  });
+  const logQ = useQuery({
+    queryKey: ["email-log", token],
+    enabled: Boolean(token) && Boolean(statusQ.data),
+    retry: false,
+    queryFn: () =>
+      api<Array<{ id: string; recipient: string | null; recipient_email: string | null; subject: string; status: string; error: string | null; created_at: string | null; sent_at: string | null }>>(
+        "/emails/log?limit=50",
+        { token }
+      )
+  });
+  const templatesQ = useQuery({
+    queryKey: ["email-templates", token],
+    enabled: Boolean(token) && Boolean(statusQ.data),
+    retry: false,
+    queryFn: () => api<Array<{ name: string; subject: string; body: string }>>("/emails/templates", { token })
+  });
+  const send = useMutation({
+    mutationFn: () =>
+      api<{ queued: number }>("/emails/send", {
+        token,
+        method: "POST",
+        body: JSON.stringify({
+          user_ids: picked.size ? Array.from(picked) : null,
+          role: roleTarget || null,
+          project_id: projectTarget || null,
+          subject: subject.trim(),
+          body: body.trim()
+        })
+      }),
+    onSuccess: (d) => {
+      onNotice(`Queued ${d.queued} email${d.queued === 1 ? "" : "s"} — delivery status appears below.`);
+      setSubject("");
+      setBody("");
+      setPicked(new Set());
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["email-log"] }), 1500);
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const toggle = (id: string) =>
+    setPicked((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const recipientSummary = picked.size
+    ? `${picked.size} selected user${picked.size === 1 ? "" : "s"}`
+    : roleTarget
+    ? `every ${roleTarget}`
+    : projectTarget
+    ? `members of ${projects.find((p) => p.id === projectTarget)?.name || "the project"}`
+    : "no recipients yet";
+
+  if (statusQ.isError) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-6 text-center shadow-card">
+        <p className="text-sm text-muted">Emailing users is available to workspace admins only.</p>
+      </section>
+    );
+  }
+  if (statusQ.data && !statusQ.data.smtp_configured) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-6 shadow-card">
+        <h3 className="text-base font-semibold text-ink">Email is not set up yet</h3>
+        <p className="mt-1 max-w-xl text-sm text-muted">
+          To email your team from here, add the SMTP settings (SMTP_HOST, SMTP_PORT, SMTP_USER,
+          SMTP_PASSWORD, SMTP_FROM) to the server&apos;s .env and restart. Everything else is ready —
+          the composer, per-recipient delivery log and templates unlock automatically.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="Email users" />
+        <div className="grid gap-4 p-4 lg:grid-cols-[300px_1fr]">
+          <div>
+            <div className="mb-1 text-xs font-semibold uppercase text-muted">Recipients</div>
+            <div className="max-h-[260px] space-y-1 overflow-y-auto rounded-lg border border-line p-2">
+              {members.map((m) => (
+                <label key={m.user_id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-field">
+                  <input type="checkbox" checked={picked.has(m.user_id)} onChange={() => toggle(m.user_id)} />
+                  <span className="min-w-0 flex-1 truncate">{m.full_name}</span>
+                  <span className="text-[10px] uppercase text-muted">{m.role}</span>
+                </label>
+              ))}
+            </div>
+            <div className="mt-2 space-y-2">
+              <select value={roleTarget} onChange={(e) => { setRoleTarget(e.target.value); if (e.target.value) setPicked(new Set()); }}
+                className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm">
+                <option value="">…or a whole role</option>
+                {["admin", "manager", "qa", "viewer"].map((r) => <option key={r} value={r}>Every {r}</option>)}
+              </select>
+              <SearchSelect
+                value={projectTarget}
+                onChange={(v) => { setProjectTarget(v); if (v) setPicked(new Set()); }}
+                options={projects.map((p) => ({ value: p.id, label: p.name }))}
+                placeholder="…or a project's members"
+                width="w-full"
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            {templatesQ.data?.length ? (
+              <select
+                onChange={(e) => {
+                  const t = (templatesQ.data || []).find((x) => x.name === e.target.value);
+                  if (t) { setSubject(t.subject); setBody(t.body); }
+                }}
+                className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+                defaultValue=""
+              >
+                <option value="" disabled>Use a template…</option>
+                {templatesQ.data.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
+              </select>
+            ) : null}
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={200}
+              placeholder="Subject" className="h-10 w-full rounded-lg border border-line bg-panel px-3 text-sm" />
+            <textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={5000} rows={7}
+              placeholder={"Message…\n\nPlaceholders: {{full_name}}, {{email}}, {{company}}"}
+              className="w-full rounded-lg border border-line bg-panel p-3 text-sm" />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-muted">Sending to: <span className="font-semibold text-ink">{recipientSummary}</span></span>
+              <button
+                onClick={() => {
+                  if (window.confirm(`Send this email to ${recipientSummary}?`)) send.mutate();
+                }}
+                disabled={send.isPending || !subject.trim() || !body.trim() || (!picked.size && !roleTarget && !projectTarget)}
+                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50 dark:text-slate-900"
+              >
+                {send.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Send email
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <SectionTitle title="Delivery log" />
+        <table className="w-full text-left text-sm">
+          <thead className="bg-field text-xs uppercase text-muted">
+            <tr><Th>To</Th><Th>Subject</Th><Th>Status</Th><Th>When</Th></tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {(logQ.data || []).map((r) => (
+              <tr key={r.id}>
+                <Td>{r.recipient || "—"} <span className="text-xs text-muted">{r.recipient_email}</span></Td>
+                <Td><span className="line-clamp-1">{r.subject}</span></Td>
+                <Td>
+                  <span className={clsx("rounded px-1.5 py-0.5 text-xs font-semibold",
+                    r.status === "sent" ? "bg-ocean/10 text-ocean" : r.status === "failed" ? "bg-danger/10 text-danger" : "bg-field text-muted")}>
+                    {r.status}
+                  </span>
+                  {r.error ? <span className="ml-2 text-xs text-danger">{r.error.slice(0, 60)}</span> : null}
+                </Td>
+                <Td>{formatDate(r.sent_at || r.created_at)}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!logQ.data?.length ? <Empty label="No emails sent yet." /> : null}
+      </section>
+    </div>
+  );
+}
+
 function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
@@ -16685,7 +17150,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [role, setRole] = useState<Role>("viewer");
   const [password, setPassword] = useState("");
   // One desk, two sections: workspace accounts vs sheet-employee mapping.
-  const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail">("members");
+  const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail" | "email">("members");
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -16828,9 +17293,19 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
         >
           Gmail accounts
         </button>
+        <button
+          onClick={() => setTeamTab("email")}
+          title="Email your team members (needs SMTP configured on the server)"
+          className={clsx("px-2.5 py-1 transition", teamTab === "email" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+        >
+          Email users
+        </button>
       </span>
       {teamTab === "gmail" ? (
         <GmailAccountsCard token={token} members={members.data || []} projects={projectsQ.data || []} onNotice={onNotice} />
+      ) : null}
+      {teamTab === "email" ? (
+        <EmailUsersCard token={token} members={members.data || []} projects={projectsQ.data || []} onNotice={onNotice} />
       ) : null}
       {teamTab === "members" ? (<>
       <section className="rounded-xl border border-line bg-panel shadow-card">

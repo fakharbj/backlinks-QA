@@ -223,6 +223,19 @@ async def my_work(
     return await workforce_service.my_work(db, ctx, date_from=date_from, date_to=date_to)
 
 
+@router.get("/assignments/{assignment_id}/domain-suggestions")
+async def assignment_domain_suggestions(
+    assignment_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    limit: int = Query(20, ge=1, le=50),
+) -> dict:
+    """Source domains recommended for THIS task (project + link types + quality +
+    robots filters; blocked/used/spammy excluded). Self-scoped: viewers can only
+    ask about their own assignments."""
+    from app.services import recommendation_service
+
+    return await recommendation_service.suggest_for_task(db, ctx, assignment_id, limit=limit)
+
+
 @router.delete("/assignments/{assignment_id}", response_model=Message)
 async def remove_assignment(
     assignment_id: uuid.UUID, db: DbSession,

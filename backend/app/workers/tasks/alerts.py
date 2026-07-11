@@ -204,3 +204,52 @@ def _secret(config: dict[str, Any], key: str) -> str | None:
 )
 def dispatch_notification(self, notification_id: str) -> dict:
     return run_async(_dispatch_async(uuid.UUID(notification_id)))
+
+
+# ── Admin→user email (Phase 10 P8) ──────────────────────────────────────────────
+async def _send_admin_email_async(notification_id: uuid.UUID) -> dict:
+    """Send ONE queued admin email (Notification channel=EMAIL) via the workspace
+    SMTP settings and stamp sent/failed — same status log the alert pipeline uses."""
+    from app.integrations import mailer
+    from app.services import branding_service
+
+    async with session_scope() as s:
+        n = await s.get(Notification, notification_id)
+        if n is None or n.channel is not NotificationChannel.EMAIL:
+            return {"skipped": True}
+        to = (n.payload or {}).get("to")
+        if not to:
+            n.status = NotificationStatus.FAILED
+            n.error = "recipient email missing"
+            await s.commit()
+            return {"failed": True}
+        branding = await branding_service.get_branding(s, n.workspace_id)
+        company = branding.get("company_name") or "LinkSentinel"
+        try:
+            await asyncio.to_thread(
+                mailer.send_email,
+                to,
+                n.title,
+                n.body or "",
+                mailer.branded_html(company, n.body or ""),
+            )
+            n.status = NotificationStatus.SENT
+            n.sent_at = datetime.now(timezone.utc)
+            n.error = None
+        except Exception as exc:  # noqa: BLE001 - status row carries the failure
+            n.status = NotificationStatus.FAILED
+            n.error = repr(exc)[:500]
+        await s.commit()
+        return {"sent": n.status is NotificationStatus.SENT}
+
+
+@celery_app.task(
+    name="tasks.emails.send_admin_email",
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+)
+def send_admin_email(self, notification_id: str) -> dict:
+    return run_async(_send_admin_email_async(uuid.UUID(notification_id)))

@@ -44,6 +44,9 @@ class Permission(str, enum.Enum):
     # read
     VIEW_DASHBOARDS = "view_dashboards"
     EXPORT_REPORTS = "export_reports"
+    # admin→user email (Admin only: Role.ADMIN holds set(Permission), no other
+    # role's set lists it — add to a role's set to widen later)
+    SEND_EMAILS = "send_emails"
 
 
 # The §5 matrix, encoded once. ``QA`` may *suggest* alert config but not commit
