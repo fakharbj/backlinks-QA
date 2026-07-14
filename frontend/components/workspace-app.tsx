@@ -1803,6 +1803,9 @@ function Backlinks({
   const [noPlacementF, setNoPlacementF] = useState(() => fParam("no_placement") === "1");
   const [noUserF, setNoUserF] = useState(() => fParam("no_user") === "1");
   const [qaWaitF, setQaWaitF] = useState(() => fParam("qa_wait"));
+  // Project filter for the ALL-PROJECTS view (inside a project the scope is fixed
+  // by the top-left picker, so this select hides there).
+  const [projF, setProjF] = useState("");
   const [showScoreGuide, setShowScoreGuide] = useState(false);
   const [liveBatch, setLiveBatch] = useState<string | null>(null);
   const [sort, setSort] = useState("score");
@@ -1919,8 +1922,9 @@ function Backlinks({
     setNoPlacementF(false);
     setNoUserF(false);
     setQaWaitF("");
+    setProjF("");
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF, qaWaitF]
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF, qaWaitF, projF]
     .filter(Boolean).length + (orphanedF ? 1 : 0) + (linkMissingF ? 1 : 0) + (noPlacementF ? 1 : 0) + (noUserF ? 1 : 0);
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
@@ -1954,6 +1958,7 @@ function Backlinks({
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: "50", with_total: "true" });
     if (projectId) params.set("project_id", projectId);  // omit → all projects
+    else if (projF) params.set("project_id", projF);     // filter-panel pick
     if (status) params.set("status", status);
     if (dupFilter) params.set("duplicate_status", dupFilter);
     if (indexFilter) params.set("index_status", indexFilter);
@@ -1980,7 +1985,7 @@ function Backlinks({
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, noPlacementF, noUserF, qaWaitF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
+  }, [projectId, projF, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, noPlacementF, noUserF, qaWaitF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -2013,7 +2018,7 @@ function Backlinks({
   // The current grid filters, exactly as the recheck endpoint expects them —
   // "check what I'm looking at" uses the same whitelist as the list itself.
   const filterBody = () => ({
-    project_id: projectId || null,
+    project_id: projectId || projF || null,
     status: status || null,
     duplicate_status: dupFilter || null,
     index_status: indexFilter || null,
@@ -2421,6 +2426,15 @@ function Backlinks({
             selected={toks(status)}
             onChange={(v) => setStatus(v.join(","))}
           />
+          {!projectId ? (
+            <SearchSelect
+              value={projF}
+              onChange={setProjF}
+              options={(projectsQ.data || []).map((p) => ({ value: p.id, label: p.name }))}
+              placeholder="Project: all"
+              width="w-44"
+            />
+          ) : null}
           <FilterMultiSelect
             label="Rel"
             options={[
@@ -4839,6 +4853,107 @@ function MyQaSummary({ token, userLabel }: { token: string | null; userLabel: st
   );
 }
 
+// The person's own performance, visual (Enterprise: LARGE data-rich dashboard):
+// 90-day activity/quality trend + per-project and per-link-type breakdowns —
+// the same analytics an admin sees, self-scoped.
+function MyPerformancePanel({ token, userLabel }: { token: string | null; userLabel: string }) {
+  type Payload = {
+    weekly: Array<{ week: string; links: number; indexed: number; pass: number; fail: number; new_domains?: number }>;
+    by_type: Array<{ link_type: string; links: number; pass: number; indexed: number }>;
+    projects: Array<{ project_id: string; links: number; indexed: number; fail: number; hours: number; target: number }>;
+  };
+  const dash = useQuery({
+    queryKey: ["my-performance", token, userLabel],
+    enabled: Boolean(token && userLabel),
+    retry: false,
+    queryFn: () =>
+      api<Payload>(
+        `/performance/user-dashboard?user_label=${encodeURIComponent(userLabel)}&days=90&granularity=week`,
+        { token }
+      )
+  });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const projectName = (id: string) => (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+  const d = dash.data;
+  const weekly = (d?.weekly || []).filter((w) => w.links > 0 || w.pass > 0);
+  const types = (d?.by_type || []).slice(0, 6);
+  const projects = (d?.projects || []).filter((p) => p.links > 0).slice(0, 6);
+  const maxType = Math.max(1, ...types.map((t) => t.links));
+  if (dash.isError || (!dash.isLoading && !weekly.length && !projects.length)) return null;
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex items-center gap-1.5 border-b border-line p-3">
+        <h3 className="text-sm font-semibold text-ink">My performance — last 90 days</h3>
+        <HelpTip text="Your weekly output and quality, plus how your work splits across projects and link types. The full filterable version (any date range, comparisons, exports) lives in My Dashboard." />
+      </div>
+      {dash.isLoading ? (
+        <div className="flex justify-center p-6"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      ) : (
+        <div className="grid gap-4 p-4 xl:grid-cols-[1.3fr_1fr]">
+          <div>
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+              Links built &amp; qualified per week
+            </div>
+            {weekly.length >= 2 ? (
+              <TrendChart
+                labels={weekly.map((w) => w.week)}
+                labelFmt={weekRangeLabel}
+                series={[
+                  { name: "Links built", cssVar: "--ocean", values: weekly.map((w) => w.links) },
+                  { name: "Qualified", cssVar: "--plum", values: weekly.map((w) => w.pass) }
+                ]}
+              />
+            ) : (
+              <Empty label="Your trend appears after two weeks of activity." />
+            )}
+          </div>
+          <div className="space-y-4">
+            {projects.length ? (
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">By project</div>
+                <div className="space-y-1">
+                  {projects.map((p) => (
+                    <div key={p.project_id} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-field/40 px-2.5 py-1.5 text-sm">
+                      <span className="min-w-0 truncate font-medium text-ink">{projectName(p.project_id)}</span>
+                      <span className="flex shrink-0 items-center gap-2 text-xs text-muted">
+                        <span><span className="font-bold text-ink">{p.links}</span> links</span>
+                        <span className="text-ocean">{p.links ? Math.round((100 * p.indexed) / p.links) : 0}% indexed</span>
+                        {p.fail ? <span className="text-danger">{p.fail} failed</span> : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {types.length ? (
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">By link type</div>
+                <div className="space-y-1.5">
+                  {types.map((t) => (
+                    <div key={t.link_type} className="text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="min-w-0 truncate font-medium text-ink">{linkTypeLabel(t.link_type) || "(none)"}</span>
+                        <span className="shrink-0 text-muted">{t.links} · {t.links ? Math.round((100 * t.pass) / t.links) : 0}% qualified</span>
+                      </div>
+                      <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded bg-field">
+                        <div className="h-full rounded bg-ocean" style={{ width: `${(100 * t.links) / maxType}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // The person's latest links with live QA state — "what happened to what I built".
 function MyRecentLinks({ token, userLabel }: { token: string | null; userLabel: string }) {
   const links = useQuery({
@@ -5155,6 +5270,11 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
       {/* The person's own QA picture: links, quality split, avg score. */}
       {me.data?.labels.length ? (
         <MyQaSummary token={token} userLabel={me.data.labels[0]} />
+      ) : null}
+
+      {/* Visual performance: 90-day trend + project/link-type breakdowns. */}
+      {me.data?.labels.length ? (
+        <MyPerformancePanel token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
       {/* Domains a manager hand-picked (or the engine queued) for this person. */}
