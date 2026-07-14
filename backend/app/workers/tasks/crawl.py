@@ -390,16 +390,14 @@ async def _record_attempt(s, record, artifact, qa, job_id: str | None) -> None:
     triggered_by = None
     if job_id:
         job = await s.get(CrawlJob, uuid.UUID(job_id))
-        params = (job.params or {}) if job is not None else {}
-        src = str(params.get("source") or "")
-        if any(m in src for m in _MANUAL_SOURCES):
-            trigger = "manual"
-        raw_actor = params.get("user_id") or params.get("triggered_by")
-        if raw_actor:
-            try:
-                triggered_by = uuid.UUID(str(raw_actor))
-            except ValueError:
-                triggered_by = None
+        if job is not None:
+            # A user-created job carries triggered_by (recheck endpoints set it);
+            # the beat dispatcher's jobs don't — that's the auto/manual line.
+            if job.triggered_by is not None:
+                trigger = "manual"
+                triggered_by = job.triggered_by
+            elif any(m in str((job.params or {}).get("source") or "") for m in _MANUAL_SOURCES):
+                trigger = "manual"
     apis = []
     if artifact.egress == "proxy":
         apis.append("iproyal")
