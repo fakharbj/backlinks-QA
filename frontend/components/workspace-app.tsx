@@ -108,7 +108,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash" | "apiusage";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash" | "apiusage" | "myopps" | "guidance";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -440,6 +440,8 @@ export function WorkspaceApp() {
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
+          {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
+          {tab === "guidance" ? <GuidanceDesk token={token} /> : null}
         </section>
       </section>
     </main>
@@ -760,6 +762,13 @@ const MY_NAV: NavGroup[] = [
     items: [
       ["mywork", "My Work", CalendarDays],
       ["mydash", "My Dashboard", Gauge]
+    ]
+  },
+  {
+    label: "Grow",
+    items: [
+      ["myopps", "Opportunities", Globe],
+      ["guidance", "Guidance", Info]
     ]
   }
 ];
@@ -1791,6 +1800,7 @@ function Backlinks({
   const [noUserF, setNoUserF] = useState(() => fParam("no_user") === "1");
   const [qaWaitF, setQaWaitF] = useState(() => fParam("qa_wait"));
   const [showScoreGuide, setShowScoreGuide] = useState(false);
+  const [liveBatch, setLiveBatch] = useState<string | null>(null);
   const [sort, setSort] = useState("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState(() => fParam("search"));
@@ -2061,7 +2071,7 @@ function Backlinks({
   const [staleDays, setStaleDays] = useState("30");
   const recheck = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api<{ job_id: string; queued: number }>("/backlinks/recheck", {
+      api<{ job_id: string; queued: number; batch_id?: string | null }>("/backlinks/recheck", {
         token,
         method: "POST",
         body: JSON.stringify(body)
@@ -2069,9 +2079,10 @@ function Backlinks({
     onSuccess: (data) => {
       onNotice(
         data.queued
-          ? `QA check started — ${data.queued} link${data.queued === 1 ? "" : "s"} queued. Watch progress in Batches.`
+          ? `QA check started — ${data.queued} link${data.queued === 1 ? "" : "s"} queued.`
           : "Nothing to check in this scope — everything is already covered."
       );
+      if (data.queued && data.batch_id) setLiveBatch(data.batch_id);
       setPicked(new Set());
       queryClient.invalidateQueries({ queryKey: ["backlinks"] });
       queryClient.invalidateQueries({ queryKey: ["batches"] });
@@ -2301,6 +2312,14 @@ function Backlinks({
               Scoring guide
             </button>
             {showScoreGuide ? <ScoringGuideModal onClose={() => setShowScoreGuide(false)} /> : null}
+            {liveBatch ? (
+              <QaLiveProgress
+                token={token}
+                batchId={liveBatch}
+                onClose={() => setLiveBatch(null)}
+                onDone={() => queryClient.invalidateQueries({ queryKey: ["backlinks"] })}
+              />
+            ) : null}
             <button
               onClick={() => {
                 if (window.confirm(`Give every link in this ${activeFilterCount ? "filtered set" : projectId ? "project" : "workspace"} that has NO placement date a date, spread naturally across the existing placement window (so they don't all land on one day)? Links that already have a date are left untouched.`))
@@ -2819,7 +2838,22 @@ function BacklinkDetailDrawer({
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <KeyStat label="Status" node={<Status value={data.override_status || data.status} />} />
               <KeyStat label="Score" node={<span className="text-2xl font-semibold text-ink">{data.score ?? "-"}</span>} />
-              <KeyStat label="HTTP" node={<span className="font-semibold">{data.http_status ?? "-"}</span>} />
+              <KeyStat
+                label="HTTP"
+                node={
+                  data.latest_result?.found_in_browser && data.http_status && data.http_status >= 400 ? (
+                    <span
+                      className="font-semibold"
+                      title={`Automated requests get HTTP ${data.http_status} (bot protection), but the page opens normally in a real browser${data.latest_result?.browser_http_status ? ` (browser saw HTTP ${data.latest_result.browser_http_status})` : ""} — we verified the link in a rendered browser session.`}
+                    >
+                      <span className="text-muted line-through">{data.http_status}</span>{" "}
+                      <span className="text-ocean">✓ browser OK</span>
+                    </span>
+                  ) : (
+                    <span className="font-semibold">{data.http_status ?? "-"}</span>
+                  )
+                }
+              />
               <KeyStat label="Indexable" node={<span className="font-medium">{data.indexability ?? "-"}</span>} />
             </div>
 
@@ -3800,6 +3834,214 @@ function ApiUsageDesk({ token }: { token: string | null }) {
           )}
         </div>
       </section>
+    </section>
+  );
+}
+
+// ── User "Opportunities" desk (Enterprise): a CURATED, limited list ──────────
+// General opportunity domains for the person — deliberately capped at 15 so it
+// reads as a shortlist, not a database dump. Task-specific suggestions live on
+// each task; this is the browse-anytime view.
+function MyOpportunitiesDesk({ token }: { token: string | null }) {
+  const list = useQuery({
+    queryKey: ["my-opportunities", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () =>
+      api<{ items: SourceDomain[]; total: number }>("/source-domains?opportunity=true&limit=60", { token })
+  });
+  const rows = useMemo(() => {
+    const items = (list.data?.items || []).map((d) => ({ ...d, opp: opportunityScore(d) }));
+    items.sort((a, b) => b.opp - a.opp);
+    return items.slice(0, 15); // curated shortlist — quality over quantity
+  }, [list.data]);
+  const why = (d: SourceDomain & { opp: number }) => {
+    const bits: string[] = [];
+    if ((d.da ?? 0) >= 30) bits.push(`Strong authority (DA ${d.da})`);
+    if (d.backlink_count > 0 && d.qualified_pct >= 60) bits.push(`${Math.round(d.qualified_pct)}% of its links qualified before`);
+    if (d.backlink_count === 0) bits.push("Fresh domain — never used yet");
+    if ((d.spam_score ?? 10) < 5) bits.push("Very low spam risk");
+    if ((d.robots_band || "") === "allowed") bits.push("Open to crawlers");
+    bits.push("Available — nobody is working on it");
+    return bits;
+  };
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+          Opportunity domains
+          <HelpTip text="A curated shortlist of the BEST available websites right now — high quality, low risk, not assigned to anyone. Use them for your link-building work; your task cards also suggest domains matched to each specific task." />
+        </h2>
+        <p className="text-sm text-muted">The 15 best available websites, ranked — refreshed as domains get used or assigned.</p>
+      </div>
+      {list.isLoading ? (
+        <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+      ) : !rows.length ? (
+        <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
+          <Globe className="mx-auto mb-3 h-8 w-8 text-muted" />
+          <h3 className="text-base font-semibold text-ink">No opportunities right now</h3>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted">
+            Every suitable domain is either in use or assigned. Check back later, or ask your
+            manager to import more source domains.
+          </p>
+        </section>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {rows.map((d, i) => (
+            <div key={d.id} className={clsx(
+              "rounded-xl border p-4 shadow-card",
+              i === 0 ? "border-ocean/50 bg-ocean/5" : "border-line bg-panel"
+            )}>
+              <div className="flex items-start justify-between gap-2">
+                <span className="min-w-0">
+                  <span className="flex items-center gap-1.5">
+                    <span className="truncate text-sm font-semibold text-ink">{d.domain_key}</span>
+                    <CopyButton text={d.domain_key} title="Copy domain" />
+                  </span>
+                  {i === 0 ? <span className="mt-0.5 inline-block rounded bg-ocean px-1.5 py-0.5 text-[10px] font-bold uppercase text-white dark:text-slate-900">Best available</span> : null}
+                </span>
+                <span className={clsx(
+                  "shrink-0 rounded-lg px-2 py-1 text-sm font-bold",
+                  d.opp >= 70 ? "bg-ocean/10 text-ocean" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
+                )}>
+                  {d.opp}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <MetricTag label="DA" value={d.da} />
+                <MetricTag label="PA" value={d.pa} />
+                <SpamTag value={d.spam_score} />
+                <span className={clsx(
+                  "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                  (d.robots_band || "unknown") === "allowed" ? "bg-ocean/10 text-ocean" : "bg-field text-muted"
+                )}>
+                  robots: {(d.robots_band || "unknown").replaceAll("_", " ")}
+                </span>
+              </div>
+              <ul className="mt-2 space-y-0.5 text-xs text-muted">
+                {why(d).slice(0, 3).map((w, wi) => <li key={wi}>• {w}</li>)}
+              </ul>
+              <div className="mt-2 flex items-center justify-between text-[11px] text-muted">
+                <span>{d.backlink_count} links · {d.project_count} project{d.project_count === 1 ? "" : "s"}</span>
+                <span>{d.metrics_updated_at ? `checked ${formatDay(d.metrics_updated_at)}` : "not checked yet"}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── User "Guidance" desk (Enterprise §13): next steps + status + scoring ─────
+function GuidanceDesk({ token }: { token: string | null }) {
+  const [gTab, setGTab] = useState<"next" | "statuses" | "scoring">("next");
+  const me = useQuery({
+    queryKey: ["my-labels", token],
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      return api<{ labels: string[] }>(`/workforce/me?date_from=${today}&date_to=${today}`, { token });
+    }
+  });
+  const label = me.data?.labels?.[0] || "";
+  const dash = useQuery({
+    queryKey: ["guidance-stats", token, label],
+    enabled: Boolean(token && label),
+    retry: false,
+    queryFn: () =>
+      api<{ links: Record<string, number | null>; plan: Record<string, number | null> }>(
+        `/performance/user-dashboard?user_label=${encodeURIComponent(label)}&days=30`,
+        { token }
+      )
+  });
+  const k = dash.data?.links || {};
+  const n = (key: string) => Number(k[key] ?? 0);
+  // Personal, prioritized next steps derived from the person's own 30-day stats.
+  const tips: Array<{ title: string; body: string; tone: string }> = [];
+  if (n("fail") > 0)
+    tips.push({
+      tone: "danger",
+      title: `Fix your ${n("fail")} not-qualified link${n("fail") === 1 ? "" : "s"} first`,
+      body: "Open My Work → recent links, click a red one, and read “Why this score” — it lists exactly what went wrong and how to fix it. A missing or dead link caps its score at 25 until repaired."
+    });
+  if (n("qa_pending") > 0)
+    tips.push({
+      tone: "ember",
+      title: `${n("qa_pending")} link${n("qa_pending") === 1 ? " is" : "s are"} still waiting for QA`,
+      body: "Links don't check themselves — ask your manager to run a QA check so your completed work counts toward your numbers."
+    });
+  if (n("nofollow") > n("dofollow") && n("links") > 5)
+    tips.push({
+      tone: "ember",
+      title: "Most of your links are nofollow",
+      body: "Nofollow links pass less value. Where dofollow was agreed with the publisher, ask them to remove rel=\"nofollow\" — each fix adds points back."
+    });
+  if (n("links") > 0 && n("indexed") / Math.max(1, n("links")) < 0.3)
+    tips.push({
+      tone: "ember",
+      title: "Few of your pages are indexed by Google",
+      body: "Unindexed pages carry little SEO value. Share them, add internal links where possible, then run “Check indexing”."
+    });
+  tips.push({
+    tone: "ocean",
+    title: "Pick better domains up front",
+    body: "The Opportunities tab ranks the best available websites (authority, low spam, open to crawlers). Starting from a strong domain is the easiest score boost there is."
+  });
+  const toneCls = (t: string) =>
+    t === "danger" ? "border-danger/40 bg-danger/5" : t === "ember" ? "border-ember/40 bg-ember/5" : "border-ocean/40 bg-ocean/5";
+  const statusKeys = ["PENDING", "PASS", "WARNING", "FAIL", "NEEDS_MANUAL_REVIEW", "UNKNOWN", "waiting_api", "api_failed", "indexed", "not_indexed", "uncertain", "unchecked", "duplicate", "unique"];
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-ink">Guidance</h2>
+        <p className="text-sm text-muted">Plain-English help: what to do next, what every status means, and how scoring works.</p>
+      </div>
+      <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
+        {([["next", "What to do next"], ["statuses", "Status guide"], ["scoring", "Scoring guide"]] as const).map(([v, l]) => (
+          <button
+            key={v}
+            onClick={() => setGTab(v)}
+            className={clsx("px-3 py-1.5 transition", gTab === v ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+          >
+            {l}
+          </button>
+        ))}
+      </span>
+      {gTab === "next" ? (
+        <div className="space-y-3">
+          {tips.map((t, i) => (
+            <div key={i} className={clsx("rounded-xl border p-4", toneCls(t.tone))}>
+              <h3 className="text-sm font-semibold text-ink">{i + 1}. {t.title}</h3>
+              <p className="mt-1 text-sm text-muted">{t.body}</p>
+            </div>
+          ))}
+        </div>
+      ) : gTab === "statuses" ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {statusKeys.map((key) => {
+            const h = STATUS_HELP[key];
+            if (!h) return null;
+            return (
+              <div key={key} className="rounded-xl border border-line bg-panel p-4 shadow-card">
+                <div className="flex items-center gap-2">
+                  {key === "waiting_api" || key === "api_failed" ? (
+                    <QaWaitBadge reason={key} />
+                  ) : (
+                    <Status value={key} />
+                  )}
+                </div>
+                <p className="mt-2 text-sm text-muted">{h.what}</p>
+                <p className="mt-1 text-sm"><span className="font-semibold text-ink">What to do:</span> <span className="text-muted">{h.next}</span></p>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-line bg-panel p-5 shadow-card">
+          <ScoringGuideContent />
+        </div>
+      )}
     </section>
   );
 }
@@ -13233,7 +13475,8 @@ function LinkTypesCard({
 }
 
 // ── Scoring guide (Enterprise §13): how the 0-100 score works, in plain words ──
-function ScoringGuideModal({ onClose }: { onClose: () => void }) {
+// Content is shared by the Backlinks-toolbar modal AND the user Guidance desk.
+function ScoringGuideContent() {
   const row = (sev: string, pts: string, cls: string, examples: string) => (
     <tr>
       <Td><span className={clsx("rounded px-1.5 py-0.5 text-xs font-bold", cls)}>{sev}</span></Td>
@@ -13242,15 +13485,6 @@ function ScoringGuideModal({ onClose }: { onClose: () => void }) {
     </tr>
   );
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div
-        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-panel p-6 shadow-pop scrollbar-thin"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-ink">How link scoring works</h2>
-          <button onClick={onClose} className="text-muted hover:text-ink">✕</button>
-        </div>
         <div className="space-y-5 text-sm">
           <div>
             <h3 className="mb-1 font-semibold text-ink">1. Every link starts at 100</h3>
@@ -13312,6 +13546,21 @@ function ScoringGuideModal({ onClose }: { onClose: () => void }) {
             </ul>
           </div>
         </div>
+  );
+}
+
+function ScoringGuideModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-panel p-6 shadow-pop scrollbar-thin"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-ink">How link scoring works</h2>
+          <button onClick={onClose} className="text-muted hover:text-ink">✕</button>
+        </div>
+        <ScoringGuideContent />
       </div>
     </div>
   );
@@ -15412,6 +15661,80 @@ const STATUS_SHORT: Record<string, string> = {
   PENDING: "Pending"
 };
 
+// Live QA-run progress (Enterprise §9): floating panel that follows a running
+// recheck batch in real time — never leaves the user wondering if QA is running.
+function QaLiveProgress({
+  token,
+  batchId,
+  onClose,
+  onDone
+}: {
+  token: string | null;
+  batchId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [finishedNotified, setFinishedNotified] = useState(false);
+  const batch = useQuery({
+    queryKey: ["qa-live-batch", token, batchId],
+    enabled: Boolean(token && batchId),
+    refetchInterval: (q) => ((q.state.data as { status?: string } | undefined)?.status === "running" ? 2500 : false),
+    queryFn: () =>
+      api<{ id: string; seq: number; status: string; label: string | null; totals: Record<string, number>; counters: Record<string, number>; started_at: string; finished_at: string | null }>(
+        `/batches/${batchId}`,
+        { token }
+      )
+  });
+  const b = batch.data;
+  const total = Number(b?.totals?.total ?? 0);
+  const done = Number(b?.counters?.processed ?? b?.counters?.done ?? 0);
+  const ok = Number(b?.counters?.succeeded ?? b?.counters?.ok ?? 0);
+  const failed = Number(b?.counters?.failed ?? 0);
+  const running = b?.status === "running";
+  const pct = total ? Math.min(100, Math.round((100 * done) / total)) : 0;
+  const elapsedS = b?.started_at ? Math.max(1, Math.round((Date.now() - Date.parse(b.started_at)) / 1000)) : 0;
+  const speed = elapsedS && done ? (done / elapsedS) : 0;
+  const etaS = running && speed > 0 ? Math.round((total - done) / speed) : null;
+  useEffect(() => {
+    if (b && !running && !finishedNotified) {
+      setFinishedNotified(true);
+      onDone();
+    }
+  }, [b, running, finishedNotified, onDone]);
+  return (
+    <div className="fixed bottom-4 right-4 z-40 w-[340px] rounded-xl border border-line bg-panel p-4 shadow-pop">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+          {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-ocean" />}
+          {running ? "QA check running…" : "QA check finished"}
+        </span>
+        <button onClick={onClose} className="text-muted hover:text-ink" aria-label="Dismiss">✕</button>
+      </div>
+      <p className="mt-0.5 truncate text-xs text-muted">{b?.label || `Batch #B-${b?.seq ?? ""}`}</p>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded bg-field">
+        <div
+          className={clsx("h-full rounded transition-all", running ? "bg-ocean" : failed ? "bg-ember" : "bg-ocean")}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
+        <span><span className="font-semibold text-ink">{done.toLocaleString()}</span> / {total.toLocaleString()} checked ({pct}%)</span>
+        {etaS != null ? <span>~{etaS >= 90 ? `${Math.round(etaS / 60)}m` : `${etaS}s`} left</span> : null}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-2 text-xs">
+        <span className="rounded bg-ocean/10 px-1.5 py-0.5 font-semibold text-ocean">{ok.toLocaleString()} completed</span>
+        {failed ? <span className="rounded bg-danger/10 px-1.5 py-0.5 font-semibold text-danger">{failed.toLocaleString()} failed</span> : null}
+        {speed > 0 && running ? <span className="text-muted">{speed.toFixed(1)}/s</span> : null}
+      </div>
+      {!running && b ? (
+        <p className="mt-2 text-xs text-muted">
+          Grid refreshed with the new verdicts. Full logs live in the Batches desk (#B-{b.seq}).
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // QA wait badge (Enterprise §1/§4): why QA is intentionally paused for a link.
 // Hovering explains the state; the "why isn't this checked?" answer at a glance.
 function QaWaitBadge({ reason }: { reason: string }) {
@@ -15872,6 +16195,16 @@ function SheetsDesk({
     onError: (e: Error) => onNotice(e.message)
   });
 
+  // Sync ALL sheets — one click, queued sequentially (manual trigger only).
+  const syncEverySheet = useMutation({
+    mutationFn: () => api<{ message: string }>("/sheets/sync-all", { method: "POST", token }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
   // ── Google Sheets API read-rate limit (global; guards Google's ~300/min quota) ──
   const apiLimit = useQuery({
     queryKey: ["sheets-api-limit", token],
@@ -15910,14 +16243,28 @@ function SheetsDesk({
               to ignore — and click <span className="font-medium text-ink">Sync</span> on that project to pull its links.
             </p>
           </div>
-          <button
-            onClick={() => syncAll.mutate()}
-            disabled={!cfg?.enabled || syncAll.isPending}
-            className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
-          >
-            {syncAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Discover projects from main sheet
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => syncAll.mutate()}
+              disabled={!cfg?.enabled || syncAll.isPending}
+              className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
+            >
+              {syncAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Discover projects from main sheet
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm(`Sync ALL ${visibleSheets.length} connected sheets now? They run one at a time (respecting the API limit) — live progress appears below, and each sheet reports its own new/refreshed counts.`))
+                  syncEverySheet.mutate();
+              }}
+              disabled={!cfg?.enabled || syncEverySheet.isPending || !visibleSheets.length}
+              title="Queue a sync for every connected project sheet — manual trigger only, never automatic"
+              className="flex items-center gap-2 rounded-md border border-ocean/40 px-4 py-2 text-sm font-semibold text-ocean transition hover:bg-ocean/10 disabled:opacity-50"
+            >
+              {syncEverySheet.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Sync all sheets ({visibleSheets.length})
+            </button>
+          </div>
         </div>
         {/* API read-rate limit — keeps syncs under Google's ~300 reads/min quota. */}
         {cfg?.enabled ? (

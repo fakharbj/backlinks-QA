@@ -91,6 +91,10 @@ async def persist(
             "published_date": artifact.signals.published_date,
             "modified_date": artifact.signals.modified_date,
             "date_source": artifact.signals.date_source,
+            # Browser-verified transparency: what the headless browser saw when
+            # the raw fetch was blocked (None when no render ran).
+            "browser_http_status": artifact.browser_http_status,
+            "found_in_browser": artifact.found_in_rendered or None,
             "egress": artifact.egress,
         },
         status=qa.status,

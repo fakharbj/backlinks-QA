@@ -59,17 +59,23 @@ def classify(
         and 200 <= artifact.http_status < 300
         and not artifact.is_html
     )
+    # BROWSER-VERIFIED (Enterprise accuracy rule): when the headless browser
+    # loaded the page AND found the link, every bot-block signal on the RAW
+    # fetch (403, WAF, "JS required") is a false alarm — the page is live for
+    # real users. Those signals must not push a verified link into review.
+    browser_verified = artifact.found_in_rendered and bool(artifact.matched_links)
     # A 403 that survived the fallback-agent retry is almost always a bot/WAF
     # block rather than a dead page — the link is often still live for real
-    # visitors. Route it to manual review instead of a confident FAIL/WARNING.
-    hard_403 = artifact.http_status == 403
+    # visitors. Route it to manual review instead of a confident FAIL/WARNING —
+    # unless the browser already verified the page.
+    hard_403 = artifact.http_status == 403 and not browser_verified
 
     review = (
-        det.captcha
-        or det.cloudflare_challenge
-        or det.waf_block
+        (det.captcha and not browser_verified)
+        or (det.cloudflare_challenge and not browser_verified)
+        or (det.waf_block and not browser_verified)
         or hard_403
-        or bool(labels & _REVIEW_LABELS)
+        or (bool(labels & _REVIEW_LABELS) and not browser_verified)
         or non_html_200
         or any(i.code in _CONFLICT_CODES for i in issues)
         or any(i.code in _REVIEW_CODES for i in issues)

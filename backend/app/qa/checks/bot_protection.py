@@ -16,8 +16,18 @@ from app.qa.types import CheckContext, Issue
 CAT = IssueCategory.BOT
 
 
+def _browser_verified(ctx: CheckContext) -> bool:
+    """Raw fetch was blocked but the headless browser loaded the page AND found
+    the link — the block only applies to robots; suppress the review-routing
+    bot issues (classification also honors this)."""
+    art = ctx.artifact
+    return bool(art.found_in_rendered and art.matched_links)
+
+
 @check("BOT-01", CAT)
 def captcha(ctx: CheckContext) -> Iterable[Issue]:
+    if _browser_verified(ctx):
+        return
     det = ctx.artifact.detection
     if det.captcha:
         yield issue(code="BOT-01", label=IssueLabel.CAPTCHA_DETECTED, category=CAT,
@@ -33,6 +43,8 @@ def captcha(ctx: CheckContext) -> Iterable[Issue]:
 
 @check("BOT-03", CAT)
 def waf_block(ctx: CheckContext) -> Iterable[Issue]:
+    if _browser_verified(ctx):
+        return
     det = ctx.artifact.detection
     if det.waf_block and not det.captcha and not det.cloudflare_challenge:
         yield issue(code="BOT-03", label=IssueLabel.SOURCE_403, category=CAT, severity=Severity.HIGH,

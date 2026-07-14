@@ -143,6 +143,40 @@ async def sync_main(
     )
 
 
+@router.post("/sync-all", response_model=SheetSyncResponse, status_code=202)
+async def sync_all(
+    db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
+) -> SheetSyncResponse:
+    """Queue a sync for EVERY connected project sheet (manual trigger only).
+    The sheets.sync queue processes them one at a time (the sequential-sync
+    setting), so the read-rate limit is respected; live per-sheet progress shows
+    in the Sheets desk exactly like single syncs (batches kind=sheet_sync)."""
+    from sqlalchemy import select as _select
+
+    from app.workers.tasks.sheets import sync_project_sheet
+
+    sources = (
+        await db.execute(
+            _select(SheetSource).where(SheetSource.workspace_id == ctx.workspace_id)
+        )
+    ).scalars().all()
+    if not sources:
+        raise ValidationAppError("No project sheets are connected yet — run Discover first.")
+    await audit_service.record(
+        db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="sheet_sync", entity_id=ctx.workspace_id,
+        summary=f"Sync ALL sheets started ({len(sources)} sheets)",
+    )
+    await db.commit()
+    for src in sources:
+        sync_project_sheet.apply_async(args=[str(src.id)], queue="sheets.sync")
+    return SheetSyncResponse(
+        message=f"Syncing all {len(sources)} sheets — they run one at a time to respect the "
+        "Google API limit. Live progress appears below; each sheet reports its own result."
+    )
+
+
 @router.post("/{sheet_id}/sync", response_model=SheetSyncResponse, status_code=202)
 async def sync_one(
     sheet_id: uuid.UUID, db: DbSession,

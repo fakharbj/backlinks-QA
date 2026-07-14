@@ -31,6 +31,14 @@ log = get_logger("worker.maintenance")
 
 
 async def _dispatch_due_rechecks_async(limit: int) -> dict:
+    # Manual-first execution (Enterprise §7): scheduled auto-rechecks are OFF by
+    # default — every QA run starts from an explicit user action. Flip
+    # AUTO_SCHEDULED_RECHECKS=true to restore the always-on loop.
+    from app.core.config import settings as _settings
+
+    if not _settings.AUTO_SCHEDULED_RECHECKS:
+        return {"queued": 0, "jobs": 0, "paused": "manual_mode"}
+
     now = datetime.now(timezone.utc)
     lease_until = now + timedelta(minutes=30)
 

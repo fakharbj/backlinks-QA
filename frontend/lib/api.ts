@@ -764,6 +764,10 @@ export type CrawlResultOut = {
   word_count: number | null;
   outbound_link_count: number | null;
   published_date: string | null;
+  // Browser-verified transparency: what the headless browser saw when the raw
+  // request was bot-blocked (403 etc.) — null when no render ran.
+  browser_http_status?: number | null;
+  found_in_browser?: boolean | null;
   modified_date: string | null;
   date_source: string | null;
   raw_html_key: string | null;

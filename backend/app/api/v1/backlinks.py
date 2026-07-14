@@ -317,6 +317,8 @@ async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
             score_breakdown=latest.score_breakdown or [], word_count=latest.word_count,
             outbound_link_count=latest.outbound_link_count,
             published_date=(latest.page_signals or {}).get("published_date"),
+            browser_http_status=(latest.page_signals or {}).get("browser_http_status"),
+            found_in_browser=(latest.page_signals or {}).get("found_in_browser"),
             modified_date=(latest.page_signals or {}).get("modified_date"),
             date_source=(latest.page_signals or {}).get("date_source"),
             raw_html_key=latest.raw_html_key, rendered_html_key=latest.rendered_html_key,
@@ -551,7 +553,7 @@ async def recheck_bulk(
     from app.workers.dispatch import enqueue_backlinks
 
     enqueue_backlinks(ids, job_id=job.id, priority=payload.priority)
-    return RecheckResponse(job_id=job.id, queued=len(ids))
+    return RecheckResponse(job_id=job.id, queued=len(ids), batch_id=batch_id)
 
 
 @router.post("/bulk-edit", response_model=BulkEditResponse)

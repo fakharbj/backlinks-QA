@@ -377,15 +377,32 @@ class CrawlEngine:
                         artifact.found_in_raw = True
 
         # ── Render escalation (LNK-09) ──────────────────────────────────────
+        # A bot-block status (401/403/429/503) ALWAYS gets a browser attempt:
+        # many sites (Medium, WAFs) reject automated requests — including with a
+        # Cloudflare/JS challenge page — but serve a real browser fine. The
+        # browser verdict is the accurate one there, so the challenge/captcha
+        # exclusions (which exist to avoid rendering unwinnable challenges on
+        # otherwise-200 pages) do not apply to blocked statuses: worst case the
+        # browser is challenged too and nothing changes.
+        blocked_status = outcome.status in (401, 403, 429, 503)
         should_render = (
             not artifact.found_in_raw
             and request.allow_render
             and self.config.render_enabled
-            and not artifact.detection.captcha
-            and not artifact.detection.cloudflare_challenge
+            and (
+                blocked_status
+                or (
+                    not artifact.detection.captcha
+                    and not artifact.detection.cloudflare_challenge
+                )
+            )
             # An HTML page that parses to ZERO links is an app shell (Notion,
             # SPAs) — real pages always carry some links. Render it.
-            and (self._looks_js_driven(outcome.body) or not page.links)
+            and (
+                self._looks_js_driven(outcome.body)
+                or not page.links
+                or blocked_status
+            )
         )
         if should_render and self._browser is not None:
             await self._render_and_rematch(artifact, request, outcome)
@@ -525,6 +542,7 @@ class CrawlEngine:
         if not getattr(result, "ok", False):
             return
         artifact.rendered = True
+        artifact.browser_http_status = getattr(result, "status", None)
         artifact.rendered_html = result.html
         rendered_page = parse_html(
             result.html,

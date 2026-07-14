@@ -253,6 +253,10 @@ class CrawlArtifact:
     found_in_raw: bool = False
     found_in_rendered: bool = False
     rendered: bool = False
+    # HTTP status the HEADLESS BROWSER saw (render escalation). When a raw fetch
+    # is bot-blocked (403/429) but the browser loads the page, this carries the
+    # real-user status — the QA layer prefers it over the blocked raw status.
+    browser_http_status: int | None = None
     # Set when the match came from the RELAXED (GBP/citation) fallback:
     # "gbp_map" | "owned_directory". None = a normal strict match.
     relaxed_reason: str | None = None

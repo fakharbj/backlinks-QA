@@ -321,6 +321,12 @@ class Settings(BaseSettings):
     # through the IPRoyal proxy (Google blocks datacenter IPs). Deduped by source
     # URL and re-checked at most every INDEX_RECHECK_DAYS. Failures → UNCERTAIN,
     # never a false "not indexed".
+    # ── Manual-first execution (Enterprise: no surprise background work) ─────
+    # False (default) = the beat scheduler does NOT auto-dispatch due rechecks;
+    # every QA run starts from an explicit user action (Run QA check / Recheck /
+    # Retry failed). True restores the old always-on recheck loop.
+    AUTO_SCHEDULED_RECHECKS: bool = False
+
     # ── External-API usage limits (Enterprise §3) ────────────────────────────
     # JSON maps of api-name → max requests, e.g. {"iproyal": 5000, "serper": 2400}.
     # Known names: iproyal, render, serper, moz, semrush, rdap, google_sheets,

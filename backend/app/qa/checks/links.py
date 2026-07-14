@@ -127,6 +127,11 @@ def multiple_links(ctx: CheckContext) -> Iterable[Issue]:
 def js_only_link(ctx: CheckContext) -> Iterable[Issue]:
     art = ctx.artifact
     if art.found_in_rendered and not art.found_in_raw:
+        if art.http_status in (401, 403, 429, 503):
+            # The raw fetch was BLOCKED, not JS-dependent — the browser saw the
+            # real page. HTTP-BROWSER-OK explains it; a "JS required" warning
+            # here would be inaccurate and cost points for a healthy link.
+            return
         yield issue(code="LNK-09", label=IssueLabel.JS_RENDER_REQUIRED, category=CAT,
                     severity=Severity.MEDIUM,
                     message="Link is present only after JavaScript rendering; search engines may under-credit it.",  # noqa: E501

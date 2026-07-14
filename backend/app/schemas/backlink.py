@@ -145,6 +145,8 @@ class CrawlResultOut(BaseModel):
     word_count: int | None
     outbound_link_count: int | None
     published_date: str | None = None
+    browser_http_status: int | None = None  # what the headless browser saw (blocked pages)
+    found_in_browser: bool | None = None
     modified_date: str | None = None
     date_source: str | None = None
     raw_html_key: str | None
@@ -264,6 +266,9 @@ class RecheckRequest(BaseModel):
 class RecheckResponse(BaseModel):
     job_id: uuid.UUID
     queued: int
+    # Batch-registry id for LIVE progress (poll GET /batches/{id}); None when the
+    # run was empty or batch registration failed (fail-open).
+    batch_id: uuid.UUID | None = None
 
 
 class BacklinkBulkEdit(BaseModel):
