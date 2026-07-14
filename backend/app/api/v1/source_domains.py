@@ -63,11 +63,12 @@ async def list_source_domains(
     request: Request, ctx: AuthCtx, db: ReadSession,
     sort: str = "backlinks", order: str = "desc", search: str | None = None,
     limit: int = 200, offset: int = 0, origin: str | None = None,
-    project_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None, opportunity: bool = False,
 ) -> SourceDomainListOut:
     result = await svc.list_domains(
         db, ctx, sort=sort, order=order, search=search, limit=limit, offset=offset,
         origin=origin, project_id=project_id, filters=_collect_filters(request),
+        opportunity=opportunity,
     )
     return SourceDomainListOut(
         items=[SourceDomainOut(**r) for r in result["items"]], total=result["total"]

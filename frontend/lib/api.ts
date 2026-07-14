@@ -370,6 +370,18 @@ export type SourceDomain = {
   semrush_keywords: number | null;
   domain_age_days: number | null;
   metrics_updated_at: string | null;
+  // ── Phase 10 P2 additions ──
+  robots_band?: string | null;         // allowed|partially|mostly|fully_blocked|unknown
+  robots_allowed_count?: number;
+  robots_blocked_count?: number;
+  da_first?: number | null;            // original imported/first-checked values
+  pa_first?: number | null;
+  spam_first?: number | null;
+  as_first?: number | null;
+  first_metrics_at?: string | null;
+  first_metrics_source?: string | null;
+  market?: string | null;
+  country?: string | null;
 };
 
 // Paginated list envelope for the Source-Domains desk.

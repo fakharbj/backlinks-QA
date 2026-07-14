@@ -492,16 +492,40 @@ async def list_domains(
     sort: str = "backlinks", order: str = "desc", search: str | None = None,
     limit: int = 200, offset: int = 0, origin: str | None = None,
     project_id: uuid.UUID | None = None, filters: dict | None = None,
+    opportunity: bool = False,
 ) -> dict:
     """Rich, whitelisted, paginated list. Returns ``{items, total}``.
 
     ``filters`` holds the da_min/max… range params. ``project_id`` restricts to
     domains USED by that project (via the source_domain of its backlinks), else
     workspace-wide. Sorting/filtering are strictly whitelisted.
+
+    ``opportunity=True`` = the Opportunities tab (Enterprise §7): domains still
+    AVAILABLE for outreach — not hand-assigned to anyone (no live recommendation
+    row), not robots-blocked, not spammy. Everything else about the row (metrics,
+    counts) is the normal catalog payload.
     """
     limit = max(1, min(int(limit), 2000))
     offset = max(0, int(offset))
     clauses = _build_filters(ctx, filters=filters, search=search, origin=origin)
+    if opportunity:
+        from sqlalchemy import exists as _exists
+
+        from app.models.recommendation import DomainRecommendation as _DR
+
+        clauses.append(
+            or_(SourceDomain.robots_band.is_(None),
+                SourceDomain.robots_band.notin_(("fully_blocked", "mostly_blocked")))
+        )
+        clauses.append(func.coalesce(SourceDomain.spam_score, 0) < 30)
+        clauses.append(
+            ~_exists().where(
+                _DR.workspace_id == SourceDomain.workspace_id,
+                _DR.domain_key == SourceDomain.domain_key,
+                _DR.recommended_to.is_not(None),
+                _DR.status.in_(("suggested", "viewed", "accepted")),
+            )
+        )
     if project_id is not None:
         keys = await _project_used_domain_keys(db, ctx, project_id)
         if not keys:
