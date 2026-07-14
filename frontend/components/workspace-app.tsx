@@ -2517,6 +2517,11 @@ function Backlinks({
               title={`${axis.label} to`}
               className="h-9 rounded-lg border border-line bg-panel px-1.5 text-sm text-ink"
             />
+            <DateRangePresets
+              from={dateFrom}
+              to={dateTo}
+              onChange={(f, t) => { setDateFrom(f); setDateTo(t); }}
+            />
           </label>
         </div>
       </div>
@@ -5772,10 +5777,11 @@ function TasksDesk({
             </span>
           </h3>
           {view === "list" ? (
-            <div className="flex items-center gap-2 text-xs text-muted">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
               <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
               –
               <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+              <DateRangePresets from={from} to={to} onChange={(f, t) => { setFrom(f); setTo(t); }} />
             </div>
           ) : (
             <div className="flex items-center gap-2 text-sm">
@@ -6916,6 +6922,53 @@ function downloadCsv(
   URL.revokeObjectURL(url);
 }
 
+// ── Date-range quick presets (system-wide filter convenience) ────────────────
+// One-click Today / Yesterday / 7 / 30 days for any from/to date-filter pair.
+// Calendar days in the user's local timezone; clicking the active preset again
+// clears the range.
+function isoDay(offsetDays = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function DateRangePresets({
+  from,
+  to,
+  onChange
+}: {
+  from: string;
+  to: string;
+  onChange: (from: string, to: string) => void;
+}) {
+  const presets: Array<[string, string, string]> = [
+    ["Today", isoDay(0), isoDay(0)],
+    ["Yesterday", isoDay(-1), isoDay(-1)],
+    ["7 days", isoDay(-6), isoDay(0)],
+    ["30 days", isoDay(-29), isoDay(0)]
+  ];
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {presets.map(([label, f, t]) => {
+        const active = from === f && to === t;
+        return (
+          <button
+            key={label}
+            type="button"
+            onClick={() => (active ? onChange("", "") : onChange(f, t))}
+            className={clsx(
+              "rounded-full border px-2 py-0.5 text-[11px] font-medium transition",
+              active ? "border-ocean bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+            )}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
 // Copy text to the clipboard with an execCommand fallback (older browsers /
 // non-secure contexts). Used by every CopyButton across the app.
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -7473,6 +7526,7 @@ function UserDashboard({
           <>
             <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
             <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+            <DateRangePresets from={customFrom} to={customTo} onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
           </>
         ) : null}
       </div>
@@ -8227,6 +8281,10 @@ function ProjectEffort({
 }
 
 const TIMEFRAMES: Array<[string, string]> = [
+  ["1", "Today (24h)"],
+  ["3", "Last 3 days"],
+  ["7", "Last 7 days"],
+  ["14", "Last 14 days"],
   ["30", "Last 30 days"],
   ["90", "Last 3 months"],
   ["180", "Last 6 months"],
@@ -8534,6 +8592,7 @@ function PerformanceDesk({
             <>
               <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" title="From" />
               <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" title="To" />
+              <DateRangePresets from={customFrom} to={customTo} onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
             </>
           ) : null}
           <select
@@ -15270,6 +15329,7 @@ function ConflictsDesk({
             <input type="date" value={createdTo} onChange={(e) => setCreatedTo(e.target.value)}
               className="h-9 rounded-lg border border-line bg-panel px-2 text-sm focus:border-ocean focus:outline-none" />
           </label>
+          <DateRangePresets from={createdFrom} to={createdTo} onChange={(f, t) => { setCreatedFrom(f); setCreatedTo(t); }} />
           {(scopeF.length || statusF.join() !== "open" || minMembers || minSim || targetDomains.length || sourcePages.length || userF.length || search || createdFrom || createdTo) ? (
             <button
               onClick={() => {
