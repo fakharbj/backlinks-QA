@@ -63,6 +63,58 @@ def hourly_limits() -> dict[str, int]:
     return _limits(settings.API_HOURLY_LIMITS)
 
 
+# ── In-app limit configuration (admin-editable; overrides the .env defaults) ──
+# Durable copy lives in the Setting KV (key "api_limits", primary workspace);
+# a Redis mirror serves the hot paths (available() runs in workers with no ctx).
+_LIMITS_KEY = "ls:apiu:limits"
+
+
+async def effective_limits() -> tuple[dict[str, int], dict[str, int]]:
+    """(daily, hourly) — the in-app configuration when set, else the .env JSON."""
+    try:
+        from app.core.redis import get_redis
+
+        raw = await get_redis().get(_LIMITS_KEY)
+        if raw:
+            data = json.loads(raw if isinstance(raw, str) else raw.decode())
+            return (
+                {str(k).lower(): int(v) for k, v in (data.get("daily") or {}).items() if int(v) > 0},
+                {str(k).lower(): int(v) for k, v in (data.get("hourly") or {}).items() if int(v) > 0},
+            )
+    except Exception:  # noqa: BLE001 — fall through to env
+        pass
+    return daily_limits(), hourly_limits()
+
+
+async def store_limits(db, workspace_id, daily: dict[str, int], hourly: dict[str, int]) -> None:
+    """Persist to the Setting KV (durable) + refresh the Redis mirror (hot path)."""
+    from sqlalchemy import select as _select
+
+    from app.models.settings import Setting
+
+    clean = {
+        "daily": {k.lower(): int(v) for k, v in daily.items() if k.lower() in KNOWN_APIS and int(v) > 0},
+        "hourly": {k.lower(): int(v) for k, v in hourly.items() if k.lower() in KNOWN_APIS and int(v) > 0},
+    }
+    setting = (
+        await db.execute(
+            _select(Setting).where(Setting.workspace_id == workspace_id, Setting.key == "api_limits")
+        )
+    ).scalar_one_or_none()
+    if setting is None:
+        setting = Setting(workspace_id=workspace_id, key="api_limits", value=clean)
+        db.add(setting)
+    else:
+        setting.value = clean
+    await db.flush()
+    try:
+        from app.core.redis import get_redis
+
+        await get_redis().set(_LIMITS_KEY, json.dumps(clean))
+    except Exception:  # noqa: BLE001 — Setting row remains the durable copy
+        pass
+
+
 async def record(api: str, *, ok: bool, duration_ms: int | None = None, error: str | None = None) -> None:
     """Count one call (async contexts — workers, API). Fail-open."""
     api = api.lower()
@@ -130,8 +182,9 @@ async def available(api: str) -> bool:
     """Quota gate: False when the configured daily/hourly limit is exhausted.
     Unconfigured APIs are always available (no silent throttling)."""
     api = api.lower()
-    day_limit = daily_limits().get(api)
-    hour_limit = hourly_limits().get(api)
+    dlim, hlim = await effective_limits()
+    day_limit = dlim.get(api)
+    hour_limit = hlim.get(api)
     if not day_limit and not hour_limit:
         return True
     try:
@@ -158,8 +211,7 @@ async def snapshot() -> list[dict]:
 
     r = get_redis()
     now = _now()
-    dlim = daily_limits()
-    hlim = hourly_limits()
+    dlim, hlim = await effective_limits()
     out: list[dict] = []
     for api in KNOWN_APIS:
         keys = [

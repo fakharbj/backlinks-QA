@@ -3866,6 +3866,34 @@ function ApiUsageDesk({ token }: { token: string | null }) {
   });
   const rows = snap.data?.apis || [];
   const points = series.data?.points || [];
+  const [showLimits, setShowLimits] = useState(false);
+  const [limitDrafts, setLimitDrafts] = useState<Record<string, { d: string; h: string }>>({});
+  useEffect(() => {
+    if (!snap.data) return;
+    const next: Record<string, { d: string; h: string }> = {};
+    for (const r of snap.data.apis) {
+      next[r.api] = { d: r.daily_limit ? String(r.daily_limit) : "", h: r.hourly_limit ? String(r.hourly_limit) : "" };
+    }
+    setLimitDrafts(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snap.data?.apis?.length]);
+  const saveLimits = useMutation({
+    mutationFn: () => {
+      const daily: Record<string, number> = {};
+      const hourly: Record<string, number> = {};
+      for (const [apiName, v] of Object.entries(limitDrafts)) {
+        if (Number(v.d) > 0) daily[apiName] = Number(v.d);
+        if (Number(v.h) > 0) hourly[apiName] = Number(v.h);
+      }
+      return api<{ daily_limits: Record<string, number> }>("/api-usage/limits", {
+        token, method: "PUT", body: JSON.stringify({ daily, hourly })
+      });
+    },
+    onSuccess: () => {
+      setShowLimits(false);
+      snap.refetch();
+    }
+  });
   const statusMeta = (s: string) =>
     s === "limit_reached"
       ? { label: "Limit reached", cls: "bg-danger/10 text-danger border-danger/30" }
@@ -3891,16 +3919,83 @@ function ApiUsageDesk({ token }: { token: string | null }) {
           </h2>
           <p className="text-sm text-muted">Live consumption across every connected service — refreshes every 30s.</p>
         </div>
-        <ExportButton
-          onClick={() =>
-            downloadCsv(
-              "api-usage.csv",
-              ["API", "Used today", "Daily limit", "Remaining", "This hour", "OK", "Failed", "Success %", "Avg ms", "Status", "Last error"],
-              rows.map((r) => [r.api, r.used_today, r.daily_limit, r.remaining_today, r.used_this_hour, r.ok_today, r.failed_today, r.success_rate, r.avg_response_ms, r.status, r.last_error])
-            )
-          }
-        />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowLimits((v) => !v)}
+            className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+            title="Set daily/hourly request limits per API — when a limit is reached, dependent QA pauses instead of burning failed requests (admins only)"
+          >
+            <Gauge className="h-4 w-4" />
+            Configure limits
+          </button>
+          <ExportButton
+            onClick={() =>
+              downloadCsv(
+                "api-usage.csv",
+                ["API", "Used today", "Daily limit", "Remaining", "This hour", "OK", "Failed", "Success %", "Avg ms", "Status", "Last error"],
+                rows.map((r) => [r.api, r.used_today, r.daily_limit, r.remaining_today, r.used_this_hour, r.ok_today, r.failed_today, r.success_rate, r.avg_response_ms, r.status, r.last_error])
+              )
+            }
+          />
+        </div>
       </div>
+
+      {showLimits ? (
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="border-b border-line p-3">
+            <h3 className="text-sm font-semibold text-ink">Request limits</h3>
+            <p className="text-xs text-muted">
+              Set the maximum requests per API. Empty = unlimited (never throttled). When a limit is
+              reached, work needing that API pauses gracefully as “Waiting for API” and resumes after
+              the reset (daily limits reset at midnight UTC, hourly on the hour) — nothing fails, nothing retries blindly.
+              Saving is admin-only and audited.
+            </p>
+          </div>
+          <div className="grid gap-2 p-3 sm:grid-cols-2">
+            {rows.map((r) => (
+              <div key={`lim-${r.api}`} className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-field/40 p-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{API_LABELS[r.api] || r.api}</span>
+                <label className="flex items-center gap-1 text-xs text-muted">
+                  Daily
+                  <input
+                    type="number" min={0} placeholder="∞"
+                    value={limitDrafts[r.api]?.d ?? ""}
+                    onChange={(e) => setLimitDrafts((x) => ({ ...x, [r.api]: { d: e.target.value, h: x[r.api]?.h ?? "" } }))}
+                    className="h-8 w-24 rounded-md border border-line bg-panel px-2 text-right text-sm"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-xs text-muted">
+                  Hourly
+                  <input
+                    type="number" min={0} placeholder="∞"
+                    value={limitDrafts[r.api]?.h ?? ""}
+                    onChange={(e) => setLimitDrafts((x) => ({ ...x, [r.api]: { d: x[r.api]?.d ?? "", h: e.target.value } }))}
+                    className="h-8 w-20 rounded-md border border-line bg-panel px-2 text-right text-sm"
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-2 border-t border-line p-3">
+            <span className="text-xs text-muted">
+              Tip: set IPRoyal to your plan&apos;s daily request allowance and serper to ~2,400/day per active key.
+            </span>
+            <button
+              onClick={() => saveLimits.mutate()}
+              disabled={saveLimits.isPending}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+            >
+              {saveLimits.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save limits
+            </button>
+          </div>
+          {saveLimits.isError ? (
+            <p className="border-t border-line p-3 text-sm text-danger">
+              Couldn&apos;t save — limit configuration is restricted to workspace admins.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       {/* Threshold warnings (§8): informational at 80%, strong at 95%, hard stop
           explained at 100% — plain words, no bare codes. */}
