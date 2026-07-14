@@ -74,15 +74,19 @@ def parse_semrush(payload: dict) -> dict:
 
 
 async def _fetch_age(domain: str, client: httpx.AsyncClient) -> dict:
+    from app.services import api_usage_service
+
     if not settings.DOMAIN_AGE_ENABLED:
         return {}
     url = settings.DOMAIN_AGE_RDAP_ENDPOINT.rstrip("/") + "/" + domain
     try:
         r = await client.get(url, headers={"Accept": "application/rdap+json"})
+        await api_usage_service.record("rdap", ok=r.status_code == 200)
         if r.status_code != 200:
             return {}
         created = parse_rdap_created(r.json())
     except Exception as exc:  # noqa: BLE001 - metrics never break a request
+        await api_usage_service.record("rdap", ok=False, error=repr(exc)[:200])
         log.info("rdap_failed", domain=domain, error=repr(exc))
         return {}
     if created is None:
@@ -92,6 +96,8 @@ async def _fetch_age(domain: str, client: httpx.AsyncClient) -> dict:
 
 
 async def _fetch_moz(domain: str, client: httpx.AsyncClient) -> dict:
+    from app.services import api_usage_service
+
     if not settings.RAPIDAPI_KEY:
         return {}
     try:
@@ -103,13 +109,20 @@ async def _fetch_moz(domain: str, client: httpx.AsyncClient) -> dict:
             },
             json={"q": domain},
         )
+        await api_usage_service.record(
+            "moz", ok=r.status_code == 200,
+            error=None if r.status_code == 200 else f"http_{r.status_code}",
+        )
         return parse_moz(r.json()) if r.status_code == 200 else {}
     except Exception as exc:  # noqa: BLE001
+        await api_usage_service.record("moz", ok=False, error=repr(exc)[:200])
         log.info("moz_failed", domain=domain, error=repr(exc))
         return {}
 
 
 async def _fetch_semrush(domain: str, client: httpx.AsyncClient) -> dict:
+    from app.services import api_usage_service
+
     if not (settings.RAPIDAPI_KEY and settings.SEMRUSH_RAPIDAPI_ENDPOINT):
         return {}
     try:
@@ -121,8 +134,13 @@ async def _fetch_semrush(domain: str, client: httpx.AsyncClient) -> dict:
                 "X-RapidAPI-Host": settings.SEMRUSH_RAPIDAPI_HOST,
             },
         )
+        await api_usage_service.record(
+            "semrush", ok=r.status_code == 200,
+            error=None if r.status_code == 200 else f"http_{r.status_code}",
+        )
         return parse_semrush(r.json()) if r.status_code == 200 else {}
     except Exception as exc:  # noqa: BLE001
+        await api_usage_service.record("semrush", ok=False, error=repr(exc)[:200])
         log.info("semrush_failed", domain=domain, error=repr(exc))
         return {}
 

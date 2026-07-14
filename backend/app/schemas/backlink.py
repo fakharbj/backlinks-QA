@@ -82,6 +82,8 @@ class BacklinkRow(ORMModel):
     index_checked_at: datetime | None = None
     last_checked_at: datetime | None
     next_check_at: datetime | None
+    # Why QA is intentionally paused: waiting_api | api_failed | manual_retry.
+    qa_wait_reason: str | None = None
     # How many different target URLs this same source page links to (within the
     # project) — lets the grid show "2 targets" instead of looking like a dup.
     targets_on_source: int | None = None
@@ -207,6 +209,9 @@ class BacklinkFilters(BaseModel):
     orphaned: bool | None = None         # source domain has no source_domains row
     no_placement: bool | None = None     # placement_date IS NULL (links awaiting a date)
     no_user: bool | None = None          # no assigned user (label blank) — quick chip
+    # QA wait state (Enterprise §1): waiting_api | api_failed | manual_retry, comma
+    # list; "none" = links with NO wait reason (normal scheduling).
+    qa_wait: str | None = None
     search: str | None = None
     # Target-based lookup: matches the target URL or expected target (substring),
     # so "find every backlink pointing at /pricing" works.

@@ -569,6 +569,8 @@ export type BacklinkRow = {
   index_checked_at?: string | null; // last index check
   last_checked_at: string | null;
   next_check_at: string | null;
+  // Why QA is intentionally paused: "waiting_api" | "api_failed" | "manual_retry".
+  qa_wait_reason?: string | null;
   targets_on_source?: number | null; // distinct targets this source page links to
   assigned_user_id: string | null;
   assigned_user_label?: string | null;

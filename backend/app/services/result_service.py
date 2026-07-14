@@ -172,9 +172,20 @@ def _update_record(
     else:
         backlink.consecutive_failures = 0
 
-    # Failing/unknown links are rechecked sooner to confirm/clear the regression.
-    factor = 0.25 if qa.status in (OverallStatus.FAIL, OverallStatus.UNKNOWN) else 1.0
-    backlink.next_check_at = result.crawled_at + timedelta(hours=interval_hours * factor)
+    if qa.status is OverallStatus.UNKNOWN:
+        # UNKNOWN = a RECOVERABLE EXTERNAL failure (timeout / 429 / 503 / outage —
+        # classify() routes exactly those transients here). Auto-retrying these
+        # burned whole API quotas on doomed attempts (the old 0.25-factor loop
+        # retried every quarter-interval forever). Park the link instead: no
+        # next_check_at, qa_wait_reason stamped — QA runs again only via a manual
+        # or quota-aware retry. Real verdicts keep their normal schedule.
+        backlink.next_check_at = None
+        backlink.qa_wait_reason = "api_failed"
+    else:
+        backlink.qa_wait_reason = None
+        # Failing links are rechecked sooner to confirm/clear the regression.
+        factor = 0.25 if qa.status is OverallStatus.FAIL else 1.0
+        backlink.next_check_at = result.crawled_at + timedelta(hours=interval_hours * factor)
 
 
 # ── Change detection (PRD §8.10) ─────────────────────────────────────────────────

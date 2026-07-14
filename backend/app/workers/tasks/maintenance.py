@@ -34,6 +34,26 @@ async def _dispatch_due_rechecks_async(limit: int) -> dict:
     now = datetime.now(timezone.utc)
     lease_until = now + timedelta(minutes=30)
 
+    # ── API-aware scheduling (Enterprise §3): when the crawl proxy's configured
+    # quota is exhausted, PAUSE the scheduled loop instead of dispatching work
+    # that would fail (and burn what's left of every other API). Due links get
+    # qa_wait_reason='waiting_api' so the UI explains the pause; a manual retry
+    # (or the next day's quota) picks them back up.
+    from app.services import api_usage_service
+
+    if not await api_usage_service.available("iproyal"):
+        async with session_scope() as s:
+            res = await s.execute(
+                update(BacklinkRecord)
+                .where(
+                    BacklinkRecord.next_check_at.is_not(None),
+                    BacklinkRecord.next_check_at <= now,
+                )
+                .values(next_check_at=None, qa_wait_reason="waiting_api")
+            )
+            await s.commit()
+        return {"queued": 0, "jobs": 0, "paused": "iproyal_quota", "parked": res.rowcount or 0}
+
     async with session_scope() as s:
         rows = (
             await s.execute(

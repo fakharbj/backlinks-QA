@@ -318,6 +318,13 @@ async def _persist_one(
             except Exception:  # noqa: BLE001
                 pass
 
+        # ── QA attempt audit + API usage counters (Enterprise §2/§3) ─────────
+        # Best-effort: bookkeeping never fails a crawl.
+        try:
+            await _record_attempt(s, record, artifact, qa, job_id)
+        except Exception:  # noqa: BLE001
+            pass
+
         external: list[uuid.UUID] = []
         if fire_alerts:
             notifs: list = []
@@ -329,6 +336,93 @@ async def _persist_one(
         await s.flush()
         # ids resolved after flush
         return external
+
+
+# HTTP statuses that mean "the SERVICE was unavailable", not "the page is bad".
+_TRANSIENT_HTTP = {402, 407, 429, 503, 504}
+_MANUAL_SOURCES = ("recheck", "ui", "manual", "priority")
+
+
+async def _record_attempt(s, record, artifact, qa, job_id: str | None) -> None:
+    """One qa_attempts row per execution try + per-API usage counters."""
+    from sqlalchemy import func as _f
+    from sqlalchemy import select as _select
+
+    from app.models.enums import OverallStatus as _OS
+    from app.models.qa_attempt import QAAttempt
+    from app.services import api_usage_service
+
+    # Usage counters: the proxy (and render pool) consumed a request on this crawl.
+    dur = artifact.crawl_duration_ms
+    err = artifact.fetch_error_detail or (artifact.fetch_error.value if artifact.fetch_error.value != "none" else None)  # noqa: E501
+    if artifact.egress == "proxy":
+        await api_usage_service.record(
+            "iproyal", ok=artifact.fetch_error.value == "none", duration_ms=dur, error=err
+        )
+    if artifact.rendered:
+        await api_usage_service.record("render", ok=True, duration_ms=None)
+
+    # Failure classification for the audit row (only when the try didn't produce
+    # a real verdict — UNKNOWN means classify() saw a transient/external error).
+    failure_kind = failure_api = None
+    status = "success"
+    if qa.status is _OS.UNKNOWN:
+        status = "failed"
+        fe = artifact.fetch_error.value
+        if artifact.http_status == 429:
+            failure_kind = "rate_limit"
+        elif artifact.http_status in (402, 407):
+            failure_kind = "auth"
+        elif fe == "timeout":
+            failure_kind = "timeout"
+        elif fe in ("connection", "dns"):
+            failure_kind = "network"
+        else:
+            failure_kind = "outage"
+        failure_api = "iproyal" if artifact.egress == "proxy" else "target_site"
+
+    n = (
+        await s.execute(
+            _select(_f.count()).select_from(QAAttempt).where(QAAttempt.backlink_id == record.id)
+        )
+    ).scalar() or 0
+    trigger = "auto"
+    triggered_by = None
+    if job_id:
+        job = await s.get(CrawlJob, uuid.UUID(job_id))
+        params = (job.params or {}) if job is not None else {}
+        src = str(params.get("source") or "")
+        if any(m in src for m in _MANUAL_SOURCES):
+            trigger = "manual"
+        raw_actor = params.get("user_id") or params.get("triggered_by")
+        if raw_actor:
+            try:
+                triggered_by = uuid.UUID(str(raw_actor))
+            except ValueError:
+                triggered_by = None
+    apis = []
+    if artifact.egress == "proxy":
+        apis.append("iproyal")
+    if artifact.rendered:
+        apis.append("render")
+    s.add(
+        QAAttempt(
+            workspace_id=record.workspace_id,
+            backlink_id=record.id,
+            attempt_number=int(n) + 1,
+            trigger_source=trigger,
+            triggered_by=triggered_by,
+            queue="crawl.render" if artifact.rendered else "crawl.http",
+            apis_used=apis,
+            request_count=1 + (1 if artifact.rendered else 0),
+            duration_ms=dur,
+            status=status,
+            verdict=qa.status.value,
+            failure_kind=failure_kind,
+            failure_api=failure_api,
+            error=(err or "")[:500] or None,
+        )
+    )
 
 
 async def _update_job(job_id: uuid.UUID, processed: int, succeeded: int, failed: int) -> None:

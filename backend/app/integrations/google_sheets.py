@@ -75,6 +75,12 @@ def reads_per_min() -> int:
 
 def _throttle_read() -> None:
     """Block until a Sheets API read token is free (≈ reads_per_min/60 per second)."""
+    try:  # usage dashboard counter — every throttled call is one Sheets API read
+        from app.services.api_usage_service import record_sync
+
+        record_sync("google_sheets", ok=True)
+    except Exception:  # noqa: BLE001
+        pass
     rpm = reads_per_min()
     if rpm <= 0:
         return

@@ -108,7 +108,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash" | "apiusage";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -439,6 +439,7 @@ export function WorkspaceApp() {
           ) : null}
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} /> : null}
+          {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
         </section>
       </section>
     </main>
@@ -541,8 +542,13 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
   );
 
   return (
-    <main className="grid min-h-screen place-items-center px-5">
-      <section className="w-full max-w-[460px] rounded-xl border border-line bg-panel shadow-card p-6 shadow-sm">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden px-5">
+      {/* Premium-feel backdrop: soft brand-colored glows, no imagery to load. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-32 -top-32 h-96 w-96 rounded-full bg-ocean/10 blur-3xl" />
+        <div className="absolute -bottom-40 -right-24 h-[28rem] w-[28rem] rounded-full bg-plum/10 blur-3xl" />
+      </div>
+      <section className="relative w-full max-w-[460px] rounded-2xl border border-line bg-panel p-6 shadow-card">
         <div className="mb-5 flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold uppercase text-ocean">Performance by Techsa</p>
@@ -683,7 +689,8 @@ const WORKSPACE_NAV: NavGroup[] = [
       ["overview", "Dashboard", Gauge],
       ["analytics", "Analytics", BarChart3],
       ["performance", "Performance", Activity],
-      ["users", "User Dashboards", Users]
+      ["users", "User Dashboards", Users],
+      ["apiusage", "API Usage", Activity]
     ]
   },
   {
@@ -763,7 +770,7 @@ const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
   const hidden = new Set<Tab>(
     role === "manager"
       ? ["team", "settings"]
-      : ["team", "settings", "sheets", "scoring"] // qa
+      : ["team", "settings", "sheets", "scoring", "apiusage"] // qa
   );
   return groups
     .map((g) => ({ ...g, items: g.items.filter(([id]) => !hidden.has(id)) }))
@@ -1782,6 +1789,7 @@ function Backlinks({
   const [orphanedF, setOrphanedF] = useState(() => fParam("orphaned") === "1");
   const [noPlacementF, setNoPlacementF] = useState(() => fParam("no_placement") === "1");
   const [noUserF, setNoUserF] = useState(() => fParam("no_user") === "1");
+  const [qaWaitF, setQaWaitF] = useState(() => fParam("qa_wait"));
   const [sort, setSort] = useState("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState(() => fParam("search"));
@@ -1895,8 +1903,9 @@ function Backlinks({
     setOrphanedF(false);
     setNoPlacementF(false);
     setNoUserF(false);
+    setQaWaitF("");
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF]
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF, qaWaitF]
     .filter(Boolean).length + (orphanedF ? 1 : 0) + (linkMissingF ? 1 : 0) + (noPlacementF ? 1 : 0) + (noUserF ? 1 : 0);
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
@@ -1922,7 +1931,9 @@ function Backlinks({
     ["Spam", Boolean(spamMinF), () => setSpamMinF((s) => (s ? "" : String(ANALYTICS_SPAM_THRESHOLD)))],
     ["Orphaned", orphanedF, () => setOrphanedF((o) => !o)],
     ["No date", noPlacementF, () => setNoPlacementF((v) => !v)],
-    ["No user", noUserF, () => setNoUserF((v) => !v)]
+    ["No user", noUserF, () => setNoUserF((v) => !v)],
+    ["Waiting for API", toks(qaWaitF).includes("waiting_api"), () => toggleTok(qaWaitF, setQaWaitF, "waiting_api")],
+    ["QA failed (API)", toks(qaWaitF).includes("api_failed"), () => toggleTok(qaWaitF, setQaWaitF, "api_failed")]
   ];
 
   const query = useMemo(() => {
@@ -1948,12 +1959,13 @@ function Backlinks({
     if (orphanedF) params.set("orphaned", "true");
     if (noPlacementF) params.set("no_placement", "true");
     if (noUserF) params.set("no_user", "true");
+    if (qaWaitF) params.set("qa_wait", qaWaitF);
     if (axis.from && dateFrom) params.set(axis.from, dateFrom);
     if (axis.to && dateTo) params.set(axis.to, dateTo);
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, noPlacementF, noUserF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
+  }, [projectId, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, noPlacementF, noUserF, qaWaitF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -2007,6 +2019,7 @@ function Backlinks({
     orphaned: orphanedF ? true : null,
     no_placement: noPlacementF ? true : null,
     no_user: noUserF ? true : null,
+    qa_wait: qaWaitF || null,
     ...(axis.from && dateFrom ? { [axis.from]: dateFrom } : {}),
     ...(axis.to && dateTo ? { [axis.to]: dateTo } : {})
   });
@@ -2265,6 +2278,21 @@ function Backlinks({
             </button>
             <button
               onClick={() => {
+                if (window.confirm("Retry QA for every link parked by an API failure or exhausted quota (\"Waiting for API\" / \"API failed\")? Run this after the quota resets or the outage clears."))
+                  recheck.mutate({
+                    project_id: projectId || null,
+                    filters: { ...filterBody(), qa_wait: "waiting_api,api_failed" },
+                    priority: false
+                  });
+              }}
+              className="flex h-9 items-center gap-2 rounded-lg border border-ember/40 px-3 text-sm font-semibold text-ember transition hover:bg-ember/10"
+              title="Re-queue links whose QA was paused by an API limit, outage or failure — they never retry on their own"
+            >
+              <History className="h-4 w-4" />
+              Retry failed QA
+            </button>
+            <button
+              onClick={() => {
                 if (window.confirm(`Give every link in this ${activeFilterCount ? "filtered set" : projectId ? "project" : "workspace"} that has NO placement date a date, spread naturally across the existing placement window (so they don't all land on one day)? Links that already have a date are left untouched.`))
                   fillPlacement.mutate();
               }}
@@ -2495,7 +2523,12 @@ function Backlinks({
                     }}
                   />
                 </Td>
-                <Td><Status value={row.override_status || row.status} reason={row.top_issue_label} compact /></Td>
+                <Td>
+                  <span className="inline-flex items-center gap-1">
+                    <Status value={row.override_status || row.status} reason={row.top_issue_label} compact />
+                    {row.qa_wait_reason ? <QaWaitBadge reason={row.qa_wait_reason} /> : null}
+                  </span>
+                </Td>
                 <Td>
                   <span onClick={(e) => e.stopPropagation()}>
                     <ScoreTip token={token} backlinkId={row.id} score={row.score} />
@@ -2753,6 +2786,26 @@ function BacklinkDetailDrawer({
           </div>
         ) : (
           <div className="space-y-5 p-5">
+            {data.qa_wait_reason ? (
+              <div className={clsx(
+                "flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm",
+                data.qa_wait_reason === "api_failed" ? "border-danger/40 bg-danger/5" : "border-ember/40 bg-ember/5"
+              )}>
+                <QaWaitBadge reason={data.qa_wait_reason} />
+                <span className="min-w-0 flex-1 text-muted">
+                  {STATUS_HELP[data.qa_wait_reason]?.what}{" "}
+                  <span className="text-ink">{STATUS_HELP[data.qa_wait_reason]?.next}</span>
+                </span>
+                <button
+                  onClick={() => recheck.mutate()}
+                  disabled={recheck.isPending}
+                  className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+                >
+                  {recheck.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                  Retry QA now
+                </button>
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <KeyStat label="Status" node={<Status value={data.override_status || data.status} />} />
               <KeyStat label="Score" node={<span className="text-2xl font-semibold text-ink">{data.score ?? "-"}</span>} />
@@ -2988,6 +3041,9 @@ function BacklinkDetailDrawer({
               </DetailBlock>
             ) : null}
 
+            <QaAttemptsBlock token={token} backlinkId={backlinkId} />
+            <LinkTimelineBlock token={token} backlinkId={backlinkId} />
+
             <DetailBlock title={`Issues (${data.issues.length})`}>
               {data.issues.length === 0 ? (
                 <p className="text-sm text-muted">No issues detected.</p>
@@ -3177,6 +3233,108 @@ function KeyStat({ label, node }: { label: string; node: React.ReactNode }) {
       <div className="text-xs font-semibold uppercase text-muted">{label}</div>
       <div className="mt-1">{node}</div>
     </div>
+  );
+}
+
+// Full chronological timeline (Enterprise §10): every recorded event for a link —
+// manual edits, QA verdict changes, overrides, reassignments, dedup/index flips —
+// from the merged /history endpoint, with colored markers per event family.
+function LinkTimelineBlock({ token, backlinkId }: { token: string | null; backlinkId: string }) {
+  type Ev = {
+    at: string; event_type: string; field: string | null; old_value: string | null;
+    new_value: string | null; actor_role: string | null; source: string | null; note: string | null;
+  };
+  const [open, setOpen] = useState(false);
+  const tl = useQuery({
+    queryKey: ["link-timeline", token, backlinkId],
+    enabled: Boolean(token && backlinkId) && open,
+    retry: false,
+    queryFn: () => api<{ items: Ev[] }>(`/backlinks/${backlinkId}/history?limit=50`, { token })
+  });
+  const dot = (t: string) =>
+    t.includes("override") || t === "deleted" ? "bg-danger"
+    : t === "created" || t.includes("recover") ? "bg-ocean"
+    : t.includes("assign") || t === "edited" ? "bg-plum"
+    : t.includes("index") || t.includes("dedup") || t === "rescored" ? "bg-ember"
+    : "bg-slate-400";
+  const wording = (e: Ev) => {
+    const t = e.event_type.replaceAll("_", " ");
+    if (e.field && (e.old_value || e.new_value))
+      return `${t}: ${e.field} ${e.old_value ? `"${e.old_value}" → ` : "→ "}"${e.new_value ?? ""}"`;
+    if (e.old_value || e.new_value)
+      return `${t}${e.old_value ? ` from "${e.old_value}"` : ""}${e.new_value ? ` to "${e.new_value}"` : ""}`;
+    return t;
+  };
+  return (
+    <DetailBlock title="Timeline">
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="text-sm font-medium text-ocean hover:underline">
+          Load the full activity timeline…
+        </button>
+      ) : tl.isLoading ? (
+        <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      ) : !(tl.data?.items || []).length ? (
+        <Empty label="No recorded events yet." />
+      ) : (
+        <ol className="relative ml-2 space-y-2 border-l border-line pl-4">
+          {(tl.data?.items || []).map((e, i) => (
+            <li key={i} className="relative text-sm">
+              <span className={clsx("absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-panel", dot(e.event_type))} />
+              <span className="text-ink">{wording(e)}</span>
+              <span className="ml-2 text-xs text-muted">
+                {formatDate(e.at)}
+                {e.source ? ` · ${e.source}` : ""}
+                {e.actor_role ? ` · ${e.actor_role}` : ""}
+              </span>
+              {e.note ? <p className="text-xs text-muted">“{e.note}”</p> : null}
+            </li>
+          ))}
+        </ol>
+      )}
+    </DetailBlock>
+  );
+}
+
+// Every QA execution TRY (Enterprise §2) — including tries that died on an API
+// failure before producing a verdict. Answers "why is this still pending?".
+function QaAttemptsBlock({ token, backlinkId }: { token: string | null; backlinkId: string }) {
+  type Attempt = {
+    id: string; attempt_number: number; at: string | null; trigger_source: string;
+    queue: string | null; apis_used: string[]; request_count: number;
+    duration_ms: number | null; status: string; verdict: string | null;
+    failure_kind: string | null; failure_api: string | null; error: string | null;
+  };
+  const attempts = useQuery({
+    queryKey: ["qa-attempts", token, backlinkId],
+    enabled: Boolean(token && backlinkId),
+    retry: false,
+    queryFn: () => api<Attempt[]>(`/backlinks/${backlinkId}/qa-attempts?limit=20`, { token })
+  });
+  const rows = attempts.data || [];
+  if (!rows.length) return null;
+  return (
+    <DetailBlock title="QA attempts">
+      <div className="space-y-1.5">
+        {rows.map((a) => (
+          <div key={a.id} className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="w-8 shrink-0 font-semibold text-muted">#{a.attempt_number}</span>
+            <span className="w-32 shrink-0 text-muted">{formatDate(a.at)}</span>
+            <span className={clsx(
+              "rounded px-1.5 py-0.5 font-semibold",
+              a.status === "success" ? "bg-ocean/10 text-ocean" : "bg-danger/10 text-danger"
+            )}>
+              {a.status === "success" ? (STATUS_HELP[a.verdict || ""]?.label || a.verdict) : `failed — ${a.failure_kind || "error"}`}
+            </span>
+            <span className="rounded bg-field px-1.5 py-0.5 text-[10px] uppercase text-muted">{a.trigger_source}</span>
+            {a.apis_used.length ? (
+              <span className="text-muted">via {a.apis_used.join(" + ")}</span>
+            ) : null}
+            {a.duration_ms != null ? <span className="text-muted">{(a.duration_ms / 1000).toFixed(1)}s</span> : null}
+            {a.error ? <span className="min-w-0 flex-1 truncate text-danger" title={a.error}>{a.error}</span> : null}
+          </div>
+        ))}
+      </div>
+    </DetailBlock>
   );
 }
 
@@ -3472,6 +3630,170 @@ function ColorLegend() {
 
 // The standard-user home: their OWN tasks, targets, completion and leave —
 // nothing team-wide, nothing admin.
+// ── API Usage desk (Enterprise §3): where did our quota go? ──────────────────
+const API_LABELS: Record<string, string> = {
+  iproyal: "IPRoyal (crawl proxy)",
+  render: "Render pool (headless browser)",
+  serper: "serper.dev (index checks)",
+  moz: "Moz DA/PA (RapidAPI)",
+  semrush: "Semrush AS (RapidAPI)",
+  rdap: "RDAP (domain age — free)",
+  google_sheets: "Google Sheets reads",
+  google_cse: "Google CSE (index fallback)"
+};
+
+function ApiUsageDesk({ token }: { token: string | null }) {
+  type ApiRow = {
+    api: string; daily_limit: number | null; hourly_limit: number | null;
+    used_today: number; remaining_today: number | null; used_this_hour: number;
+    ok_today: number; failed_today: number; success_rate: number | null;
+    avg_response_ms: number | null; status: string;
+    last_success_at: string | null; last_error: string | null; last_error_at: string | null;
+  };
+  const [selected, setSelected] = useState("iproyal");
+  const [gran, setGran] = useState<"hour" | "day">("hour");
+  const snap = useQuery({
+    queryKey: ["api-usage", token],
+    enabled: Boolean(token),
+    refetchInterval: 30000,
+    retry: false,
+    queryFn: () => api<{ apis: ApiRow[] }>("/api-usage", { token })
+  });
+  const series = useQuery({
+    queryKey: ["api-usage-series", token, selected, gran],
+    enabled: Boolean(token && selected),
+    retry: false,
+    queryFn: () =>
+      api<{ points: Array<{ bucket: string; ok: number; fail: number; avg_ms: number | null }> }>(
+        `/api-usage/series?api=${selected}&granularity=${gran}&periods=${gran === "hour" ? 48 : 30}`,
+        { token }
+      )
+  });
+  const rows = snap.data?.apis || [];
+  const points = series.data?.points || [];
+  const statusMeta = (s: string) =>
+    s === "limit_reached"
+      ? { label: "Limit reached", cls: "bg-danger/10 text-danger border-danger/30" }
+      : s === "erroring"
+      ? { label: "Erroring", cls: "bg-ember/10 text-ember border-ember/30" }
+      : s === "idle"
+      ? { label: "Idle today", cls: "bg-field text-muted border-line" }
+      : { label: "Healthy", cls: "bg-ocean/10 text-ocean border-ocean/30" };
+  if (snap.isError) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
+        <p className="text-sm text-muted">API usage is visible to managers and admins.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+            API Usage
+            <HelpTip text="Every external API the platform calls, with today's consumption, success rate and health. Set daily/hourly limits in the server settings (API_DAILY_LIMITS) — when a limit is reached, QA pauses gracefully ('Waiting for API') instead of burning failed requests." />
+          </h2>
+          <p className="text-sm text-muted">Live consumption across every connected service — refreshes every 30s.</p>
+        </div>
+        <ExportButton
+          onClick={() =>
+            downloadCsv(
+              "api-usage.csv",
+              ["API", "Used today", "Daily limit", "Remaining", "This hour", "OK", "Failed", "Success %", "Avg ms", "Status", "Last error"],
+              rows.map((r) => [r.api, r.used_today, r.daily_limit, r.remaining_today, r.used_this_hour, r.ok_today, r.failed_today, r.success_rate, r.avg_response_ms, r.status, r.last_error])
+            )
+          }
+        />
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {rows.map((r) => {
+          const meta = statusMeta(r.status);
+          const pct = r.daily_limit ? Math.min(100, Math.round((100 * r.used_today) / r.daily_limit)) : null;
+          return (
+            <button
+              key={r.api}
+              onClick={() => setSelected(r.api)}
+              className={clsx(
+                "rounded-xl border p-3 text-left shadow-card transition",
+                selected === r.api ? "border-ocean bg-ocean/5" : "border-line bg-panel hover:bg-field/50"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-ink">{API_LABELS[r.api] || r.api}</span>
+                <span className={clsx("rounded border px-1.5 py-0.5 text-[10px] font-semibold", meta.cls)}>{meta.label}</span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-1.5">
+                <span className="text-2xl font-bold text-ink">{r.used_today.toLocaleString()}</span>
+                <span className="text-xs text-muted">
+                  {r.daily_limit ? `of ${r.daily_limit.toLocaleString()} today` : "requests today"}
+                </span>
+              </div>
+              {pct != null ? (
+                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded bg-field">
+                  <div
+                    className={clsx("h-full rounded", pct >= 90 ? "bg-danger" : pct >= 70 ? "bg-ember" : "bg-ocean")}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              ) : null}
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted">
+                <span>{r.used_this_hour} this hour</span>
+                {r.success_rate != null ? <span>{r.success_rate}% success</span> : null}
+                {r.avg_response_ms != null ? <span>~{r.avg_response_ms}ms</span> : null}
+              </div>
+              {r.last_error ? (
+                <p className="mt-1 truncate text-[11px] text-danger" title={`${r.last_error} (${formatDate(r.last_error_at)})`}>
+                  Last error: {r.last_error}
+                </p>
+              ) : null}
+            </button>
+          );
+        })}
+        {snap.isLoading ? (
+          <div className="col-span-full flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+        ) : null}
+      </div>
+
+      <section className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">
+            {API_LABELS[selected] || selected} — {gran === "hour" ? "last 48 hours" : "last 30 days"}
+          </h3>
+          <div className="inline-flex overflow-hidden rounded-lg border border-line" role="group">
+            {(["hour", "day"] as const).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGran(g)}
+                className={clsx(
+                  "h-8 px-2.5 text-xs font-medium capitalize",
+                  gran === g ? "bg-ocean text-white dark:text-slate-900" : "bg-panel text-muted hover:bg-field"
+                )}
+              >
+                {g === "hour" ? "Hourly" : "Daily"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="p-4">
+          {points.length && points.some((p) => p.ok || p.fail) ? (
+            <TrendChart
+              labels={points.map((p) => p.bucket)}
+              series={[
+                { name: "Successful", cssVar: "--ocean", values: points.map((p) => p.ok) },
+                { name: "Failed", cssVar: "--danger", values: points.map((p) => p.fail) }
+              ]}
+            />
+          ) : (
+            <Empty label="No usage recorded in this window yet." />
+          )}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 // ── My task calendar (Phase 10 P6) ──────────────────────────────────────────
 // The signed-in person's assigned work on a real calendar: month / week / day
 // views with free prev/next navigation (covers "one month back, current, one
@@ -3780,30 +4102,45 @@ function TaskDomainSuggestions({
         <p className="text-xs text-muted">No suitable unused domains right now — ask your manager for a manual recommendation.</p>
       ) : (
         <div className="space-y-1">
-          {items.map((s) => (
-            <div key={s.domain_key} className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-panel px-2 py-1.5">
-              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink" title={s.reasons.join(" · ")}>
-                {s.domain_key}
-              </span>
-              {s.da != null ? <MetricTag label="DA" value={s.da} /> : null}
-              {s.pa != null ? <MetricTag label="PA" value={s.pa} /> : null}
-              {s.spam_score != null ? <SpamTag value={s.spam_score} /> : null}
-              {s.link_type_match ? (
-                <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean">type match</span>
-              ) : null}
-              <CopyButton text={s.domain_key} title="Copy domain" />
-              <button
-                onClick={() => act.mutate({ domain_key: s.domain_key, status: "accepted" })}
-                className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
-              >
-                Accept
-              </button>
-              <button
-                onClick={() => act.mutate({ domain_key: s.domain_key, status: "skipped" })}
-                className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
-              >
-                Skip
-              </button>
+          {items.map((s, i) => (
+            <div key={s.domain_key} className={clsx(
+              "rounded-lg border px-2 py-1.5",
+              i === 0 ? "border-ocean/40 bg-ocean/5" : "border-line bg-panel"
+            )}>
+              <div className="flex flex-wrap items-center gap-2">
+                {i < 3 ? (
+                  <span className={clsx(
+                    "rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
+                    i === 0 ? "bg-ocean text-white dark:text-slate-900" : "bg-ocean/10 text-ocean"
+                  )}>
+                    {i === 0 ? "Top pick" : `#${i + 1}`}
+                  </span>
+                ) : null}
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+                  {s.domain_key}
+                </span>
+                {s.da != null ? <MetricTag label="DA" value={s.da} /> : null}
+                {s.pa != null ? <MetricTag label="PA" value={s.pa} /> : null}
+                {s.spam_score != null ? <SpamTag value={s.spam_score} /> : null}
+                {s.link_type_match ? (
+                  <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean">type match</span>
+                ) : null}
+                <CopyButton text={s.domain_key} title="Copy domain" />
+                <button
+                  onClick={() => act.mutate({ domain_key: s.domain_key, status: "accepted" })}
+                  className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={() => act.mutate({ domain_key: s.domain_key, status: "skipped" })}
+                  className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
+                >
+                  Skip
+                </button>
+              </div>
+              {/* WHY this domain — the recommendation explains itself. */}
+              <p className="mt-0.5 text-[11px] leading-snug text-muted">{s.reasons.join(" · ")}</p>
             </div>
           ))}
         </div>
@@ -3869,6 +4206,80 @@ function MySelfDashboard({ token, onNotice }: { token: string | null; onNotice: 
         onNotice={onNotice}
       />
     </div>
+  );
+}
+
+// Recommendations addressed to THIS person (manual admin picks + engine rows the
+// person hasn't decided on yet), with metrics context + copy + accept/skip.
+function MyRecommendationsPanel({ token, userLabel }: { token: string | null; userLabel: string }) {
+  const queryClient = useQueryClient();
+  type Reco = {
+    id: string; domain_key: string; project_id: string | null; link_type_name: string | null;
+    source: string; status: string; reason: string | null; priority: string | null;
+    due_date: string | null; note: string | null;
+  };
+  const recos = useQuery({
+    queryKey: ["my-recos", token, userLabel],
+    enabled: Boolean(token && userLabel),
+    retry: false,
+    queryFn: () =>
+      api<Reco[]>(
+        `/source-domains/recommendations?user_label=${encodeURIComponent(userLabel)}&status_filter=suggested,viewed&limit=20`,
+        { token }
+      )
+  });
+  const act = useMutation({
+    mutationFn: (v: { r: Reco; status: "accepted" | "skipped" }) =>
+      api("/source-domains/recommendations/action", {
+        token, method: "POST",
+        body: JSON.stringify({
+          domain_key: v.r.domain_key, status: v.status,
+          project_id: v.r.project_id, recommended_to: userLabel
+        })
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["my-recos"] })
+  });
+  const rows = recos.data || [];
+  if (!rows.length) return null;
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex items-center gap-1.5 border-b border-line p-3">
+        <h3 className="text-sm font-semibold text-ink">Recommended for you</h3>
+        <HelpTip text="Source domains your manager picked for you (or the system queued) — use them for your link-building tasks. Accept when you'll use one, Skip to dismiss it." />
+        <span className="ml-auto rounded-full bg-ocean/10 px-2 py-0.5 text-xs font-semibold text-ocean">{rows.length}</span>
+      </div>
+      <div className="divide-y divide-line">
+        {rows.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+            {r.source === "manual" ? (
+              <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-plum" title="Hand-picked by your manager">Manager pick</span>
+            ) : null}
+            {r.priority === "high" ? (
+              <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-danger">High priority</span>
+            ) : null}
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{r.domain_key}</span>
+            {r.link_type_name ? <span className="text-xs text-muted">{linkTypeLabel(r.link_type_name)}</span> : null}
+            {r.due_date ? <span className="text-xs text-muted">due {formatDay(r.due_date)}</span> : null}
+            <CopyButton text={r.domain_key} title="Copy domain" />
+            <button
+              onClick={() => act.mutate({ r, status: "accepted" })}
+              className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
+            >
+              Accept
+            </button>
+            <button
+              onClick={() => act.mutate({ r, status: "skipped" })}
+              className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
+            >
+              Skip
+            </button>
+            {(r.reason || r.note) ? (
+              <p className="w-full text-[11px] text-muted">{r.reason || r.note}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -4031,6 +4442,11 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
           {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
         </div>
       </section>
+
+      {/* Domains a manager hand-picked (or the engine queued) for this person. */}
+      {me.data?.labels.length ? (
+        <MyRecommendationsPanel token={token} userLabel={me.data.labels[0]} />
+      ) : null}
 
       {/* Full task calendar: past, current and upcoming months (day/week/month). */}
       <MyTaskCalendar token={token} />
@@ -14529,8 +14945,23 @@ const STATUS_HELP: Record<string, { label?: string; what: string; next: string }
   },
   UNKNOWN: {
     label: "Couldn't check",
-    what: "We couldn't reach the page this time (timeout or a temporary server problem).",
-    next: "It will retry automatically — or use Recheck to try now."
+    what: "We couldn't reach the page this time (timeout, rate limit, or a temporary API/server problem).",
+    next: "It will NOT retry by itself (that would waste API quota) — use Recheck / “Retry failed” when ready."
+  },
+  waiting_api: {
+    label: "Waiting for API",
+    what: "The API quota (e.g. crawl proxy) ran out before this link could be checked, so QA paused instead of burning failed requests.",
+    next: "Retry after the quota resets — “Retry failed” re-queues everything that's waiting."
+  },
+  api_failed: {
+    label: "API failed",
+    what: "The last QA try died on an external-API failure (limit, outage, timeout). The link keeps its previous status and won't auto-retry.",
+    next: "Open the link to see exactly which API failed and why, then use Recheck to retry manually."
+  },
+  manual_retry: {
+    label: "Manual retry",
+    what: "QA for this link is paused until someone retries it by hand.",
+    next: "Use Recheck when you want it checked again."
   },
   NEEDS_MANUAL_REVIEW: {
     label: "Needs review",
@@ -14568,6 +14999,26 @@ const STATUS_SHORT: Record<string, string> = {
   UNKNOWN: "Unclear",
   PENDING: "Pending"
 };
+
+// QA wait badge (Enterprise §1/§4): why QA is intentionally paused for a link.
+// Hovering explains the state; the "why isn't this checked?" answer at a glance.
+function QaWaitBadge({ reason }: { reason: string }) {
+  const meta =
+    reason === "waiting_api"
+      ? { label: "Waiting for API", cls: "bg-ember/10 text-ember border-ember/30", icon: "⏸" }
+      : reason === "api_failed"
+      ? { label: "API failed", cls: "bg-danger/10 text-danger border-danger/30", icon: "⚡" }
+      : { label: "Manual retry", cls: "bg-field text-muted border-line", icon: "✋" };
+  const help = STATUS_HELP[reason];
+  return (
+    <span
+      title={help ? `${help.what}\n\nWhat to do: ${help.next}` : meta.label}
+      className={clsx("inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[10px] font-semibold", meta.cls)}
+    >
+      {meta.icon} {meta.label}
+    </span>
+  );
+}
 
 function Status({ value, reason, compact }: { value: string; reason?: string | null; compact?: boolean }) {
   const tone =

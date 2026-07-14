@@ -103,6 +103,7 @@ async def list_backlinks(
     as_min: int | None = Query(default=None, ge=0, le=100),
     orphaned: bool | None = None,
     no_placement: bool | None = None,
+    qa_wait: str | None = None,
     no_user: bool | None = None,
     search: str | None = None,
     target: str | None = None,
@@ -145,7 +146,7 @@ async def list_backlinks(
         http_status=http_status, broken=broken, http_class=http_class,
         link_missing=link_missing, spam_min=spam_min,
         da_min=da_min, pa_min=pa_min, as_min=as_min, orphaned=orphaned,
-        no_placement=no_placement, no_user=no_user,
+        no_placement=no_placement, no_user=no_user, qa_wait=qa_wait,
         search=search, target=target,
         placement_from=placement_from, placement_to=placement_to,
         discovered_from=discovered_from, discovered_to=discovered_to,
@@ -210,6 +211,7 @@ async def export_backlinks(
     as_min: int | None = Query(default=None, ge=0, le=100),
     orphaned: bool | None = None,
     no_placement: bool | None = None,
+    qa_wait: str | None = None,
     no_user: bool | None = None,
     search: str | None = None,
     target: str | None = None,
@@ -239,7 +241,7 @@ async def export_backlinks(
         http_status=http_status, broken=broken, http_class=http_class,
         link_missing=link_missing, spam_min=spam_min,
         da_min=da_min, pa_min=pa_min, as_min=as_min, orphaned=orphaned,
-        no_placement=no_placement, no_user=no_user,
+        no_placement=no_placement, no_user=no_user, qa_wait=qa_wait,
         search=search, target=target,
         placement_from=placement_from, placement_to=placement_to,
         discovered_from=discovered_from, discovered_to=discovered_to,
@@ -400,6 +402,40 @@ async def backlink_checks(
     )
 
 
+@router.get("/{backlink_id}/qa-attempts")
+async def backlink_qa_attempts(
+    backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict]:
+    """Every QA execution TRY for this link — including tries that died on an
+    API failure before producing a verdict. The 'why is it still pending' log."""
+    from sqlalchemy import select as _select
+
+    from app.models.qa_attempt import QAAttempt
+
+    await backlink_service.get_backlink(db, ctx, backlink_id)  # scope check
+    rows = (
+        await db.execute(
+            _select(QAAttempt)
+            .where(QAAttempt.backlink_id == backlink_id)
+            .order_by(QAAttempt.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(a.id), "attempt_number": a.attempt_number,
+            "at": a.created_at.isoformat() if a.created_at else None,
+            "trigger_source": a.trigger_source, "queue": a.queue,
+            "apis_used": a.apis_used or [], "request_count": a.request_count,
+            "duration_ms": a.duration_ms, "status": a.status, "verdict": a.verdict,
+            "failure_kind": a.failure_kind, "failure_api": a.failure_api,
+            "error": a.error,
+        }
+        for a in rows
+    ]
+
+
 @router.patch("/{backlink_id}", response_model=BacklinkRow)
 async def update_backlink(
     backlink_id: uuid.UUID, payload: BacklinkUpdate, db: DbSession,
@@ -451,7 +487,8 @@ async def recheck_one(
     backlink_id: uuid.UUID, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.RUN_CRAWLS)),
 ) -> RecheckResponse:
-    await backlink_service.get_backlink(db, ctx, backlink_id)  # scope check
+    bl = await backlink_service.get_backlink(db, ctx, backlink_id)  # scope check
+    bl.qa_wait_reason = None  # manual run IS the retry — clear the parked state
     job = await crawl_service.create_job(
         db, ctx, ids=[backlink_id], project_id=None, job_type=JobType.SINGLE
     )
@@ -475,6 +512,16 @@ async def recheck_bulk(
     ids = await crawl_service.select_recheck_ids(db, ctx, payload)
     if not ids:
         return RecheckResponse(job_id=uuid.uuid4(), queued=0)
+    # A manual run IS the retry: clear any parked wait state (waiting_api /
+    # api_failed) so the grid shows "Processing" while the check runs.
+    from sqlalchemy import update as _update
+
+    from app.models.backlink import BacklinkRecord as _BL
+
+    await db.execute(
+        _update(_BL).where(_BL.id.in_(ids), _BL.qa_wait_reason.is_not(None))
+        .values(qa_wait_reason=None)
+    )
     job_type = JobType.SINGLE if len(ids) == 1 else JobType.BULK
     job = await crawl_service.create_job(
         db, ctx, ids=ids, project_id=payload.project_id, job_type=job_type

@@ -114,10 +114,18 @@ async def _check_serper(source_page_url: str) -> dict:
                         "evidence": {"reason": "serper_error", "error": repr(exc)[:200]}}
             if resp.status_code in (401, 402, 403):
                 # Bad key or out of credits → retire it and roll to the next key.
+                from app.services import api_usage_service
+
+                await api_usage_service.record(
+                    "serper", ok=False, error=f"http_{resp.status_code}_key_retired"
+                )
                 await serper_pool.mark_dead(key)
                 continue
             if resp.status_code == 429:
                 # Rate limited (transient) — do NOT retire the key.
+                from app.services import api_usage_service
+
+                await api_usage_service.record("serper", ok=False, error="rate_limited")
                 return {"verdict": UNCERTAIN, "result_count": None,
                         "evidence": {"reason": "serper_rate_limited"}}
             if resp.status_code != 200:
@@ -129,6 +137,9 @@ async def _check_serper(source_page_url: str) -> dict:
                 return {"verdict": UNCERTAIN, "result_count": None,
                         "evidence": {"reason": "serper_bad_json", "error": repr(exc)[:200]}}
             await serper_pool.note_use(key, int(data.get("credits") or 1))
+            from app.services import api_usage_service
+
+            await api_usage_service.record("serper", ok=True)
             organic = data.get("organic") or []
             count = len(organic)
             verdict = INDEXED if count > 0 else NOT_INDEXED

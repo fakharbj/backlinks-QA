@@ -211,6 +211,11 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consecutive_failures: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
+    # Why QA is intentionally NOT running (Enterprise refinement §1): 'api_failed'
+    # (last try died on a recoverable external-API failure — no auto-retry, a human
+    # retries), 'waiting_api' (quota exhausted before dispatch), 'manual_retry'.
+    # NULL = normal scheduling. Cleared on any successful crawl or manual retry.
+    qa_wait_reason: Mapped[str | None] = mapped_column(String(20))
 
     # ── Manual override (PRD §8.15) ──────────────────────────────────────────
     override_status: Mapped[OverallStatus | None] = mapped_column(

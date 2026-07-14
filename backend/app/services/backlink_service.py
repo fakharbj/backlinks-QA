@@ -163,6 +163,16 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
         # Links with no placement date — the set the "Fill missing dates" and
         # per-row date editor act on.
         stmt = stmt.where(BacklinkRecord.placement_date.is_(None))
+    if f.qa_wait:
+        # QA wait state: waiting_api / api_failed / manual_retry ("none" = no wait).
+        conds = []
+        for part in _csv(f.qa_wait):
+            if part == "none":
+                conds.append(BacklinkRecord.qa_wait_reason.is_(None))
+            elif part in ("waiting_api", "api_failed", "manual_retry"):
+                conds.append(BacklinkRecord.qa_wait_reason == part)
+        if conds:
+            stmt = stmt.where(or_(*conds) if len(conds) > 1 else conds[0])
     if f.no_user:
         # No owner assigned — blank/NULL label (same set as the (blanks) chip).
         stmt = stmt.where(

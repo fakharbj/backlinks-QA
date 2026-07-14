@@ -321,6 +321,15 @@ class Settings(BaseSettings):
     # through the IPRoyal proxy (Google blocks datacenter IPs). Deduped by source
     # URL and re-checked at most every INDEX_RECHECK_DAYS. Failures → UNCERTAIN,
     # never a false "not indexed".
+    # ── External-API usage limits (Enterprise §3) ────────────────────────────
+    # JSON maps of api-name → max requests, e.g. {"iproyal": 5000, "serper": 2400}.
+    # Known names: iproyal, render, serper, moz, semrush, rdap, google_sheets,
+    # google_cse. When a limit is reached the QA scheduler PAUSES dispatch for
+    # work needing that API ("Waiting for API availability") instead of retrying;
+    # unlisted APIs are never throttled. Empty = no limits enforced.
+    API_DAILY_LIMITS: str = ""
+    API_HOURLY_LIMITS: str = ""
+
     # ── Relaxed matching (GBP/GMB link types; owner rule 2026-07) ────────────
     # Link types whose NAME contains one of these substrings (case-insensitive,
     # comma list) get the relaxed matcher: when the main-domain link is absent, a
