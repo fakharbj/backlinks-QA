@@ -108,7 +108,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash" | "apiusage" | "myopps" | "guidance";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -441,7 +441,9 @@ export function WorkspaceApp() {
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
           {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
-          {tab === "guidance" ? <GuidanceDesk token={token} /> : null}
+          {tab === "guidance" ? <GuidanceDesk token={token} fixed="next" /> : null}
+          {tab === "myscoring" ? <GuidanceDesk token={token} fixed="scoring" /> : null}
+          {tab === "statusguide" ? <GuidanceDesk token={token} fixed="statuses" /> : null}
         </section>
       </section>
     </main>
@@ -768,7 +770,9 @@ const MY_NAV: NavGroup[] = [
     label: "Grow",
     items: [
       ["myopps", "Opportunities", Globe],
-      ["guidance", "Guidance", Info]
+      ["guidance", "Guidance", Lightbulb],
+      ["myscoring", "Scoring", Gauge],
+      ["statusguide", "Status Guide", Info]
     ]
   }
 ];
@@ -2318,6 +2322,17 @@ function Backlinks({
                 batchId={liveBatch}
                 onClose={() => setLiveBatch(null)}
                 onDone={() => queryClient.invalidateQueries({ queryKey: ["backlinks"] })}
+                onViewResults={() => {
+                  clearFilters();
+                  setSort("last_checked_at");
+                  setSortDir("desc");
+                }}
+                onViewFailures={() => {
+                  clearFilters();
+                  setStatus("FAIL,NEEDS_MANUAL_REVIEW,UNKNOWN");
+                  setSort("last_checked_at");
+                  setSortDir("desc");
+                }}
               />
             ) : null}
             <button
@@ -2857,6 +2872,9 @@ function BacklinkDetailDrawer({
               <KeyStat label="Indexable" node={<span className="font-medium">{data.indexability ?? "-"}</span>} />
             </div>
 
+            {/* The full story of the last check — plain words, no bare codes. */}
+            <QaEvidencePanel data={data} />
+
             <DetailBlock title="Link facts">
               <FactRow k="Target" v={data.target_url} />
               <FactRow k="Expected target" v={data.expected_target_url} />
@@ -3277,6 +3295,139 @@ function KeyStat({ label, node }: { label: string; node: React.ReactNode }) {
       <div className="text-xs font-semibold uppercase text-muted">{label}</div>
       <div className="mt-1">{node}</div>
     </div>
+  );
+}
+
+// ── QA Evidence panel (Enterprise §1): the full story of one check ───────────
+// Answers, in order and in plain words: what we requested, how it redirected,
+// what came back, what a real browser saw, and WHY the verdict is what it is —
+// with the recommended next action. No raw codes without explanations.
+const HTTP_WORDS: Record<number, string> = {
+  200: "page loaded normally",
+  301: "moved permanently",
+  302: "temporary redirect",
+  403: "access refused (bot protection)",
+  404: "page not found",
+  410: "page permanently removed",
+  429: "too many requests (rate limit)",
+  500: "server error",
+  503: "service temporarily unavailable"
+};
+const httpWord = (s: number | null | undefined) =>
+  s == null ? "no response" : `${s} — ${HTTP_WORDS[s] || (s < 300 ? "OK" : s < 400 ? "redirect" : s < 500 ? "request refused" : "server problem")}`;
+
+function QaEvidencePanel({ data }: { data: BacklinkDetail }) {
+  const lr = data.latest_result;
+  if (!lr) return null;
+  const hops = lr.redirect_chain || [];
+  const rawStatus = data.http_status;
+  const browserTried = lr.found_in_browser != null || lr.browser_http_status != null;
+  const browserOk = Boolean(lr.found_in_browser);
+  const browserBlocked = browserTried && !browserOk && (lr.browser_http_status ?? 0) >= 400;
+  const eff = data.override_status || data.status;
+  const topIssue = (data.issues || [])[0];
+  // One-line conclusion chip — the classification in human words.
+  const conclusion =
+    browserOk && (rawStatus ?? 0) >= 400
+      ? { label: "Verified in a real browser", cls: "bg-ocean/10 text-ocean border-ocean/40",
+          text: "The site refuses automated requests, but the page loads fine in a real browser — the link is genuinely live." }
+      : browserBlocked
+      ? { label: "Blocked for automated tools", cls: "bg-plum/10 text-plum border-plum/40",
+          text: "Both our automated request AND a real browser from our servers were refused — the site blocks our network (IP-level bot protection). The page most likely opens fine for real visitors; confirm once in your own browser." }
+      : eff === "PASS"
+      ? { label: "Confirmed working", cls: "bg-ocean/10 text-ocean border-ocean/40",
+          text: "The page loaded, the link is present, and no serious problems were found." }
+      : eff === "FAIL"
+      ? { label: "Confirmed problem", cls: "bg-danger/10 text-danger border-danger/40",
+          text: "We could read the page normally — the problem shown below is real, not a checking error." }
+      : eff === "UNKNOWN"
+      ? { label: "Temporary — will need a retry", cls: "bg-ember/10 text-ember border-ember/40",
+          text: "The website or a service didn't respond properly this time (timeout / rate limit / outage). This says nothing about the link itself yet." }
+      : eff === "NEEDS_MANUAL_REVIEW"
+      ? { label: "Needs your eyes", cls: "bg-plum/10 text-plum border-plum/40",
+          text: "We couldn't verify this automatically with confidence — a quick human look settles it." }
+      : { label: "Waiting for its first check", cls: "bg-field text-muted border-line",
+          text: "This link hasn't been QA-checked yet — run a QA check to get its first verdict." };
+  const nextAction = STATUS_HELP[eff]?.next;
+  const step = (n: number, title: string, body: React.ReactNode) => (
+    <li className="relative pl-7">
+      <span className="absolute left-0 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-field text-[10px] font-bold text-muted">{n}</span>
+      <span className="text-xs font-semibold uppercase tracking-wide text-muted">{title}</span>
+      <div className="mt-0.5 text-sm text-ink">{body}</div>
+    </li>
+  );
+  let n = 0;
+  return (
+    <section className="rounded-xl border border-line bg-field/30 p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-bold text-ink">What happened during this check</h3>
+        <span className={clsx("rounded-full border px-2.5 py-0.5 text-xs font-bold", conclusion.cls)}>
+          {conclusion.label}
+        </span>
+        <span className="ml-auto text-xs text-muted">{formatDate(lr.crawled_at)}</span>
+      </div>
+      <ol className="space-y-3">
+        {step(++n, "We requested the page", (
+          <span className="break-all text-sm">
+            {data.source_page_url}
+            {hops.length ? null : (
+              <span className={clsx("ml-2 rounded px-1.5 py-0.5 text-xs font-semibold",
+                (rawStatus ?? 0) < 400 ? "bg-ocean/10 text-ocean" : "bg-danger/10 text-danger")}>
+                {httpWord(rawStatus)}
+              </span>
+            )}
+          </span>
+        ))}
+        {hops.length ? step(++n, `It redirected (${hops.length} hop${hops.length === 1 ? "" : "s"})`, (
+          <div className="space-y-0.5">
+            {hops.map((hop, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="rounded bg-field px-1 py-0.5 font-semibold text-muted">{(hop as { status?: number }).status ?? "→"}</span>
+                <span className="min-w-0 break-all text-muted">{(hop as { url?: string }).url}</span>
+              </div>
+            ))}
+            <div className="text-xs text-muted">
+              Landed on <span className="break-all text-ink">{lr.final_url || data.source_page_url}</span>{" "}
+              <span className={clsx("rounded px-1.5 py-0.5 font-semibold",
+                (rawStatus ?? 0) < 400 ? "bg-ocean/10 text-ocean" : "bg-danger/10 text-danger")}>
+                {httpWord(rawStatus)}
+              </span>
+            </div>
+          </div>
+        )) : null}
+        {browserTried ? step(++n, "We also opened it in a real browser", (
+          browserOk ? (
+            <span>
+              <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-xs font-semibold text-ocean">
+                Loaded successfully{lr.browser_http_status ? ` (${httpWord(lr.browser_http_status)})` : ""}
+              </span>{" "}
+              <span className="text-sm text-muted">— and the backlink was found on the rendered page.</span>
+            </span>
+          ) : (
+            <span>
+              <span className="rounded bg-danger/10 px-1.5 py-0.5 text-xs font-semibold text-danger">
+                Also blocked ({httpWord(lr.browser_http_status)})
+              </span>{" "}
+              <span className="text-sm text-muted">— the protection covers our whole network, not just the automated request.</span>
+            </span>
+          )
+        )) : null}
+        {step(++n, "Conclusion", (
+          <div>
+            <p className="text-sm text-muted">{conclusion.text}</p>
+            {topIssue && eff !== "PASS" ? (
+              <p className="mt-1 text-sm"><span className="font-semibold text-ink">Main finding:</span> <span className="text-muted">{topIssue.message}</span></p>
+            ) : null}
+            {nextAction ? (
+              <p className="mt-1 flex items-start gap-1 text-sm">
+                <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ember" />
+                <span><span className="font-semibold text-ink">Next step:</span> <span className="text-muted">{nextAction}</span></span>
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -3751,6 +3902,37 @@ function ApiUsageDesk({ token }: { token: string | null }) {
         />
       </div>
 
+      {/* Threshold warnings (§8): informational at 80%, strong at 95%, hard stop
+          explained at 100% — plain words, no bare codes. */}
+      {rows
+        .filter((r) => r.daily_limit && r.used_today / r.daily_limit >= 0.8)
+        .map((r) => {
+          const pct = Math.round((100 * r.used_today) / (r.daily_limit || 1));
+          const hard = pct >= 100;
+          const strong = pct >= 95;
+          return (
+            <div
+              key={`warn-${r.api}`}
+              className={clsx(
+                "flex flex-wrap items-center gap-2 rounded-xl border p-3 text-sm",
+                hard ? "border-danger/50 bg-danger/5" : strong ? "border-danger/40 bg-danger/5" : "border-ember/40 bg-ember/5"
+              )}
+            >
+              <span className={clsx("rounded px-2 py-0.5 text-xs font-bold uppercase",
+                hard ? "bg-danger text-white" : strong ? "bg-danger/10 text-danger" : "bg-ember/10 text-ember")}>
+                {hard ? "Limit reached — paused" : strong ? "Critical" : "Warning"}
+              </span>
+              <span className="min-w-0 flex-1 text-ink">
+                <span className="font-semibold">{API_LABELS[r.api] || r.api}</span> is at{" "}
+                <span className="font-bold">{pct}%</span> of its daily limit ({r.used_today.toLocaleString()} of {r.daily_limit?.toLocaleString()}).
+                {hard
+                  ? " New scheduled work needing it is parked as “Waiting for API” — it resumes after the daily reset or a manual retry."
+                  : " At 100%, dependent QA runs pause automatically instead of failing — plan remaining checks accordingly."}
+              </span>
+            </div>
+          );
+        })}
+
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {rows.map((r) => {
           const meta = statusMeta(r.status);
@@ -3934,8 +4116,11 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
 }
 
 // ── User "Guidance" desk (Enterprise §13): next steps + status + scoring ─────
-function GuidanceDesk({ token }: { token: string | null }) {
-  const [gTab, setGTab] = useState<"next" | "statuses" | "scoring">("next");
+// Mounted three ways from the sidebar (Guidance / Scoring / Status Guide) — the
+// owner wants them as SEPARATE sections, so `fixed` locks one view per tab.
+function GuidanceDesk({ token, fixed }: { token: string | null; fixed?: "next" | "statuses" | "scoring" }) {
+  const [gTabState, setGTab] = useState<"next" | "statuses" | "scoring">(fixed || "next");
+  const gTab = fixed || gTabState;
   const me = useQuery({
     queryKey: ["my-labels", token],
     enabled: Boolean(token),
@@ -3991,23 +4176,30 @@ function GuidanceDesk({ token }: { token: string | null }) {
   const toneCls = (t: string) =>
     t === "danger" ? "border-danger/40 bg-danger/5" : t === "ember" ? "border-ember/40 bg-ember/5" : "border-ocean/40 bg-ocean/5";
   const statusKeys = ["PENDING", "PASS", "WARNING", "FAIL", "NEEDS_MANUAL_REVIEW", "UNKNOWN", "waiting_api", "api_failed", "indexed", "not_indexed", "uncertain", "unchecked", "duplicate", "unique"];
+  const titles = {
+    next: ["Guidance", "Personalized next steps — computed from your own last-30-day numbers."],
+    statuses: ["Status Guide", "Every status in plain words: what it means, why it happens, what to do."],
+    scoring: ["Scoring", "Your personal scores, what moves them, and how link scoring works."]
+  } as const;
   return (
     <section className="space-y-4">
       <div>
-        <h2 className="text-base font-semibold text-ink">Guidance</h2>
-        <p className="text-sm text-muted">Plain-English help: what to do next, what every status means, and how scoring works.</p>
+        <h2 className="text-base font-semibold text-ink">{titles[gTab][0]}</h2>
+        <p className="text-sm text-muted">{titles[gTab][1]}</p>
       </div>
-      <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
-        {([["next", "What to do next"], ["statuses", "Status guide"], ["scoring", "Scoring guide"]] as const).map(([v, l]) => (
-          <button
-            key={v}
-            onClick={() => setGTab(v)}
-            className={clsx("px-3 py-1.5 transition", gTab === v ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
-          >
-            {l}
-          </button>
-        ))}
-      </span>
+      {!fixed ? (
+        <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
+          {([["next", "What to do next"], ["statuses", "Status guide"], ["scoring", "Scoring guide"]] as const).map(([v, l]) => (
+            <button
+              key={v}
+              onClick={() => setGTab(v)}
+              className={clsx("px-3 py-1.5 transition", gTab === v ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+            >
+              {l}
+            </button>
+          ))}
+        </span>
+      ) : null}
       {gTab === "next" ? (
         <div className="space-y-3">
           {tips.map((t, i) => (
@@ -4038,8 +4230,43 @@ function GuidanceDesk({ token }: { token: string | null }) {
           })}
         </div>
       ) : (
-        <div className="rounded-xl border border-line bg-panel p-5 shadow-card">
-          <ScoringGuideContent />
+        <div className="space-y-4">
+          {/* Personal scores (§5): the user's own numbers with the factors named. */}
+          {(() => {
+            const links = n("links");
+            if (!links) return null;
+            const quality = Math.round((n("pass") / links) * 100);
+            const reliability = Math.round(100 - (n("fail") / links) * 100);
+            const checked = links - n("qa_pending");
+            const qaScore = checked > 0 ? Math.round((n("pass") / checked) * 100) : null;
+            const plan = (dash.data?.plan || {}) as Record<string, number | null>;
+            const production = plan.completion_pct != null ? Math.round(Number(plan.completion_pct)) : null;
+            const parts = [quality, reliability, qaScore, production].filter((v): v is number => v != null);
+            const overall = parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : null;
+            const dial = (label: string, v: number | null, why: string) => (
+              <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</div>
+                <div className={clsx("mt-1 text-3xl font-bold",
+                  v == null ? "text-muted" : v >= 80 ? "text-ocean" : v >= 50 ? "text-ember" : "text-danger")}>
+                  {v ?? "—"}{v != null ? <span className="text-base font-semibold text-muted">/100</span> : null}
+                </div>
+                <p className="mt-1 text-xs leading-snug text-muted">{why}</p>
+              </div>
+            );
+            return (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                {dial("Overall", overall, "The average of your scores below — your one-number summary (last 30 days).")}
+                {dial("Quality", quality, `${n("pass")} of your ${links} links fully qualified. Raise it by fixing red links first.`)}
+                {dial("Reliability", reliability, `${n("fail")} link${n("fail") === 1 ? "" : "s"} not qualified. Fewer failures = higher reliability.`)}
+                {dial("QA pass rate", qaScore, checked > 0 ? `Of your ${checked} checked links, ${n("pass")} passed QA.` : "No checked links yet — runs after your first QA.")}
+                {dial("Production", production, production != null ? "Completed links vs your planned target this period." : "Appears once you have planned targets in the calendar.")}
+              </div>
+            );
+          })()}
+          <div className="rounded-xl border border-line bg-panel p-5 shadow-card">
+            <h3 className="mb-3 text-sm font-bold text-ink">How link scoring works</h3>
+            <ScoringGuideContent />
+          </div>
         </div>
       )}
     </section>
@@ -4762,11 +4989,38 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
 
   return (
     <section className="space-y-4">
-      <div>
-        <h2 className="text-base font-semibold text-ink">
-          My Work{me.data?.labels.length ? ` — ${me.data.labels.join(", ")}` : ""}
-        </h2>
-        <p className="text-sm text-muted">Your tasks, targets and completion. Week of {formatDay(monday)}.</p>
+      {/* Premium hero: who you are, where you stand, at a glance (Techsa accent). */}
+      <div className="relative overflow-hidden rounded-2xl border border-ocean/30 bg-gradient-to-r from-ocean/15 via-panel to-plum/10 p-5 shadow-soft">
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft dark:text-slate-900">
+            {(me.data?.labels[0] || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-ocean">My workspace</div>
+            <h2 className="truncate text-xl font-bold tracking-tight text-ink">
+              {me.data?.labels.length ? me.data.labels.join(", ") : "My Work"}
+            </h2>
+            <p className="text-sm text-muted">
+              {new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })} · week of {formatDay(monday)}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
+              <span className="block text-lg font-bold leading-tight text-ink">{todayRows.length}</span>
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Today&apos;s tasks</span>
+            </span>
+            <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
+              <span className="block text-lg font-bold leading-tight text-ocean">{weekDone}<span className="text-xs text-muted"> / {weekTarget}</span></span>
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Week links</span>
+            </span>
+            <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
+              <span className={clsx("block text-lg font-bold leading-tight", weekPct != null && weekPct >= 100 ? "text-ocean" : "text-ember")}>
+                {weekPct != null ? `${weekPct}%` : "—"}
+              </span>
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Completion</span>
+            </span>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">
@@ -15667,12 +15921,16 @@ function QaLiveProgress({
   token,
   batchId,
   onClose,
-  onDone
+  onDone,
+  onViewResults,
+  onViewFailures
 }: {
   token: string | null;
   batchId: string;
   onClose: () => void;
   onDone: () => void;
+  onViewResults?: () => void;
+  onViewFailures?: () => void;
 }) {
   const [finishedNotified, setFinishedNotified] = useState(false);
   const batch = useQuery({
@@ -15727,9 +15985,29 @@ function QaLiveProgress({
         {speed > 0 && running ? <span className="text-muted">{speed.toFixed(1)}/s</span> : null}
       </div>
       {!running && b ? (
-        <p className="mt-2 text-xs text-muted">
-          Grid refreshed with the new verdicts. Full logs live in the Batches desk (#B-{b.seq}).
-        </p>
+        <div className="mt-2 space-y-2">
+          <p className="text-xs text-muted">
+            Grid refreshed with the new verdicts. Full logs live in the Batches desk (#B-{b.seq}).
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {onViewResults ? (
+              <button
+                onClick={() => { onViewResults(); onClose(); }}
+                className="rounded-lg border border-line px-2.5 py-1 text-xs font-medium text-ink hover:bg-field"
+              >
+                Show freshly checked
+              </button>
+            ) : null}
+            {failed > 0 && onViewFailures ? (
+              <button
+                onClick={() => { onViewFailures(); onClose(); }}
+                className="rounded-lg border border-danger/40 px-2.5 py-1 text-xs font-medium text-danger hover:bg-danger/10"
+              >
+                Show problems ({failed})
+              </button>
+            ) : null}
+          </div>
+        </div>
       ) : null}
     </div>
   );
