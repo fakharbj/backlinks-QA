@@ -319,7 +319,10 @@ async def _trends_uncached(
     bucket = granularity if granularity in ("day", "week", "month") else "week"
     days = max(1, min(days, 3660))
     now = datetime.now(timezone.utc)
-    t0 = now - timedelta(days=days)
+    # Calendar-aligned window: "last N days" = the N whole UTC days ending today
+    # (today counts as day 1). This is the exact window a chart/KPI drill hands
+    # the Backlinks grid (link_from/link_to are whole days), so numbers reconcile.
+    t0 = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(days=days - 1)
     # "All time" (the ~10-year window): drop the previous-period comparison — there
     # is nothing before all-time and a negative-span prev window is meaningless.
     prev0 = t0 if days >= 3650 else t0 - timedelta(days=days)

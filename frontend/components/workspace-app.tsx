@@ -1257,14 +1257,27 @@ function Overview({
   const _todayStr = new Date().toISOString().slice(0, 10);
   const weekly = (trends.data?.weekly || []).filter((w) => w.week <= _todayStr);
   // Clicking a chart point drills into the Backlinks grid for that exact bucket's
-  // window (placement axis) so the chart total reconciles with the grid's row count.
+  // window on the "Link date" axis — coalesce(placement, import day), the SAME
+  // basis the trend buckets count on — so the chart number equals the grid total.
   // The window matches the active granularity: a single day, a Mon–Sun week, or a
   // whole calendar month. w.week is the bucket start ("YYYY-MM-DD").
   const openBucket = (i: number) => {
     const wk = weekly[i]?.week;
     if (!wk) return;
     const r = bucketRange(wk, trendGran);
-    onOpenBacklinks({ placement_from: r.from, placement_to: r.to });
+    onOpenBacklinks({ link_from: r.from, link_to: r.to });
+  };
+  // The trend cards' exact window, as whole UTC days (the backend computes the
+  // same calendar window) — so "New links: N" drills into exactly N grid rows.
+  const trendWindow = (): Record<string, string> => {
+    const n = Number(trendDays);
+    if (!n || n >= 3650) return {};
+    const utcDay = (off: number) => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() + off);
+      return d.toISOString().slice(0, 10);
+    };
+    return { link_from: utcDay(-(n - 1)), link_to: utcDay(0) };
   };
   const granNoun = trendGran === "day" ? "day" : trendGran === "month" ? "month" : "week";
   return (
@@ -1471,14 +1484,19 @@ function Overview({
           </div>
         </div>
         <div className="grid gap-3 p-4 sm:grid-cols-3">
-          <div className="rounded-lg border border-line bg-field/50 p-3">
+          <button
+            type="button"
+            onClick={() => onOpenBacklinks(trendWindow())}
+            title="Click to see exactly these links in the Backlinks list"
+            className="rounded-lg border border-line bg-field/50 p-3 text-left transition hover:border-ocean/50 hover:bg-field"
+          >
             <div className="text-xs font-semibold uppercase tracking-wide text-muted">New links</div>
             <div className="mt-1 text-2xl font-bold text-ink">
               {trends.data?.new_links ?? 0}
               <DeltaPill now={trends.data?.new_links ?? 0} prev={trends.data?.prev_links} />
             </div>
             <div className="text-[11px] text-muted">previous period: {trends.data?.prev_links ?? 0}</div>
-          </div>
+          </button>
           <div className="rounded-lg border border-line bg-field/50 p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted">
               New source domains {projectId ? "(for this project)" : ""}
@@ -1489,13 +1507,18 @@ function Overview({
             </div>
             <div className="text-[11px] text-muted">previous period: {trends.data?.prev_domains ?? 0}</div>
           </div>
-          <div className="rounded-lg border border-line bg-field/50 p-3">
+          <button
+            type="button"
+            onClick={() => onOpenBacklinks({ ...trendWindow(), index_status: "indexed" })}
+            title="Click to see exactly these links in the Backlinks list"
+            className="rounded-lg border border-line bg-field/50 p-3 text-left transition hover:border-ocean/50 hover:bg-field"
+          >
             <div className="text-xs font-semibold uppercase tracking-wide text-muted">Indexed (new links)</div>
             <div className="mt-1 text-2xl font-bold text-ink">{trends.data?.new_indexed ?? 0}</div>
             <div className="text-[11px] text-muted">
               {pct(trends.data?.new_indexed ?? 0, trends.data?.new_links ?? 0)} of new links
             </div>
-          </div>
+          </button>
         </div>
         {weekly.length ? (
           <div className="space-y-5 border-t border-line p-4">
@@ -1799,13 +1822,18 @@ function Backlinks({
   const [canonicalStatusF, setCanonicalStatusF] = useState(() => fParam("canonical_status"));
   const [linkMissingF, setLinkMissingF] = useState(() => fParam("link_missing") === "1");
   const [spamMinF, setSpamMinF] = useState(() => fParam("spam_min"));
+  // Authority floors (Moz DA/PA, Semrush AS) — deep-linked from Analytics so its
+  // "Open in Backlinks" carries every filter; same no-UI-control pattern as above.
+  const [daMinF, setDaMinF] = useState(() => fParam("da_min"));
+  const [paMinF, setPaMinF] = useState(() => fParam("pa_min"));
+  const [asMinF, setAsMinF] = useState(() => fParam("as_min"));
   const [orphanedF, setOrphanedF] = useState(() => fParam("orphaned") === "1");
   const [noPlacementF, setNoPlacementF] = useState(() => fParam("no_placement") === "1");
   const [noUserF, setNoUserF] = useState(() => fParam("no_user") === "1");
   const [qaWaitF, setQaWaitF] = useState(() => fParam("qa_wait"));
   // Project filter for the ALL-PROJECTS view (inside a project the scope is fixed
   // by the top-left picker, so this select hides there).
-  const [projF, setProjF] = useState("");
+  const [projF, setProjF] = useState(() => fParam("project"));
   const [showScoreGuide, setShowScoreGuide] = useState(false);
   const [liveBatch, setLiveBatch] = useState<string | null>(null);
   const [sort, setSort] = useState("score");
@@ -1827,7 +1855,7 @@ function Backlinks({
   const _seedDateAxis = BACKLINK_DATE_AXES.find(
     (a) => (a.from && fParam(a.from)) || (a.to && fParam(a.to))
   );
-  const [dateAxis, setDateAxis] = useState(() => _seedDateAxis?.key || "placement");
+  const [dateAxis, setDateAxis] = useState(() => _seedDateAxis?.key || "link");
   const [dateFrom, setDateFrom] = useState(() => (_seedDateAxis?.from ? fParam(_seedDateAxis.from) : ""));
   const [dateTo, setDateTo] = useState(() => (_seedDateAxis?.to ? fParam(_seedDateAxis.to) : ""));
   const axis = BACKLINK_DATE_AXES.find((a) => a.key === dateAxis) || BACKLINK_DATE_AXES[0];
@@ -1918,13 +1946,16 @@ function Backlinks({
     setCanonicalStatusF("");
     setLinkMissingF(false);
     setSpamMinF("");
+    setDaMinF("");
+    setPaMinF("");
+    setAsMinF("");
     setOrphanedF(false);
     setNoPlacementF(false);
     setNoUserF(false);
     setQaWaitF("");
     setProjF("");
   };
-  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF, qaWaitF, projF]
+  const activeFilterCount = [status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, dateFrom, dateTo, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, spamMinF, daMinF, paMinF, asMinF, qaWaitF, projF]
     .filter(Boolean).length + (orphanedF ? 1 : 0) + (linkMissingF ? 1 : 0) + (noPlacementF ? 1 : 0) + (noUserF ? 1 : 0);
 
   // Filter values are comma-joined multi-select lists ("FAIL,WARNING").
@@ -1976,6 +2007,9 @@ function Backlinks({
     if (canonicalStatusF) params.set("canonical_status", canonicalStatusF);
     if (linkMissingF) params.set("link_missing", "true");
     if (spamMinF) params.set("spam_min", spamMinF);
+    if (daMinF) params.set("da_min", daMinF);
+    if (paMinF) params.set("pa_min", paMinF);
+    if (asMinF) params.set("as_min", asMinF);
     if (orphanedF) params.set("orphaned", "true");
     if (noPlacementF) params.set("no_placement", "true");
     if (noUserF) params.set("no_user", "true");
@@ -1985,7 +2019,7 @@ function Backlinks({
     if (sort) params.set("sort", sort);
     params.set("direction", sortDir);
     return params.toString();
-  }, [projectId, projF, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, orphanedF, noPlacementF, noUserF, qaWaitF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
+  }, [projectId, projF, status, dupFilter, indexFilter, rel, linkType, userF, domainF, issueLabel, debouncedSearch, targetF, httpStatusF, httpClassF, indexabilityF, robotsStatusF, canonicalStatusF, linkMissingF, spamMinF, daMinF, paMinF, asMinF, orphanedF, noPlacementF, noUserF, qaWaitF, axis.from, axis.to, dateFrom, dateTo, sort, sortDir]);
   const backlinks = useInfiniteQuery({
     queryKey: ["backlinks", token, query],
     enabled: Boolean(token),
@@ -2036,6 +2070,9 @@ function Backlinks({
     canonical_status: canonicalStatusF || null,
     link_missing: linkMissingF ? true : null,
     spam_min: spamMinF ? Number(spamMinF) : null,
+    da_min: daMinF ? Number(daMinF) : null,
+    pa_min: paMinF ? Number(paMinF) : null,
+    as_min: asMinF ? Number(asMinF) : null,
     orphaned: orphanedF ? true : null,
     no_placement: noPlacementF ? true : null,
     no_user: noUserF ? true : null,
@@ -2671,7 +2708,13 @@ function Backlinks({
                     className="whitespace-nowrap text-xs text-muted"
                     title={dateAxisTooltip(row)}
                   >
-                    {formatDay((row[axis.field] as string | null | undefined) ?? null)}
+                    {formatDay(
+                      // "Link date" = placement, else the import day (coalesce) —
+                      // mirrors exactly how the filter/dashboards count it.
+                      ((axis.key === "link"
+                        ? row.placement_date || row.created_at
+                        : row[axis.field]) as string | null | undefined) ?? null
+                    )}
                   </span>
                 </Td>
                 <Td><span className="whitespace-nowrap">{formatDate(row.last_checked_at)}</span></Td>
@@ -7264,14 +7307,24 @@ function UserDashboard({
     rates: { global: Array<{ link_type_name: string; links_per_hour: number }>; overrides: Array<{ link_type_name: string; links_per_hour: number }> };
     leaves: Array<{ id: string; start_date: string; end_date: string; reason: string | null; status: string }>;
   };
+  // The KPI window as CALENDAR days ("" = all time). Short presets query by
+  // explicit midnight-UTC boundaries — the exact same window the drill-down
+  // hands the Backlinks grid, so a clicked number always reconciles 1:1.
+  const windowRange = (): { from: string; to: string } => {
+    if (days === "custom") return { from: customFrom, to: customTo };
+    const n = Number(days);
+    if (!n || n >= 3650) return { from: "", to: "" };
+    return { from: isoDay(-(n - 1)), to: isoDay(0) };
+  };
   const dash = useQuery({
     queryKey: ["user-dashboard", token, userLabel, days, customFrom, customTo, projFilter, ltFilter, dateType, effGran],
     enabled: Boolean(token) && customReady,
     queryFn: () => {
       const p = new URLSearchParams({ user_label: userLabel, compare: "true", granularity: effGran });
-      if (days === "custom") {
-        p.set("date_from", `${customFrom}T00:00:00Z`);
-        p.set("date_to", `${customTo}T23:59:59Z`);
+      const w = windowRange();
+      if (w.from && w.to) {
+        p.set("date_from", `${w.from}T00:00:00Z`);
+        p.set("date_to", `${w.to}T23:59:59Z`);
       } else p.set("days", days);
       if (projFilter) p.set("project_id", projFilter);
       if (ltFilter) p.set("link_type", ltFilter);
@@ -7444,7 +7497,21 @@ function UserDashboard({
   const d = dash.data;
   const pv = d?.previous;
   const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
-  const open = (extra: Record<string, string>) => onOpenBacklinks({ user: userLabel, ...extra });
+  // Drill-downs carry the FULL dashboard context — person, project, link type,
+  // and the exact date window on the matching grid axis (created→link date,
+  // checked→QA date, sheet→sheet date) — so the grid total equals the number
+  // that was clicked. `extra` (the card's own filter) can override any of it.
+  const drillAxis = dateType === "checked" ? "qa" : dateType === "sheet" ? "sheet" : "link";
+  const open = (extra: Record<string, string>) => {
+    const w = windowRange();
+    onOpenBacklinks({
+      user: userLabel,
+      ...(projFilter ? { project: projFilter } : {}),
+      ...(ltFilter ? { link_type: ltFilter } : {}),
+      ...(w.from && w.to ? { [`${drillAxis}_from`]: w.from, [`${drillAxis}_to`]: w.to } : {}),
+      ...extra
+    });
+  };
   const onProjSort = (key: string) => {
     if (projSort === key) setProjSortDir((x) => (x === "asc" ? "desc" : "asc"));
     else { setProjSort(key); setProjSortDir(key === "project" ? "asc" : "desc"); }
@@ -7675,7 +7742,9 @@ function UserDashboard({
                     const w = d.weekly[i]?.week;
                     if (!w) return;
                     const r = bucketRange(w, effGran);
-                    open({ placement_from: r.from, placement_to: r.to });
+                    // Bucket window on the SAME axis the dashboard counts on
+                    // (created→link date, checked→QA, sheet→sheet date).
+                    open({ [`${drillAxis}_from`]: r.from, [`${drillAxis}_to`]: r.to });
                   }}
                   series={[
                     { name: "Links created", cssVar: "--ocean", values: d.weekly.map((w) => w.links) },
@@ -8129,16 +8198,41 @@ function ProjectEffort({
     by_type: Array<{ link_type: string; links: number }>;
     weekly: Array<{ week: string; done: number; target: number }>;
   };
+  // Calendar-aligned window for finite presets — the SAME window every drill
+  // hands the Backlinks grid, so a clicked number reconciles 1:1 there.
+  const windowRange = (): { from: string; to: string } => {
+    const n = Number(days);
+    if (!n || n >= 3650) return { from: "", to: "" };
+    return { from: isoDay(-(n - 1)), to: isoDay(0) };
+  };
   const eff = useQuery({
     queryKey: ["project-effort", token, projectId, days, userF, ltF, effGran],
     enabled: Boolean(token) && Boolean(projectId),
     queryFn: () => {
       const p = new URLSearchParams({ project_id: projectId, days, granularity: effGran });
+      const w = windowRange();
+      if (w.from && w.to) {
+        p.set("date_from", `${w.from}T00:00:00Z`);
+        p.set("date_to", `${w.to}T23:59:59Z`);
+      }
       if (userF) p.set("user_label", userF);
       if (ltF) p.set("link_type", ltF);
       return api<Effort>(`/performance/project-effort?${p.toString()}`, { token });
     }
   });
+  // Every drill carries the panel's full context — project, person, link type
+  // and the exact date window on the "Link date" axis (coalesce basis, the one
+  // this panel counts on). `extra` (a card's own filter) can override any key.
+  const open = (extra: Record<string, string>) => {
+    const w = windowRange();
+    onOpenBacklinks({
+      project: projectId,
+      ...(userF ? { user: userF } : {}),
+      ...(ltF ? { link_type: ltF } : {}),
+      ...(w.from && w.to ? { link_from: w.from, link_to: w.to } : {}),
+      ...extra
+    });
+  };
   const d = eff.data;
   const maxType = Math.max(1, ...(d?.by_type || []).map((t) => t.links));
   return (
@@ -8183,11 +8277,11 @@ function ProjectEffort({
               help="What the plans expected for this period." />
             <Metric label="Links created" value={d.totals.links} icon={Link2} tone="ocean"
               sub={d.totals.completion_pct != null ? `${d.totals.completion_pct}% of target` : undefined}
-              onClick={() => onOpenBacklinks({})} help="Links created on this project in the period. Click to see them." />
+              onClick={() => open({})} help="Links created on this project in the period. Click to see them." />
             <Metric label="QA pending" value={d.totals.qa_pending} icon={History} tone="ember"
-              onClick={() => onOpenBacklinks({ status: "PENDING" })} help="Created in this period, never checked yet. Click to see them." />
+              onClick={() => open({ status: "PENDING" })} help="Created in this period, never checked yet. Click to see them." />
             <Metric label="Not qualified" value={d.totals.fail} icon={XCircle} tone="danger"
-              onClick={() => onOpenBacklinks({ status: "FAIL" })} help="Created in this period with a serious problem. Click to see them." />
+              onClick={() => open({ status: "FAIL" })} help="Created in this period with a serious problem. Click to see them." />
           </div>
 
           <div className="grid gap-4 p-3 pt-0 lg:grid-cols-2">
@@ -8205,7 +8299,7 @@ function ProjectEffort({
                   const w = d.weekly[i]?.week;
                   if (!w) return;
                   const r = bucketRange(w, effGran);
-                  onOpenBacklinks({ placement_from: r.from, placement_to: r.to });
+                  open({ link_from: r.from, link_to: r.to });
                 }}
               />
             </div>
@@ -8215,7 +8309,7 @@ function ProjectEffort({
                 {d.by_type.map((t) => (
                   <button
                     key={t.link_type}
-                    onClick={() => onOpenBacklinks(t.link_type === "(none)" ? { link_type: "(blanks)" } : { link_type: t.link_type })}
+                    onClick={() => open(t.link_type === "(none)" ? { link_type: "(blanks)" } : { link_type: t.link_type })}
                     title="Click to see these links"
                     className="flex w-full items-center gap-2 text-left text-xs hover:opacity-80"
                   >
@@ -8244,7 +8338,7 @@ function ProjectEffort({
                   <tr key={u.user_label} className="hover:bg-field/60">
                     <Td>
                       <button
-                        onClick={() => onOpenBacklinks({ user: u.user_label })}
+                        onClick={() => open({ user: u.user_label })}
                         title={`See ${u.user_label}'s links on this project`}
                         className="font-medium text-ocean hover:underline"
                       >
@@ -8492,14 +8586,23 @@ function PerformanceDesk({
       : Number(days);
   const allowDay = windowDays <= 180;
   const effGran = gran === "day" && !allowDay ? "week" : gran;
+  // Calendar-aligned window for finite presets — the same window the chart
+  // drill hands the Backlinks grid, so clicked numbers reconcile exactly.
+  const windowRange = (): { from: string; to: string } => {
+    if (days === "custom") return { from: customFrom, to: customTo };
+    const n = Number(days);
+    if (!n || n >= 3650) return { from: "", to: "" };
+    return { from: isoDay(-(n - 1)), to: isoDay(0) };
+  };
   const perf = useQuery({
     queryKey: ["performance", token, days, customFrom, customTo, cmpMode, cmpFrom, cmpTo, projectId, effGran],
     enabled: Boolean(token) && customReady && cmpReady,
     queryFn: () => {
       const p = new URLSearchParams({ granularity: effGran });
-      if (days === "custom") {
-        p.set("date_from", `${customFrom}T00:00:00Z`);
-        p.set("date_to", `${customTo}T23:59:59Z`);
+      const w = windowRange();
+      if (w.from && w.to) {
+        p.set("date_from", `${w.from}T00:00:00Z`);
+        p.set("date_to", `${w.to}T23:59:59Z`);
       } else {
         p.set("days", days);
       }
@@ -8627,7 +8730,9 @@ function PerformanceDesk({
               const w = weekly[i]?.week;
               if (!w) return;
               const r = bucketRange(w, effGran);
-              onOpenBacklinks({ placement_from: r.from, placement_to: r.to });
+              // Bucket window on the "Link date" axis — the same coalesce basis
+              // the chart counts on — so the point's number equals the grid total.
+              onOpenBacklinks({ link_from: r.from, link_to: r.to });
             }}
             series={[
               { name: "Links created", cssVar: "--ocean", values: weekly.map((w) => w.links) },
@@ -17485,6 +17590,9 @@ const BACKLINK_DATE_AXES: Array<{
   from: string | null;
   to: string | null;
 }> = [
+  // "Link date" = coalesce(placement, import day) — the EXACT basis dashboards
+  // and trends count on, so drilled numbers reconcile 1:1 with the grid total.
+  { key: "link", label: "Link date", field: "placement_date", sort: null, from: "link_from", to: "link_to" },
   { key: "placement", label: "Placement", field: "placement_date", sort: "placement_date", from: "placement_from", to: "placement_to" },
   { key: "discovered", label: "Discovery", field: "discovered_at", sort: "discovered_at", from: "discovered_from", to: "discovered_to" },
   { key: "qa", label: "QA checked", field: "last_checked_at", sort: "last_checked_at", from: "qa_from", to: "qa_to" },
@@ -17582,13 +17690,22 @@ function AnalyticsDesk({
       "source_domain", "assigned_user_label", "project_id",
       "http_status", "http_class", "broken", "orphaned",
       "link_missing", "da_min", "pa_min", "as_min", "search",
-      // Date ranges the Backlinks endpoint shares by name (esp. placement = link
-      // creation) so the list matches the summary/time-range selector exactly.
+      // Date ranges the Backlinks endpoint shares by name — incl. the "Link
+      // date" (link_from/to = coalesce basis, the Range selector's axis) — so
+      // the list matches the summary/time-range selector exactly.
+      "link_from", "link_to",
       "placement_from", "placement_to", "discovered_from", "discovered_to",
-      "completed_from", "completed_to", "sheet_from", "sheet_to"
+      "completed_from", "completed_to", "sheet_from", "sheet_to",
+      "assigned_from", "assigned_to", "updated_from", "updated_to"
     ].forEach((k) => {
       if (filters[k]) map[k] = filters[k];
     });
+    // Same axis, different names: analytics "checked" = grid "qa" (last check),
+    // analytics "created" = grid "imported" (reached our DB).
+    if (filters.checked_from) map.qa_from = filters.checked_from;
+    if (filters.checked_to) map.qa_to = filters.checked_to;
+    if (filters.created_from) map.imported_from = filters.created_from;
+    if (filters.created_to) map.imported_to = filters.created_to;
     // analytics `spam` holds a threshold value; /backlinks reads it as `spam_min`.
     if (filters.spam) map.spam_min = filters.spam;
     // analytics `nofollow` is a truthy toggle; /backlinks filters via rel.
@@ -17690,8 +17807,9 @@ function AnalyticsDesk({
     setDrillKey(null);
   };
 
-  // ── Time range (drives cards + charts + tables). Filters by the link's real
-  // creation (placement) date, so every figure reflects when links went live. ──
+  // ── Time range (drives cards + charts + tables). Filters by the "Link date"
+  // (placement date, or the import day when no placement is recorded) — the
+  // same coalesce basis dashboards count on, so no link silently drops out. ──
   const _todayIso = new Date().toISOString().slice(0, 10);
   const _isoAgo = (opts: { days?: number; months?: number }) => {
     const d = new Date();
@@ -17700,11 +17818,14 @@ function AnalyticsDesk({
     return d.toISOString().slice(0, 10);
   };
   const RANGES: Array<[string, string, () => string | null]> = [
-    ["30d", "Last 30 days", () => _isoAgo({ days: 30 })],
+    ["1d", "Today", () => _todayIso],
+    ["3d", "Last 3 days", () => _isoAgo({ days: 2 })],
+    ["7d", "Last 7 days", () => _isoAgo({ days: 6 })],
+    ["30d", "Last 30 days", () => _isoAgo({ days: 29 })],
     ["3m", "Last 3 months", () => _isoAgo({ months: 3 })],
     ["6m", "Last 6 months", () => _isoAgo({ months: 6 })],
     ["all", "All time", () => null],
-    ["custom", "Custom", () => filters.placement_from || null]
+    ["custom", "Custom", () => filters.link_from || null]
   ];
   const [rangeKey, setRangeKey] = useState<string>("all");
   const applyRange = (key: string) => {
@@ -17714,13 +17835,13 @@ function AnalyticsDesk({
     const from = preset ? preset[2]() : null;
     setFilters((f) => {
       const n = { ...f };
-      if (from) { n.placement_from = from; n.placement_to = _todayIso; }
-      else { delete n.placement_from; delete n.placement_to; }
+      if (from) { n.link_from = from; n.link_to = _todayIso; }
+      else { delete n.link_from; delete n.link_to; }
       return n;
     });
     setDrillKey(null);
   };
-  const setCustomBound = (which: "placement_from" | "placement_to", v: string) => {
+  const setCustomBound = (which: "link_from" | "link_to", v: string) => {
     setRangeKey("custom");
     setFilters((f) => {
       const n = { ...f };
@@ -17741,7 +17862,8 @@ function AnalyticsDesk({
             </button>
           ) : null}
         </div>
-        {/* Time range — presets + custom, all by link creation (placement) date. */}
+        {/* Time range — presets + custom, all by "Link date" (placement date,
+            or the import day when no placement is recorded). */}
         <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-line pb-3">
           <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-muted">Range</span>
           {RANGES.map(([key, label]) => (
@@ -17760,19 +17882,19 @@ function AnalyticsDesk({
           ))}
           {rangeKey === "custom" ? (
             <span className="flex items-center gap-1.5">
-              <input type="date" value={filters.placement_from || ""}
-                onChange={(e) => setCustomBound("placement_from", e.target.value)}
+              <input type="date" value={filters.link_from || ""}
+                onChange={(e) => setCustomBound("link_from", e.target.value)}
                 className="h-8 rounded-lg border border-line bg-panel px-2 text-xs focus:border-ocean focus:outline-none" />
               <span className="text-xs text-muted">to</span>
-              <input type="date" value={filters.placement_to || ""}
-                onChange={(e) => setCustomBound("placement_to", e.target.value)}
+              <input type="date" value={filters.link_to || ""}
+                onChange={(e) => setCustomBound("link_to", e.target.value)}
                 className="h-8 rounded-lg border border-line bg-panel px-2 text-xs focus:border-ocean focus:outline-none" />
             </span>
           ) : null}
           <span className="ml-auto text-xs text-muted">
-            {filters.placement_from
-              ? `Showing ${fmtChartLabel(filters.placement_from, true)} → ${fmtChartLabel(filters.placement_to || _todayIso, true)} · by link creation date`
-              : "Showing all time · by link creation date"}
+            {filters.link_from
+              ? `Showing ${fmtChartLabel(filters.link_from, true)} → ${fmtChartLabel(filters.link_to || _todayIso, true)} · by link date`
+              : "Showing all time · by link date"}
           </span>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -18158,14 +18280,14 @@ function AnalyticsDesk({
             ) : null}
             <button
               onClick={() => {
-                const f: Record<string, string> = {};
-                if (filters.assigned_user_label) f.user = filters.assigned_user_label;
-                ["status", "index_status", "duplicate_status", "rel", "link_type", "source_domain", "http_status", "broken", "orphaned"].forEach((k) => {
-                  if (filters[k]) f[k] = filters[k];
+                // Reuse the exact translator the Matching-links list queries with,
+                // so the grid opens on the SAME set — dates, project and all.
+                const { assigned_user_label, project_id, ...rest } = backlinkParams();
+                onOpenBacklinks({
+                  ...rest,
+                  ...(assigned_user_label ? { user: assigned_user_label } : {}),
+                  ...(project_id ? { project: project_id } : {})
                 });
-                if (filters.spam) f.spam_min = filters.spam;
-                if (filters.nofollow && !f.rel) f.rel = "nofollow";
-                onOpenBacklinks(f);
               }}
               className="rounded-lg border border-line bg-field px-3 py-1.5 text-xs font-medium text-ink hover:bg-field/70"
             >

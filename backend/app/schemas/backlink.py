@@ -219,11 +219,13 @@ class BacklinkFilters(BaseModel):
     # so "find every backlink pointing at /pricing" works.
     target: str | None = None
     # ── Date-range filters (inclusive end via analytics_service._date_clause) ──
+    link_from: date | None = None           # coalesce(placement_date, created_at) — dashboard basis
+    link_to: date | None = None
     placement_from: date | None = None      # placement_date
     placement_to: date | None = None
     discovered_from: date | None = None     # discovered_at
     discovered_to: date | None = None
-    qa_from: date | None = None             # first_qa_at
+    qa_from: date | None = None             # last_checked_at (matches dashboards' "QA checked")
     qa_to: date | None = None
     completed_from: date | None = None      # qa_completed_at
     completed_to: date | None = None

@@ -221,6 +221,15 @@ _FILTERS: dict[str, Callable] = {
     # placement_date is a Date column → inclusive <= end (no next_day).
     "placement_from": lambda v: _date_clause("b.placement_date >=", "placement_from", v),
     "placement_to": lambda v: _date_clause("b.placement_date <=", "placement_to", v),
+    # "Link date" = coalesce(placement, import day) — the EXACT basis dashboards
+    # and trends count on (and the grid's link_from/link_to axis), so an Analytics
+    # range and a dashboard number always agree even for links with no placement.
+    "link_from": lambda v: _date_clause(
+        "coalesce(b.placement_date, (b.created_at at time zone 'UTC')::date) >=", "link_from", v
+    ),
+    "link_to": lambda v: _date_clause(
+        "coalesce(b.placement_date, (b.created_at at time zone 'UTC')::date) <=", "link_to", v
+    ),
     # The rest are TIMESTAMPTZ → < to+1day so the end day is fully included.
     "discovered_from": lambda v: _date_clause("b.discovered_at >=", "discovered_from", v),
     "discovered_to": lambda v: _date_clause("b.discovered_at <", "discovered_to", v, next_day=True),

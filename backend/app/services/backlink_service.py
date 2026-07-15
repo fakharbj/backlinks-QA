@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import Select, and_, exists, func, or_, select
+from sqlalchemy import Date, Select, and_, cast, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cursor import decode_cursor, encode_cursor
@@ -30,6 +30,14 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 # < to+1day so the end date is inclusive of the whole day). Bounds are built as
 # real Python date/datetime objects — never text casts (asyncpg rejects strings).
 _DATE_COLS = {
+    # "Link date" — the REAL link-building day: placement date when the sheet
+    # supplied one, else the import day. This is the exact basis the dashboards
+    # and trends count on (coalesce(placement_date, created_at)), so drilling a
+    # dashboard number into the grid reconciles 1:1.
+    "link": func.coalesce(
+        BacklinkRecord.placement_date,
+        cast(func.timezone("UTC", BacklinkRecord.created_at), Date),
+    ),
     "placement": BacklinkRecord.placement_date,
     "discovered": BacklinkRecord.discovered_at,
     "qa": BacklinkRecord.last_checked_at,
@@ -40,7 +48,7 @@ _DATE_COLS = {
     "updated": BacklinkRecord.updated_at,
 }
 # Date-typed columns use an inclusive <= upper bound; TIMESTAMPTZ use < to+1day.
-_DATE_TYPE_KEYS = {"placement", "sheet"}
+_DATE_TYPE_KEYS = {"placement", "sheet", "link"}
 
 
 def _scope(stmt: Select, ctx: AuthContext) -> Select:
