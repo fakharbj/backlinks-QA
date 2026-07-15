@@ -22,11 +22,12 @@ log = get_logger("integrations.google_sheets")
 _SHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9\-_]+)")
 
 # ── Sheets API read-rate guard ────────────────────────────────────────────────
-# Google caps read requests per project (~300/min). We throttle every read to a
-# per-second token bucket in Redis (shared across all worker processes), so no
-# burst — however many projects/tabs sync at once — can exceed the quota; excess
-# reads block up to a safety window. Fail-open: if Redis is unavailable we don't
-# block the sync.
+# The binding Google limit is "read requests per minute PER USER" (the service
+# account is one user; default 60/min). Every read takes a token from a shared
+# Redis minute-window counter, so no burst — however many projects/tabs sync at
+# once — can exceed the quota; excess reads sleep to the next minute. A 429 that
+# still slips through is retried after the minute resets (_quota_retry).
+# Fail-open: if Redis is unavailable we don't block the sync.
 _rate_redis = None
 _rate_redis_tried = False
 
@@ -74,7 +75,12 @@ def reads_per_min() -> int:
 
 
 def _throttle_read() -> None:
-    """Block until a Sheets API read token is free (≈ reads_per_min/60 per second)."""
+    """Block until a Sheets API read token is free.
+
+    Google's binding limit is per MINUTE (per user), so tokens live in a shared
+    Redis minute-window counter: the first ``reads_per_min()`` reads of each
+    minute pass immediately, the rest sleep to the next minute boundary. This
+    is process-global (API + all worker processes share the same budget)."""
     try:  # usage dashboard counter — every throttled call is one Sheets API read
         from app.services.api_usage_service import record_sync
 
@@ -84,22 +90,62 @@ def _throttle_read() -> None:
     rpm = reads_per_min()
     if rpm <= 0:
         return
-    per_sec = max(1, rpm // 60)
     client = _rate_client()
     if client is None:
         return  # fail-open — never block a sync on a missing limiter
-    for _ in range(180):  # ~180s safety cap so a stuck limiter can't hang forever
+    for _ in range(4):  # wait at most ~4 minute-windows, then fail-open
         try:
-            bucket = int(time.time())
-            key = f"ls:sheetsread:{bucket}"
+            bucket = int(time.time() // 60)
+            key = f"ls:sheetsread:m:{bucket}"
             n = client.incr(key)
             if n == 1:
-                client.expire(key, 2)
-            if n <= per_sec:
+                client.expire(key, 130)
+            if n <= rpm:
                 return
         except Exception:  # noqa: BLE001 — Redis hiccup → fail-open
             return
-        time.sleep(1.0)
+        # Budget for this minute is spent — sleep to the next minute boundary
+        # (small cushion so the new window is definitely open).
+        time.sleep(max(0.5, 60.0 - (time.time() % 60.0) + 0.25))
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """gspread APIError for HTTP 429 (read quota exhausted)."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 429:
+        return True
+    text = str(exc)
+    return "429" in text and ("Quota exceeded" in text or "RATE_LIMIT" in text.upper())
+
+
+def _quota_retry(fn):
+    """Retry a whole (read-only) Sheets operation when Google answers 429.
+
+    The per-user quota resets every minute — sleep past the boundary and try
+    again instead of failing the sync. Two retries = rides out ~2 bad minutes."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 — re-raised unless a 429
+                if attempt < attempts - 1 and _is_quota_error(exc):
+                    try:
+                        from app.services.api_usage_service import record_sync
+
+                        record_sync("google_sheets", ok=False, error="429 read quota — waiting for the minute to reset")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    log.warning("sheets_quota_429_retry", fn=fn.__name__, attempt=attempt + 1)
+                    time.sleep(max(5.0, 60.0 - (time.time() % 60.0) + 1.0))
+                    continue
+                raise
+        return None  # unreachable — loop returns or raises
+
+    return wrapper
 
 
 def is_enabled() -> bool:
@@ -164,6 +210,7 @@ def _open_worksheet(client, spreadsheet_id: str, tab: str | None):
     return sheet.sheet1
 
 
+@_quota_retry
 def list_worksheets(spreadsheet_id: str) -> list[dict]:
     """Return every tab in a spreadsheet: ``[{title, gid, index}]`` (stable gid)."""
     client = _client()
@@ -175,6 +222,7 @@ def list_worksheets(spreadsheet_id: str) -> list[dict]:
     ]
 
 
+@_quota_retry
 def rename_worksheet(spreadsheet_id: str, gid: str, new_title: str) -> bool:
     """Rename ONE tab, located by its stable gid (survives prior renames).
 
@@ -201,6 +249,7 @@ def rename_worksheet(spreadsheet_id: str, gid: str, new_title: str) -> bool:
     return True
 
 
+@_quota_retry
 def read_main_sheet() -> list[dict[str, str]]:
     """Rows of the global main sheet as dicts keyed by header."""
     client = _client()
@@ -227,6 +276,7 @@ def _unique_headers(raw: list) -> list[str]:
     return out
 
 
+@_quota_retry
 def read_project_sheet(
     spreadsheet_id: str, tab: str | None = None, header_row: int = 1
 ) -> tuple[list[str], list[dict[str, str]]]:
@@ -348,6 +398,7 @@ def _col_letter(n: int) -> str:
     return s
 
 
+@_quota_retry
 def write_back(
     spreadsheet_id: str, tab: str | None, result_headers: list[str], values_by_row: dict[int, list]
 ) -> dict:

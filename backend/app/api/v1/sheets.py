@@ -169,8 +169,11 @@ async def sync_all(
         summary=f"Sync ALL sheets started ({len(sources)} sheets)",
     )
     await db.commit()
-    for src in sources:
-        sync_project_sheet.apply_async(args=[str(src.id)], queue="sheets.sync")
+    # Staggered start + the worker-side global sync lock = strictly one sheet
+    # talking to the Google API at a time (the per-user read quota is 60/min —
+    # parallel syncs used to trip it with a 429).
+    for i, src in enumerate(sources):
+        sync_project_sheet.apply_async(args=[str(src.id)], queue="sheets.sync", countdown=i * 10)
     return SheetSyncResponse(
         message=f"Syncing all {len(sources)} sheets — they run one at a time to respect the "
         "Google API limit. Live progress appears below; each sheet reports its own result."

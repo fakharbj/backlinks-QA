@@ -9,6 +9,7 @@ pipeline; new links stay "QA pending" until someone starts a check (or
 
 from __future__ import annotations
 
+import random
 import uuid
 
 from sqlalchemy.exc import OperationalError
@@ -21,6 +22,54 @@ from app.workers.celery_app import celery_app
 from app.workers.runtime import run_async
 
 log = get_logger("worker.sheets")
+
+# ── Global sheet-sync mutex ──────────────────────────────────────────────────
+# Only ONE Sheets-heavy task (project sync / main-sheet discover / write-back)
+# may talk to the Google API at a time, across every worker process. "Sync all
+# sheets" queues everything at once; without this, several syncs run in
+# parallel (worker concurrency) and together blow the per-user read quota.
+# A busy task doesn't hold a worker slot — it requeues itself with a delay.
+_SYNC_LOCK_KEY = "ls:sheets:synclock"
+_SYNC_LOCK_TTL = 30 * 60  # safety expiry — a crashed holder frees the lock
+
+
+def _lock_client():
+    import redis
+
+    return redis.Redis.from_url(
+        str(settings.CELERY_BROKER_URL), socket_timeout=3, socket_connect_timeout=3
+    )
+
+
+def _acquire_sync_lock(owner: str) -> bool:
+    try:
+        return bool(_lock_client().set(_SYNC_LOCK_KEY, owner, nx=True, ex=_SYNC_LOCK_TTL))
+    except Exception as exc:  # noqa: BLE001 — Redis down → don't deadlock syncs
+        log.warning("sheets_lock_unavailable", error=repr(exc))
+        return True
+
+
+def _release_sync_lock(owner: str) -> None:
+    try:
+        client = _lock_client()
+        # Compare-and-delete so a task whose lock expired can't free a newer holder.
+        raw = client.get(_SYNC_LOCK_KEY)
+        holder = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
+        if holder == owner:
+            client.delete(_SYNC_LOCK_KEY)
+    except Exception:  # noqa: BLE001 — TTL will free it
+        pass
+
+
+def _run_serialized(task, owner: str, fn):
+    """Run ``fn`` under the global sync lock; if another sheet task holds it,
+    requeue this task in 20–40s (jitter avoids thundering-herd retries)."""
+    if not _acquire_sync_lock(owner):
+        raise task.retry(countdown=20 + random.randint(0, 20), max_retries=180)
+    try:
+        return fn()
+    finally:
+        _release_sync_lock(owner)
 
 
 async def _sync_main_async(workspace_id: uuid.UUID) -> dict:
@@ -53,7 +102,10 @@ async def _sync_project_async(sheet_source_id: uuid.UUID) -> dict:
     autoretry_for=(OperationalError,), retry_backoff=True,
 )
 def sync_main_sheet(self, workspace_id: str) -> dict:
-    return run_async(_sync_main_async(uuid.UUID(workspace_id)))
+    return _run_serialized(
+        self, f"main:{workspace_id}",
+        lambda: run_async(_sync_main_async(uuid.UUID(workspace_id))),
+    )
 
 
 @celery_app.task(
@@ -61,7 +113,10 @@ def sync_main_sheet(self, workspace_id: str) -> dict:
     autoretry_for=(OperationalError,), retry_backoff=True,
 )
 def sync_project_sheet(self, sheet_source_id: str) -> dict:
-    return run_async(_sync_project_async(uuid.UUID(sheet_source_id)))
+    return _run_serialized(
+        self, f"sync:{sheet_source_id}",
+        lambda: run_async(_sync_project_async(uuid.UUID(sheet_source_id))),
+    )
 
 
 async def _writeback_async(sheet_source_id: uuid.UUID) -> dict:
@@ -74,4 +129,7 @@ async def _writeback_async(sheet_source_id: uuid.UUID) -> dict:
     autoretry_for=(OperationalError,), retry_backoff=True,
 )
 def writeback_project_sheet(self, sheet_source_id: str) -> dict:
-    return run_async(_writeback_async(uuid.UUID(sheet_source_id)))
+    return _run_serialized(
+        self, f"writeback:{sheet_source_id}",
+        lambda: run_async(_writeback_async(uuid.UUID(sheet_source_id))),
+    )
