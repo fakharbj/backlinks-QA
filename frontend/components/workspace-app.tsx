@@ -4701,7 +4701,18 @@ function TaskDomainSuggestions({
     domain_key: string; da: number | null; pa: number | null; spam_score: number | null;
     semrush_as: number | null; robots_band: string | null; qualified_pct: number | null;
     link_type_match: boolean; reasons: string[];
+    // Variant-tolerant type matching + full usage history (what this domain
+    // was actually used for, across every spelling of every link type).
+    match?: "exact" | "related" | null; matched_type?: string | null; matched_links?: number;
+    link_types?: Record<string, number> | null;
+    backlink_count?: number | null; indexed_count?: number | null;
+    project_count?: number | null; user_count?: number | null;
+    avg_score?: number | null; domain_age_days?: number | null;
   };
+  // Mirror of the backend normalizer, so the chips can highlight every
+  // spelling variant of the task's type ("Web2.0" ≡ "WEB 2.0" ≡ "Web 2.o").
+  const normLT = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9]+/g, "").replace(/([0-9])o/g, (_, d: string) => `${d}0`);
   const sugg = useQuery({
     queryKey: ["task-domain-suggestions", token, assignmentId],
     enabled: Boolean(token && assignmentId),
@@ -4712,6 +4723,11 @@ function TaskDomainSuggestions({
         { token }
       )
   });
+  const wantedNorm = (sugg.data?.link_types || []).map(normLT).filter(Boolean);
+  const typeMatches = (name: string) => {
+    const n = normLT(name);
+    return wantedNorm.some((w) => n === w || (n.length >= 3 && w.length >= 3 && (n.includes(w) || w.includes(n))));
+  };
   const act = useMutation({
     mutationFn: (v: { domain_key: string; status: "accepted" | "skipped" }) =>
       api("/source-domains/recommendations/action", {
@@ -4730,55 +4746,100 @@ function TaskDomainSuggestions({
     <div className="mt-3 border-t border-line pt-2">
       <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
         Suggested domains for this task
-        <HelpTip text="Source domains matching this task's link type and project, ranked by quality (DA, qualified %, low spam). Domains that block links (robots.txt), are spammy, or were already used in this project are excluded. Accept = you'll use it; Skip = don't show it again." />
+        <HelpTip text="Source domains ranked for this task's link type and project. Type matching counts EVERY spelling variant (Web2.0 = WEB 2.0 = web-2.0 = Web 2.o) and related types (GBP Web 2.0 counts for a Web 2.0 task) — the chips show what each domain was really used for and how many links it already carries. Ranked by type fit, then quality (DA, qualified %, low spam). Robots-blocked, spammy, and already-used-in-this-project domains are excluded. Accept = you'll use it; Skip = don't show it again." />
       </div>
       {sugg.isLoading ? (
         <div className="flex justify-center p-2"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
       ) : !items.length ? (
         <p className="text-xs text-muted">No suitable unused domains right now — ask your manager for a manual recommendation.</p>
       ) : (
-        <div className="space-y-1">
-          {items.map((s, i) => (
-            <div key={s.domain_key} className={clsx(
-              "rounded-lg border px-2 py-1.5",
-              i === 0 ? "border-ocean/40 bg-ocean/5" : "border-line bg-panel"
-            )}>
-              <div className="flex flex-wrap items-center gap-2">
-                {i < 3 ? (
-                  <span className={clsx(
-                    "rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
-                    i === 0 ? "bg-ocean text-white dark:text-slate-900" : "bg-ocean/10 text-ocean"
-                  )}>
-                    {i === 0 ? "Top pick" : `#${i + 1}`}
+        <div className="space-y-1.5">
+          {items.map((s, i) => {
+            // Full usage history, matching types first, biggest first.
+            const usage = Object.entries(s.link_types || {})
+              .map(([name, count]) => ({ name, count: Number(count) || 0, hit: typeMatches(name) }))
+              .sort((a, b) => Number(b.hit) - Number(a.hit) || b.count - a.count);
+            const shown = usage.slice(0, 6);
+            const moreCount = usage.length - shown.length;
+            return (
+              <div key={s.domain_key} className={clsx(
+                "rounded-lg border px-3 py-2",
+                i === 0 ? "border-ocean/40 bg-ocean/5" : "border-line bg-panel"
+              )}>
+                <div className="flex flex-wrap items-center gap-2">
+                  {i < 3 ? (
+                    <span className={clsx(
+                      "rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
+                      i === 0 ? "bg-ocean text-white dark:text-slate-900" : "bg-ocean/10 text-ocean"
+                    )}>
+                      {i === 0 ? "Top pick" : `#${i + 1}`}
+                    </span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
+                    {s.domain_key}
                   </span>
+                  {s.da != null ? <MetricTag label="DA" value={s.da} /> : null}
+                  {s.pa != null ? <MetricTag label="PA" value={s.pa} /> : null}
+                  {s.semrush_as != null ? <MetricTag label="AS" value={s.semrush_as} /> : null}
+                  {s.spam_score != null ? <SpamTag value={s.spam_score} /> : null}
+                  {s.match === "exact" ? (
+                    <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean"
+                      title={`This domain already has ${s.matched_links || 0} links of this task's type (counting every spelling variant).`}>
+                      Exact type match{s.matched_links ? ` · ${s.matched_links}` : ""}
+                    </span>
+                  ) : s.match === "related" ? (
+                    <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-semibold text-plum"
+                      title={`Used for the related type "${s.matched_type || ""}" — close enough to this task's type to count.`}>
+                      Related: {s.matched_type}{s.matched_links ? ` · ${s.matched_links}` : ""}
+                    </span>
+                  ) : null}
+                  <CopyButton text={s.domain_key} title="Copy domain" />
+                  <button
+                    onClick={() => act.mutate({ domain_key: s.domain_key, status: "accepted" })}
+                    className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => act.mutate({ domain_key: s.domain_key, status: "skipped" })}
+                    className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
+                  >
+                    Skip
+                  </button>
+                </div>
+                {/* What this domain has been used for — every link type, real counts. */}
+                {usage.length ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1"
+                    title={usage.map((u) => `${u.name}: ${u.count}`).join("\n")}>
+                    {shown.map((u) => (
+                      <span key={u.name} className={clsx(
+                        "rounded px-1.5 py-0.5 text-[10px] font-medium",
+                        u.hit ? "bg-ocean/10 text-ocean" : "bg-field text-muted"
+                      )}>
+                        {u.name} <span className="font-bold">{u.count}</span>
+                      </span>
+                    ))}
+                    {moreCount > 0 ? (
+                      <span className="text-[10px] text-muted">+{moreCount} more type{moreCount === 1 ? "" : "s"}</span>
+                    ) : null}
+                  </div>
                 ) : null}
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
-                  {s.domain_key}
-                </span>
-                {s.da != null ? <MetricTag label="DA" value={s.da} /> : null}
-                {s.pa != null ? <MetricTag label="PA" value={s.pa} /> : null}
-                {s.spam_score != null ? <SpamTag value={s.spam_score} /> : null}
-                {s.link_type_match ? (
-                  <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean">type match</span>
+                {/* Track record in one line — how much, how wide, how good. */}
+                {(s.backlink_count || 0) > 0 ? (
+                  <p className="mt-1 text-[11px] text-muted">
+                    <span className="font-semibold text-ink">{s.backlink_count}</span> links built before
+                    {s.project_count ? <> · <span className="font-semibold text-ink">{s.project_count}</span> project{s.project_count === 1 ? "" : "s"}</> : null}
+                    {s.user_count ? <> · <span className="font-semibold text-ink">{s.user_count}</span> {s.user_count === 1 ? "person" : "people"}</> : null}
+                    {s.indexed_count ? <> · {s.indexed_count} indexed</> : null}
+                    {s.qualified_pct != null ? <> · {Math.round(s.qualified_pct)}% qualified</> : null}
+                    {s.domain_age_days ? <> · {Math.round(s.domain_age_days / 365)}y old</> : null}
+                  </p>
                 ) : null}
-                <CopyButton text={s.domain_key} title="Copy domain" />
-                <button
-                  onClick={() => act.mutate({ domain_key: s.domain_key, status: "accepted" })}
-                  className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
-                >
-                  Accept
-                </button>
-                <button
-                  onClick={() => act.mutate({ domain_key: s.domain_key, status: "skipped" })}
-                  className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
-                >
-                  Skip
-                </button>
+                {/* WHY this domain — the recommendation explains itself. */}
+                <p className="mt-0.5 text-[11px] leading-snug text-muted">{s.reasons.join(" · ")}</p>
               </div>
-              {/* WHY this domain — the recommendation explains itself. */}
-              <p className="mt-0.5 text-[11px] leading-snug text-muted">{s.reasons.join(" · ")}</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -7598,22 +7659,48 @@ function UserDashboard({
         ) : null}
       </div>
 
-      <span className="inline-flex rounded-lg border border-line bg-field/40 p-0.5 text-xs font-medium">
-        {([
-          ["overview", "Overview"],
-          ["projects", "Projects"],
-          ["calendar", "Plans & calendar"],
-          ["rates", "Rates & leave"]
-        ] as Array<["overview" | "projects" | "calendar" | "rates", string]>).map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setDashTab(id)}
-            className={clsx("rounded-md px-2.5 py-1 transition", dashTab === id ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
-          >
-            {label}
-          </button>
-        ))}
-      </span>
+      {/* ── Sidebar layout: big section tabs on the left (sticky), the section's
+          content fills the rest. On small screens the tabs become a scrollable
+          card row. Each tab shows a live number so the nav itself carries data. ── */}
+      <div className="items-start gap-4 lg:grid lg:grid-cols-[230px,minmax(0,1fr)]">
+      <aside className="mb-3 lg:sticky lg:top-16 lg:mb-0">
+        <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:gap-1.5 lg:overflow-visible lg:pb-0">
+          {([
+            ["overview", "Overview", Gauge, "KPIs, trends & quality",
+              d ? `${num(d.links.links)} links` : "—"],
+            ["projects", "Projects", Layers, "Where the work happened",
+              d ? `${(d.projects || []).length} project${(d.projects || []).length === 1 ? "" : "s"}` : "—"],
+            ["calendar", "Plans & calendar", CalendarDays, "Assignments, month view",
+              d && d.plan.completion_pct != null ? `${d.plan.completion_pct}% of plan` : d ? `${num(d.plan.target)} target` : "—"],
+            ["rates", "Rates & leave", Activity, "Productivity & time off",
+              d ? `${(d.leaves || []).length} leave request${(d.leaves || []).length === 1 ? "" : "s"}` : "—"]
+          ] as Array<["overview" | "projects" | "calendar" | "rates", string, typeof Gauge, string, string]>).map(([id, label, Icon, desc, stat]) => (
+            <button
+              key={id}
+              onClick={() => setDashTab(id)}
+              className={clsx(
+                "flex min-w-[170px] shrink-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition lg:w-full lg:min-w-0",
+                dashTab === id
+                  ? "border-ocean/50 bg-ocean/10 shadow-card"
+                  : "border-line bg-panel hover:border-ocean/30 hover:bg-field/60"
+              )}
+            >
+              <span className={clsx(
+                "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
+                dashTab === id ? "bg-ocean text-white dark:text-slate-900" : "bg-field text-muted"
+              )}>
+                <Icon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0">
+                <span className={clsx("block text-sm font-semibold", dashTab === id ? "text-ocean" : "text-ink")}>{label}</span>
+                <span className="block truncate text-[11px] text-muted">{desc}</span>
+                <span className={clsx("mt-0.5 block text-[11px] font-semibold", dashTab === id ? "text-ocean" : "text-ink")}>{stat}</span>
+              </span>
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <div className="min-w-0 space-y-4">
 
       {dash.isLoading ? (
         <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
@@ -8162,6 +8249,8 @@ function UserDashboard({
       </div>
         </>
       ) : null}
+      </div>{/* /sidebar-layout content */}
+      </div>{/* /sidebar-layout grid */}
     </section>
   );
 }

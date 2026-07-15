@@ -14,11 +14,24 @@ workspace catalog MINUS everything unusable:
 
 Link-type fit is a RANKING BOOST, not a hard filter — a sparse catalog still
 returns the best available domains, just ordered with matching types first.
-Every row carries human ``reasons`` so users see WHY it's suggested.
+
+Type matching is VARIANT-TOLERANT, because real data holds many spellings of
+the same thing ("Web2.0", "WEB 2.0", "Web 2.o", "web-2.0", "GBP Web 2.0"…):
+
+* wanted names are first expanded through the ``link_types`` alias layer
+  (``merged_into_id`` — a merged misspelling matches its whole group);
+* names are then normalized (lowercase, strip punctuation/spaces, digit-"o"
+  → "0", so "Web 2.o" == "web2.0" == "WEB 2.0");
+* an exact normalized match ranks highest; a "related" containment match
+  ("gbpweb20" ⊃ "web20", "articlesubmission" ⊃ "article") ranks next.
+
+Every row carries the domain's FULL link-type usage map + totals and human
+``reasons`` so users see WHY it's suggested and what the domain was used for.
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 
@@ -37,19 +50,77 @@ _BLOCKED_BANDS = ("fully_blocked", "mostly_blocked")
 _ACTION_STATUSES = {"viewed", "accepted", "skipped"}
 MAX_SUGGESTIONS = 50
 
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_DIGIT_O = re.compile(r"(?<=[0-9])o")  # "web 2.o" — the letter o used as zero
+
 
 def link_type_tokens(names: list[str] | None) -> list[str]:
     """Lowercased, trimmed link-type names for tolerant JSONB-key matching."""
     return [n.strip().lower() for n in (names or []) if n and n.strip()]
 
 
+def normalize_link_type(name: str | None) -> str:
+    """Canonical comparison form of a link-type name: lowercase, strip every
+    non-alphanumeric, then digit-adjacent "o"→"0". All of "Web2.0", "WEB 2.0",
+    "Web 2.o", "web-2.0" become "web20". MUST stay in sync with the SQL
+    twin in ``_suggest`` (same two regexps, applied in the same order)."""
+    s = _NON_ALNUM.sub("", (name or "").lower())
+    return _DIGIT_O.sub("0", s)
+
+
+async def _expand_aliases(db: AsyncSession, workspace_id, names: list[str]) -> list[str]:
+    """Widen wanted names through the link_types merge/alias layer: asking for
+    any member of a merge group means every name in that group counts. Unknown
+    names pass through unchanged. Returns the (deduped) widened name list."""
+    if not names:
+        return []
+    rows = (
+        await db.execute(
+            text("SELECT id, name, merged_into_id FROM link_types WHERE workspace_id = :ws"),
+            {"ws": workspace_id},
+        )
+    ).all()
+    by_id = {r[0]: r for r in rows}
+
+    def root_of(r) -> uuid.UUID:
+        seen = set()
+        while r[2] is not None and r[2] in by_id and r[0] not in seen:
+            seen.add(r[0])
+            r = by_id[r[2]]
+        return r[0]
+
+    groups: dict[uuid.UUID, list[str]] = {}
+    for r in rows:
+        groups.setdefault(root_of(r), []).append(r[1])
+    by_lower = {r[1].strip().lower(): root_of(r) for r in rows}
+    out: list[str] = []
+    for n in names:
+        out.append(n)
+        root = by_lower.get(n.strip().lower())
+        if root is not None:
+            out.extend(groups.get(root, []))
+    # Dedup, preserve order.
+    seen: set[str] = set()
+    return [x for x in out if not (x.strip().lower() in seen or seen.add(x.strip().lower()))]
+
+
 def build_reasons(row: dict, wanted_types: list[str]) -> list[str]:
     """Human 'why this domain' strings — shown beside every suggestion."""
     out: list[str] = []
-    if row.get("link_type_match"):
+    matched_links = int(row.get("matched_links") or 0)
+    match = row.get("match")
+    if match == "exact" and matched_links:
+        out.append(f"Used {matched_links}× for {row['matched_type']} links elsewhere")
+    elif match == "related" and matched_links:
+        out.append(f"Used {matched_links}× for the related type “{row['matched_type']}”")
+    elif row.get("link_type_match"):
         out.append(f"Has {row['matched_type']} links elsewhere")
     elif wanted_types:
         out.append("No history for this link type yet — still meets quality checks")
+    total = int(row.get("backlink_count") or 0)
+    projects = int(row.get("project_count") or 0)
+    if total and projects:
+        out.append(f"{total} links built across {projects} project{'s' if projects != 1 else ''}")
     if row.get("da") is not None:
         out.append(f"DA {row['da']}")
     if row.get("spam_score") is not None and row["spam_score"] < 10:
@@ -68,22 +139,52 @@ async def _suggest(
     limit: int,
 ) -> list[dict]:
     limit = max(1, min(limit, MAX_SUGGESTIONS))
-    wanted = link_type_tokens(link_types)
-    # One set-based query. link-type fit via a LATERAL over the JSONB keys of
-    # link_type_distribution (tolerant lower/trim compare); exclusions as
-    # NOT EXISTS so the planner can use the (workspace, domain) indexes.
+    # Widen the wanted names through the alias/merge layer, then normalize —
+    # matching happens on the normalized forms so every spelling variant of a
+    # type ("Web2.0"/"WEB 2.0"/"Web 2.o"/"web-2.0") counts as the same thing.
+    widened = await _expand_aliases(db, ctx.workspace_id, [n for n in (link_types or []) if n and n.strip()])
+    wanted = link_type_tokens(widened)
+    norm_wanted = sorted({normalize_link_type(n) for n in widened if normalize_link_type(n)})
+    # One set-based query. Link-type fit via a LATERAL over the distribution
+    # ENTRIES (key + count): tier 2 = exact normalized match, tier 1 = related
+    # (one normalized name contains the other — catches "GBP Web 2.0" for a
+    # "Web 2.0" task and "Article Submission" for "Article"). The SQL
+    # normalizer MUST mirror ``normalize_link_type`` (same regexps, same
+    # order). Exclusions stay NOT EXISTS so the planner can use the
+    # (workspace, domain) indexes.
     sql = text(
         """
         SELECT sd.domain_key, sd.da, sd.pa, sd.spam_score, sd.semrush_as,
                sd.robots_band, sd.domain_age_days, sd.backlink_count,
+               sd.indexed_count, sd.project_count, sd.user_count, sd.avg_score,
                sd.da_first, sd.pa_first, sd.market, sd.country,
+               sd.link_type_distribution AS link_types,
                round(100.0 * sd.qualified_count / nullif(sd.backlink_count, 0), 1) AS qualified_pct,
-               m.matched_type IS NOT NULL AS link_type_match, m.matched_type
+               coalesce(m.tier, 0) > 0 AS link_type_match,
+               CASE coalesce(m.tier, 0) WHEN 2 THEN 'exact' WHEN 1 THEN 'related' END AS match,
+               m.matched_type, coalesce(m.matched_links, 0) AS matched_links
         FROM source_domains sd
         LEFT JOIN LATERAL (
-            SELECT k AS matched_type FROM jsonb_object_keys(sd.link_type_distribution) k
-            WHERE :n_types > 0 AND lower(btrim(k)) = ANY(:types)
-            LIMIT 1
+            SELECT max(x.tier) AS tier,
+                   (array_agg(x.k ORDER BY x.tier DESC, x.cnt DESC) FILTER (WHERE x.tier > 0))[1] AS matched_type,
+                   sum(x.cnt) FILTER (WHERE x.tier > 0) AS matched_links
+            FROM (
+                SELECT e.key AS k,
+                       coalesce(nullif(regexp_replace(e.value, '[^0-9]', '', 'g'), '')::bigint, 0) AS cnt,
+                       (SELECT coalesce(max(CASE
+                                WHEN nk.v = wt THEN 2
+                                WHEN length(wt) >= 3 AND length(nk.v) >= 3
+                                     AND (nk.v LIKE '%' || wt || '%' OR wt LIKE '%' || nk.v || '%') THEN 1
+                                ELSE 0 END), 0)
+                        FROM unnest(CAST(:norm_types AS text[])) wt) AS tier
+                FROM jsonb_each_text(coalesce(sd.link_type_distribution, '{}'::jsonb)) e
+                CROSS JOIN LATERAL (
+                    SELECT regexp_replace(
+                               regexp_replace(lower(e.key), '[^a-z0-9]+', '', 'g'),
+                               '([0-9])o', '\\10', 'g') AS v
+                ) nk
+            ) x
+            WHERE :n_types > 0
         ) m ON true
         WHERE sd.workspace_id = :ws
           AND coalesce(sd.robots_band, 'unknown') NOT IN ('fully_blocked', 'mostly_blocked')
@@ -103,7 +204,9 @@ async def _suggest(
                     = coalesce(:pid, '00000000-0000-0000-0000-000000000000'::uuid)
                 AND r.domain_key = sd.domain_key AND r.recommended_to = :label
                 AND r.status IN ('accepted', 'skipped')))
-        ORDER BY (m.matched_type IS NOT NULL) DESC, sd.da DESC NULLS LAST,
+        ORDER BY coalesce(m.tier, 0) DESC,
+                 coalesce(m.matched_links, 0) DESC,
+                 sd.da DESC NULLS LAST,
                  round(100.0 * sd.qualified_count / nullif(sd.backlink_count, 0), 1) DESC NULLS LAST,
                  sd.spam_score ASC NULLS LAST, sd.domain_key ASC
         LIMIT :lim
@@ -113,15 +216,16 @@ async def _suggest(
         await db.execute(
             sql,
             {
-                "ws": ctx.workspace_id, "pid": project_id, "types": wanted,
-                "n_types": len(wanted), "label": user_label or "",
-                "spam_ceiling": _SPAM_CEILING, "lim": limit,
+                "ws": ctx.workspace_id, "pid": project_id,
+                "norm_types": norm_wanted, "n_types": len(norm_wanted),
+                "label": user_label or "", "spam_ceiling": _SPAM_CEILING, "lim": limit,
             },
         )
     ).mappings().all()
     out = []
     for r in rows:
         d = dict(r)
+        d["matched_links"] = int(d.get("matched_links") or 0)
         d["reasons"] = build_reasons(d, wanted)
         out.append(d)
     return out
