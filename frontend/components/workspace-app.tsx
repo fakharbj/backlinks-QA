@@ -3,6 +3,7 @@
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   BarChart3,
   Bell,
   CalendarDays,
@@ -48,7 +49,7 @@ import {
 } from "lucide-react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { Fragment, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   AlertRule,
@@ -241,11 +242,14 @@ export function WorkspaceApp() {
 
     // Proactively refresh the access token well before its 15-min expiry so the
     // session stays alive for the refresh token's full 7-day life (no surprise logout).
+    // CRITICAL: do NOT push the rotated token into React state. api() always sends
+    // the managed store token; the state token is only a stable session marker used
+    // in query keys. Rotating it re-keyed EVERY query and flickered the /auth/me
+    // role to null, which unmounted the whole workspace every 10 minutes — the
+    // "page auto-refreshed and my filters were cleared" bug.
     const timer = setInterval(() => {
       if (localStorage.getItem("ls_refresh")) {
-        refreshAccess().then((ok) => {
-          if (ok) setToken(getAccessToken());
-        });
+        void refreshAccess();
       }
     }, 10 * 60 * 1000);
 
@@ -262,6 +266,9 @@ export function WorkspaceApp() {
     queryKey: ["me", token],
     enabled: authed,
     retry: false,
+    // Never let the role flicker to undefined mid-refetch — a null role unmounts
+    // the entire workspace (the security gate below) and wipes every desk filter.
+    placeholderData: (prev) => prev,
     queryFn: () => api<{ role: string; user: { full_name: string; email: string } }>("/auth/me", { token })
   });
   const role = me.data?.role ?? null;
@@ -864,6 +871,17 @@ function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () =
     <header className="sticky top-0 z-20 border-b border-line bg-panel/70 backdrop-blur-xl">
       <div className="mx-auto flex w-full items-center justify-between px-5 py-1.5">
         <div className="flex items-center gap-2.5">
+          {/* Previous page — every tab change / drill-down pushes history, so
+              this walks back through the exact pages you visited (browser Back
+              works too; this makes it visible everywhere in the app). */}
+          <button
+            onClick={() => window.history.back()}
+            title="Back — return to the previous page"
+            aria-label="Back to previous page"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-panel text-muted shadow-card transition hover:bg-field hover:text-ink"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
           {branding.data?.logo_data_uri ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -3987,17 +4005,36 @@ function ApiUsageDesk({ token }: { token: string | null }) {
     used_today: number; remaining_today: number | null; used_this_hour: number;
     ok_today: number; failed_today: number; success_rate: number | null;
     avg_response_ms: number | null; status: string;
+    // Rolling window + lifetime (the timeframe selector's data).
+    window_days?: number; used_window?: number; ok_window?: number; failed_window?: number;
+    window_success_rate?: number | null;
+    used_total?: number; ok_total?: number; failed_total?: number;
+    total_success_rate?: number | null; tracking_since?: string | null;
     last_success_at: string | null; last_error: string | null; last_error_at: string | null;
   };
   const [selected, setSelected] = useState("iproyal");
   const [gran, setGran] = useState<"hour" | "day">("hour");
+  // Timeframe for the consumption numbers: today, a rolling window, or all time.
+  const [range, setRange] = useState<"1" | "7" | "14" | "30" | "all">("1");
+  const windowDays = range === "all" ? 35 : Number(range);
   const snap = useQuery({
-    queryKey: ["api-usage", token],
+    queryKey: ["api-usage", token, windowDays],
     enabled: Boolean(token),
     refetchInterval: 30000,
     retry: false,
-    queryFn: () => api<{ apis: ApiRow[] }>("/api-usage", { token })
+    queryFn: () => api<{ apis: ApiRow[] }>(`/api-usage?days=${windowDays}`, { token })
   });
+  // The headline number/success rate for the chosen timeframe.
+  const usedFor = (r: ApiRow) =>
+    range === "1" ? r.used_today : range === "all" ? (r.used_total ?? 0) : (r.used_window ?? 0);
+  const rateFor = (r: ApiRow) =>
+    range === "1" ? r.success_rate : range === "all" ? r.total_success_rate : r.window_success_rate;
+  const rangeCaption = (r: ApiRow) =>
+    range === "1"
+      ? r.daily_limit ? `of ${r.daily_limit.toLocaleString()} today` : "requests today"
+      : range === "all"
+        ? `all time${r.tracking_since ? ` (since ${r.tracking_since})` : ""} · ${r.used_today.toLocaleString()} today`
+        : `last ${range} days · ${r.used_today.toLocaleString()} today`;
   const series = useQuery({
     queryKey: ["api-usage-series", token, selected, gran],
     enabled: Boolean(token && selected),
@@ -4064,6 +4101,18 @@ function ApiUsageDesk({ token }: { token: string | null }) {
           <p className="text-sm text-muted">Live consumption across every connected service — refreshes every 30s.</p>
         </div>
         <div className="flex items-center gap-2">
+          <select
+            value={range}
+            onChange={(e) => setRange(e.target.value as typeof range)}
+            title="Timeframe for the usage numbers on the cards (limits always reset daily)"
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
+          >
+            <option value="1">Today</option>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
           <button
             onClick={() => setShowLimits((v) => !v)}
             className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
@@ -4076,8 +4125,8 @@ function ApiUsageDesk({ token }: { token: string | null }) {
             onClick={() =>
               downloadCsv(
                 "api-usage.csv",
-                ["API", "Used today", "Daily limit", "Remaining", "This hour", "OK", "Failed", "Success %", "Avg ms", "Status", "Last error"],
-                rows.map((r) => [r.api, r.used_today, r.daily_limit, r.remaining_today, r.used_this_hour, r.ok_today, r.failed_today, r.success_rate, r.avg_response_ms, r.status, r.last_error])
+                ["API", "Used today", "Daily limit", "Remaining", `Used (${range === "all" ? "all time" : range === "1" ? "today" : `last ${range}d`})`, "Used all time", "This hour", "OK today", "Failed today", "Success %", "Avg ms", "Status", "Last error"],
+                rows.map((r) => [r.api, r.used_today, r.daily_limit, r.remaining_today, usedFor(r), r.used_total ?? 0, r.used_this_hour, r.ok_today, r.failed_today, rateFor(r), r.avg_response_ms, r.status, r.last_error])
               )
             }
           />
@@ -4190,13 +4239,11 @@ function ApiUsageDesk({ token }: { token: string | null }) {
                 <span className={clsx("rounded border px-1.5 py-0.5 text-[10px] font-semibold", meta.cls)}>{meta.label}</span>
               </div>
               <div className="mt-2 flex items-baseline gap-1.5">
-                <span className="text-2xl font-bold text-ink">{r.used_today.toLocaleString()}</span>
-                <span className="text-xs text-muted">
-                  {r.daily_limit ? `of ${r.daily_limit.toLocaleString()} today` : "requests today"}
-                </span>
+                <span className="text-2xl font-bold text-ink">{usedFor(r).toLocaleString()}</span>
+                <span className="text-xs text-muted">{rangeCaption(r)}</span>
               </div>
               {pct != null ? (
-                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded bg-field">
+                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded bg-field" title={`Today vs the daily limit: ${r.used_today.toLocaleString()} of ${r.daily_limit?.toLocaleString()}`}>
                   <div
                     className={clsx("h-full rounded", pct >= 90 ? "bg-danger" : pct >= 70 ? "bg-ember" : "bg-ocean")}
                     style={{ width: `${pct}%` }}
@@ -4205,7 +4252,7 @@ function ApiUsageDesk({ token }: { token: string | null }) {
               ) : null}
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted">
                 <span>{r.used_this_hour} this hour</span>
-                {r.success_rate != null ? <span>{r.success_rate}% success</span> : null}
+                {rateFor(r) != null ? <span>{rateFor(r)}% success</span> : null}
                 {r.avg_response_ms != null ? <span>~{r.avg_response_ms}ms</span> : null}
               </div>
               {r.last_error ? (
@@ -6858,6 +6905,120 @@ function GranularityToggle({
   );
 }
 
+// GitHub-style daily-consistency heatmap: 16 weeks × 7 days, quartile-shaded,
+// with streak/best-day stats. Clicking a day drills into that exact day.
+function ActivityHeatmap({
+  days,
+  loading,
+  onDayClick
+}: {
+  days: Array<{ day: string; count: number }>;
+  loading?: boolean;
+  onDayClick?: (day: string) => void;
+}) {
+  const total = days.reduce((s, d) => s + d.count, 0);
+  const activeDays = days.filter((d) => d.count > 0).length;
+  const best = days.reduce((b, d) => (d.count > b.count ? d : b), { day: "", count: 0 });
+  let currentStreak = 0;
+  for (let i = days.length - 1; i >= 0; i--) {
+    if (days[i].count > 0) currentStreak++;
+    else if (i === days.length - 1) continue; // today can still be 0 mid-day
+    else break;
+  }
+  let longestStreak = 0;
+  let run = 0;
+  for (const d of days) {
+    run = d.count > 0 ? run + 1 : 0;
+    longestStreak = Math.max(longestStreak, run);
+  }
+  const maxC = Math.max(1, best.count);
+  const LEVELS = ["bg-field", "bg-ocean/25", "bg-ocean/45", "bg-ocean/70", "bg-ocean"];
+  const level = (c: number) =>
+    c === 0 ? 0 : c <= maxC * 0.25 ? 1 : c <= maxC * 0.5 ? 2 : c <= maxC * 0.75 ? 3 : 4;
+  // Column = week, starting Monday: pad the first column so weekdays line up.
+  const firstDow = days.length ? (new Date(`${days[0].day}T00:00:00`).getDay() + 6) % 7 : 0;
+  const cells: Array<{ day: string; count: number } | null> = [
+    ...Array.from({ length: firstDow }, () => null),
+    ...days
+  ];
+  const weeks: Array<Array<{ day: string; count: number } | null>> = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  // A month label above the first column that starts that month.
+  const monthOf = (w: Array<{ day: string; count: number } | null>) => {
+    const f = w.find(Boolean);
+    return f ? f.day.slice(0, 7) : "";
+  };
+  return (
+    <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <SectionTitle title="Daily activity — last 16 weeks" flush />
+        <span className="ml-auto" />
+        {([
+          ["Links", String(total)],
+          ["Active days", `${activeDays}/${days.length}`],
+          ["Best day", best.count ? `${best.count} (${fmtChartLabel(best.day, true)})` : "—"],
+          ["Streak", `${currentStreak}d`],
+          ["Longest", `${longestStreak}d`]
+        ] as Array<[string, string]>).map(([lab, val]) => (
+          <span key={lab} className="rounded-lg border border-line bg-field/50 px-2 py-1 text-[11px] text-muted">
+            {lab}: <span className="font-bold text-ink">{val}</span>
+          </span>
+        ))}
+      </div>
+      {loading ? (
+        <div className="flex justify-center p-6"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+      ) : (
+        <div className="overflow-x-auto pt-3">
+          <div className="inline-flex flex-col gap-1">
+            <div className="flex gap-1">
+              {weeks.map((w, i) => {
+                const m = monthOf(w);
+                const prev = i > 0 ? monthOf(weeks[i - 1]) : "";
+                return (
+                  <span key={i} className="w-3.5 overflow-visible whitespace-nowrap text-[9px] leading-3 text-muted">
+                    {m && m !== prev ? fmtChartLabel(`${m}-01`).split(" ")[0] : ""}
+                  </span>
+                );
+              })}
+            </div>
+            <div className="flex gap-1">
+              {weeks.map((w, i) => (
+                <div key={i} className="flex flex-col gap-1">
+                  {Array.from({ length: 7 }, (_, di) => {
+                    const c = w[di];
+                    if (!c) return <span key={di} className="h-3.5 w-3.5 rounded-[3px] opacity-0" />;
+                    return (
+                      <button
+                        key={di}
+                        type="button"
+                        onClick={() => c.count && onDayClick?.(c.day)}
+                        title={`${fmtChartLabel(c.day, true)} · ${c.count} link${c.count === 1 ? "" : "s"}${c.count ? " — click to see them" : ""}`}
+                        className={clsx(
+                          "h-3.5 w-3.5 rounded-[3px] transition",
+                          LEVELS[level(c.count)],
+                          c.count ? "hover:ring-2 hover:ring-ocean/50" : "cursor-default"
+                        )}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+              <div className="ml-2 flex flex-col justify-end gap-0.5 text-[9px] leading-3 text-muted">
+                <span>Mon</span><span className="mt-3">Thu</span><span className="mt-3">Sun</span>
+              </div>
+            </div>
+            <div className="mt-1 flex items-center gap-1 text-[10px] text-muted">
+              Less
+              {LEVELS.map((cls) => <span key={cls} className={clsx("h-3 w-3 rounded-[3px]", cls)} />)}
+              More
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function TrendChart({
   labels,
   series,
@@ -6883,19 +7044,40 @@ function TrendChart({
   const H = height;
   const PADX = 34;
   const PADY = 22;
+  const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const [hover, setHover] = useState<number | null>(null);
+  // Legend pills toggle series on/off; the y-scale follows what's visible.
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const visible = series.filter((s) => !hidden.has(s.name));
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 20);
     return () => clearTimeout(t);
   }, []);
-  const max = Math.max(1, ...series.flatMap((s) => s.values));
+  const max = Math.max(1, ...(visible.length ? visible : series).flatMap((s) => s.values));
   const n = labels.length;
   const x = (i: number) => (n <= 1 ? W / 2 : PADX + (i * (W - PADX * 2)) / (n - 1));
   const y = (v: number) => H - PADY - (v / max) * (H - PADY * 2);
   const fmtV = valueFmt || ((v: number) => String(v));
   const fmtLabel = labelFmt || ((raw: string) => fmtChartLabel(raw, true));
   if (!labels.length) return <Empty label="Not enough data for a chart yet." />;
+
+  // Catmull-Rom → cubic bezier: smooth, modern curves. Control points are
+  // clamped to the plot band so spikes never overshoot below the baseline.
+  const clampY = (v: number) => Math.min(H - PADY, Math.max(PADY, v));
+  const smoothPath = (vals: number[]) => {
+    const pts = vals.map((v, i) => [x(i), y(v)] as const);
+    if (pts.length === 1) return `M ${pts[0][0]},${pts[0][1]}`;
+    let d = `M ${pts[0][0]},${pts[0][1]}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[Math.min(pts.length - 1, i + 2)];
+      d += ` C ${p1[0] + (p2[0] - p0[0]) / 6},${clampY(p1[1] + (p2[1] - p0[1]) / 6)} ${p2[0] - (p3[0] - p1[0]) / 6},${clampY(p2[1] - (p3[1] - p1[1]) / 6)} ${p2[0]},${p2[1]}`;
+    }
+    return d;
+  };
 
   const pickIndex = (clientX: number, rect: DOMRect) => {
     const px = ((clientX - rect.left) / Math.max(1, rect.width)) * W; // → viewBox units
@@ -6909,15 +7091,46 @@ function TrendChart({
   };
   const hoverLeftPct = hover != null ? (x(hover) / W) * 100 : 0;
 
+  // End-of-line value badges, dodged apart so converging lines stay readable.
+  const endBadges = (() => {
+    if (n < 2) return [] as Array<{ name: string; cssVar: string; yPos: number; v: number }>;
+    const raw = visible
+      .map((s) => ({ name: s.name, cssVar: s.cssVar, v: s.values[n - 1] ?? 0, yPos: y(s.values[n - 1] ?? 0) }))
+      .sort((a, b) => a.yPos - b.yPos);
+    for (let i = 1; i < raw.length; i++) {
+      if (raw[i].yPos - raw[i - 1].yPos < 11) raw[i].yPos = raw[i - 1].yPos + 11;
+    }
+    return raw;
+  })();
+
   return (
     <div className="relative">
-      <div className="mb-1.5 flex flex-wrap gap-3 px-1">
-        {series.map((s) => (
-          <span key={s.name} className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
-            <span className="h-2 w-2 rounded-full" style={{ background: `rgb(var(${s.cssVar}))` }} />
-            {s.name}
-          </span>
-        ))}
+      <div className="mb-1.5 flex flex-wrap gap-1.5 px-1">
+        {series.map((s) => {
+          const off = hidden.has(s.name);
+          return (
+            <button
+              key={s.name}
+              type="button"
+              onClick={() =>
+                setHidden((h) => {
+                  const nx = new Set(h);
+                  if (nx.has(s.name)) nx.delete(s.name);
+                  else if (nx.size < series.length - 1) nx.add(s.name); // keep ≥1 visible
+                  return nx;
+                })
+              }
+              title={off ? `Show ${s.name}` : `Hide ${s.name}`}
+              className={clsx(
+                "flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium transition",
+                off ? "border-line text-muted/60 line-through" : "border-line/70 bg-field/50 text-muted hover:text-ink"
+              )}
+            >
+              <span className="h-2 w-2 rounded-full" style={{ background: `rgb(var(${s.cssVar}))`, opacity: off ? 0.35 : 1 }} />
+              {s.name}
+            </button>
+          );
+        })}
       </div>
       <svg
         viewBox={`0 0 ${W} ${H}`}
@@ -6928,15 +7141,26 @@ function TrendChart({
         onMouseLeave={() => setHover(null)}
         onClick={(e) => onPointClick?.(pickIndex(e.clientX, e.currentTarget.getBoundingClientRect()))}
       >
-        {[0, 0.5, 1].map((f) => (
+        <defs>
+          {visible.map((s) => (
+            <linearGradient key={s.name} id={`tg-${uid}-${s.cssVar.replace(/[^a-z0-9]/gi, "")}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={`rgb(var(${s.cssVar}))`} stopOpacity="0.28" />
+              <stop offset="100%" stopColor={`rgb(var(${s.cssVar}))`} stopOpacity="0.02" />
+            </linearGradient>
+          ))}
+        </defs>
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
           <g key={f}>
             <line
               x1={PADX} x2={W - PADX} y1={y(max * f)} y2={y(max * f)}
-              stroke="rgb(var(--line))" strokeWidth="1" strokeDasharray={f === 0 ? "" : "3 4"}
+              stroke="rgb(var(--line))" strokeWidth="1"
+              strokeDasharray={f === 0 ? "" : "3 4"} opacity={f === 0 || f === 0.5 || f === 1 ? 1 : 0.45}
             />
-            <text x={PADX - 6} y={y(max * f) + 3} textAnchor="end" fontSize="9" fill="rgb(var(--muted))">
-              {Math.round(max * f)}
-            </text>
+            {f === 0 || f === 0.5 || f === 1 ? (
+              <text x={PADX - 6} y={y(max * f) + 3} textAnchor="end" fontSize="9" fill="rgb(var(--muted))">
+                {Math.round(max * f)}
+              </text>
+            ) : null}
           </g>
         ))}
         {/* Crosshair at the hovered bucket. */}
@@ -6946,21 +7170,26 @@ function TrendChart({
             stroke="rgb(var(--muted))" strokeWidth="1" strokeDasharray="2 3" opacity="0.5"
           />
         ) : null}
-        {series.map((s) => {
-          const pts = s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ");
-          const area = `M ${x(0)},${y(s.values[0] ?? 0)} ${s.values
-            .map((v, i) => `L ${x(i)},${y(v)}`)
-            .join(" ")} L ${x(s.values.length - 1)},${H - PADY} L ${x(0)},${H - PADY} Z`;
+        {visible.map((s) => {
+          const line = smoothPath(s.values);
+          const area = `${line} L ${x(s.values.length - 1)},${H - PADY} L ${x(0)},${H - PADY} Z`;
           return (
             <g key={s.name}>
-              <path d={area} fill={`rgb(var(${s.cssVar}) / 0.10)`} />
-              <polyline
-                points={pts} fill="none" stroke={`rgb(var(${s.cssVar}))`}
-                strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"
+              <path d={area} fill={`url(#tg-${uid}-${s.cssVar.replace(/[^a-z0-9]/gi, "")})`} />
+              <path
+                d={line} fill="none" stroke={`rgb(var(${s.cssVar}))`}
+                strokeWidth="2.25" strokeLinejoin="round" strokeLinecap="round"
+                pathLength={1}
+                strokeDasharray="1"
+                strokeDashoffset={mounted ? 0 : 1}
+                style={{ transition: "stroke-dashoffset .9s ease" }}
               />
               {s.values.map((v, i) => {
                 const isHover = hover === i;
                 const isLast = i === n - 1;
+                // Quiet dots: only the hovered + last points render, so the
+                // smooth line stays clean on dense day-granularity charts.
+                if (!isHover && !isLast && n > 16) return null;
                 return (
                   <circle
                     key={i} cx={x(i)} cy={y(v)}
@@ -6975,6 +7204,19 @@ function TrendChart({
             </g>
           );
         })}
+        {/* Last-value badges at the line ends — the "where are we now" read. */}
+        {endBadges.map((b) => (
+          <text
+            key={b.name}
+            x={W - PADX + 5}
+            y={b.yPos + 3}
+            fontSize="9.5"
+            fontWeight="700"
+            fill={`rgb(var(${b.cssVar}))`}
+          >
+            {fmtV(b.v)}
+          </text>
+        ))}
         {labels.map((l, i) =>
           n <= 8 || i === 0 || i === n - 1 || i % Math.ceil(n / 6) === 0 ? (
             <text key={i} x={x(i)} y={H - 6} textAnchor="middle" fontSize="9" fill="rgb(var(--muted))">
@@ -6990,7 +7232,7 @@ function TrendChart({
           style={{ left: `clamp(64px, ${hoverLeftPct}%, calc(100% - 64px))` }}
         >
           <div className="mb-0.5 font-semibold text-ink">{fmtLabel(labels[hover])}</div>
-          {series.map((s) => (
+          {visible.map((s) => (
             <div key={s.name} className="flex items-center gap-1.5 whitespace-nowrap text-muted">
               <span className="h-2 w-2 rounded-full" style={{ background: `rgb(var(${s.cssVar}))` }} />
               <span>{s.name}</span>
@@ -7486,6 +7728,31 @@ function UserDashboard({
       return api<DashPayload>(`/performance/user-dashboard?${p.toString()}`, { token });
     }
   });
+  // Daily-consistency source: a fixed 16-week day-granularity series (separate
+  // from the main window so the heatmap is always fully populated).
+  const heat = useQuery({
+    queryKey: ["user-dash-heat", token, userLabel, projFilter, ltFilter, dateType],
+    enabled: Boolean(token),
+    queryFn: () => {
+      const p = new URLSearchParams({ user_label: userLabel, compare: "false", granularity: "day", days: "112" });
+      if (projFilter) p.set("project_id", projFilter);
+      if (ltFilter) p.set("link_type", ltFilter);
+      if (dateType !== "created") p.set("date_type", dateType);
+      return api<DashPayload>(`/performance/user-dashboard?${p.toString()}`, { token });
+    }
+  });
+  const heatDays = useMemo(() => {
+    const byDay = new Map((heat.data?.weekly || []).map((w) => [w.week, w.links]));
+    const out: Array<{ day: string; count: number }> = [];
+    const d0 = new Date();
+    for (let i = 111; i >= 0; i--) {
+      const dt = new Date(d0);
+      dt.setDate(d0.getDate() - i);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+      out.push({ day: key, count: Number(byDay.get(key) || 0) });
+    }
+    return out;
+  }, [heat.data]);
 
   // Recent task history (day report is capped at 92 days — window clamps).
   const fmtIso = (dt: Date) =>
@@ -7981,6 +8248,15 @@ function UserDashboard({
               </div>
             </section>
           </div>
+
+          {/* Daily activity — GitHub-style heatmap of the last 16 weeks, with
+              consistency stats. A day click drills into exactly that day's
+              links (same axis parity as every other drill). */}
+          <ActivityHeatmap
+            days={heatDays}
+            loading={heat.isLoading}
+            onDayClick={(day) => open({ [`${drillAxis}_from`]: day, [`${drillAxis}_to`]: day })}
+          />
 
           {/* Link types built by this person */}
           {d.by_type.length ? (

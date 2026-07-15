@@ -22,13 +22,15 @@ class ApiLimitsIn(BaseModel):
 
 @router.get("")
 async def api_usage_snapshot(
+    days: int = Query(1, ge=1, le=35),
     ctx: AuthContext = Depends(require_role(Role.MANAGER)),
 ) -> dict:
-    """Per-API health: limits, used today/this hour, success rate, avg response,
+    """Per-API health: limits, used today/this hour, a rolling ``days`` window
+    (≤35 — bucket retention), lifetime totals, success rate, avg response,
     last error/success — the "where did our quota go" answer."""
     daily, hourly = await api_usage_service.effective_limits()
     return {
-        "apis": await api_usage_service.snapshot(),
+        "apis": await api_usage_service.snapshot(days=days),
         "daily_limits": daily,
         "hourly_limits": hourly,
         "known_apis": list(api_usage_service.KNOWN_APIS),

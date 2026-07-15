@@ -128,6 +128,9 @@ async def record(api: str, *, ok: bool, duration_ms: int | None = None, error: s
         for key in (f"{_hkey(api, now)}:{suffix}", f"{_dkey(api, now)}:{suffix}"):
             pipe.incr(key)
             pipe.expire(key, _TTL)
+        # Lifetime totals (no TTL) — the "All time" numbers on the usage desk.
+        pipe.incr(f"ls:apiu:{api}:t:{suffix}")
+        pipe.setnx("ls:apiu:first", now.date().isoformat())
         if duration_ms is not None:
             pipe.incrby(f"{_hkey(api, now)}:ms", max(0, int(duration_ms)))
             pipe.expire(f"{_hkey(api, now)}:ms", _TTL)
@@ -154,6 +157,8 @@ def record_sync(api: str, *, ok: bool, duration_ms: int | None = None, error: st
         for key in (f"{_hkey(api, now)}:{suffix}", f"{_dkey(api, now)}:{suffix}"):
             pipe.incr(key)
             pipe.expire(key, _TTL)
+        pipe.incr(f"ls:apiu:{api}:t:{suffix}")
+        pipe.setnx("ls:apiu:first", now.date().isoformat())
         if duration_ms is not None:
             pipe.incrby(f"{_hkey(api, now)}:ms", max(0, int(duration_ms)))
             pipe.expire(f"{_hkey(api, now)}:ms", _TTL)
@@ -205,21 +210,35 @@ async def available(api: str) -> bool:
     return True
 
 
-async def snapshot() -> list[dict]:
-    """Dashboard rows: one per known API with today's + this hour's numbers."""
+async def snapshot(days: int = 1) -> list[dict]:
+    """Dashboard rows: one per known API with today's + this hour's numbers,
+    a rolling N-day window (``days`` ≤ 35 — the bucket retention), and the
+    lifetime totals ("All time" — counted since usage tracking began)."""
     from app.core.redis import get_redis
 
     r = get_redis()
     now = _now()
+    days = max(1, min(int(days or 1), 35))
     dlim, hlim = await effective_limits()
+    try:
+        first_raw = await r.get("ls:apiu:first")
+        tracking_since = (
+            first_raw.decode() if isinstance(first_raw, (bytes, bytearray)) else first_raw
+        )
+    except Exception:  # noqa: BLE001
+        tracking_since = None
     out: list[dict] = []
     for api in KNOWN_APIS:
+        window_days = [now - timedelta(days=i) for i in range(days)]
         keys = [
             f"{_dkey(api, now)}:ok", f"{_dkey(api, now)}:fail",
             f"{_hkey(api, now)}:ok", f"{_hkey(api, now)}:fail",
             f"{_hkey(api, now)}:ms",
             f"ls:apiu:{api}:last_ok", f"ls:apiu:{api}:last_err", f"ls:apiu:{api}:last_err_at",
+            f"ls:apiu:{api}:t:ok", f"ls:apiu:{api}:t:fail",
         ]
+        for dt in window_days:
+            keys.extend((f"{_dkey(api, dt)}:ok", f"{_dkey(api, dt)}:fail"))
         try:
             vals = await r.mget(*keys)
         except Exception:  # noqa: BLE001
@@ -237,9 +256,14 @@ async def snapshot() -> list[dict]:
             return x.decode() if isinstance(x, (bytes, bytearray)) else str(x)
 
         d_ok, d_fail, h_ok, h_fail, h_ms = (_i(v) for v in vals[:5])
-        last_ok, last_err, last_err_at = (_s(v) for v in vals[5:])
+        last_ok, last_err, last_err_at = (_s(v) for v in vals[5:8])
+        t_ok, t_fail = _i(vals[8]), _i(vals[9])
+        w_ok = sum(_i(v) for v in vals[10::2])
+        w_fail = sum(_i(v) for v in vals[11::2])
         day_total = d_ok + d_fail
         hour_total = h_ok + h_fail
+        window_total = w_ok + w_fail
+        total = t_ok + t_fail
         limit = dlim.get(api)
         remaining = max(0, limit - day_total) if limit else None
         status = "ok"
@@ -260,6 +284,19 @@ async def snapshot() -> list[dict]:
             "failed_today": d_fail,
             "success_rate": round(100.0 * d_ok / day_total, 1) if day_total else None,
             "avg_response_ms": round(h_ms / hour_total) if hour_total else None,
+            # Rolling window (the desk's timeframe selector).
+            "window_days": days,
+            "used_window": window_total,
+            "ok_window": w_ok,
+            "failed_window": w_fail,
+            "window_success_rate": round(100.0 * w_ok / window_total, 1) if window_total else None,
+            # Lifetime (since tracking began — day buckets expire after ~35d,
+            # these never do).
+            "used_total": total,
+            "ok_total": t_ok,
+            "failed_total": t_fail,
+            "total_success_rate": round(100.0 * t_ok / total, 1) if total else None,
+            "tracking_since": tracking_since,
             "status": status,
             "last_success_at": last_ok,
             "last_error": last_err,
