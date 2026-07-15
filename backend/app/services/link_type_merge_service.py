@@ -314,8 +314,11 @@ async def _rewrite_name_keyed_stores(
     )
     await _run(
         "tab_constants",
+        # CAST(...) not ::text — a `::` directly after a bind name defeats
+        # SQLAlchemy text() parsing (`:new::text` binds nothing → PG syntax
+        # error at ":"). This 500'd EVERY merge/rename until 2026-07-16.
         "UPDATE google_sheet_project_tabs SET field_constants = "
-        "jsonb_set(field_constants, '{link_type}', to_jsonb(:new::text)) "
+        "jsonb_set(field_constants, '{link_type}', to_jsonb(CAST(:new AS text))) "
         "WHERE workspace_id=:ws AND field_constants->>'link_type' IS NOT NULL "
         "AND lower(btrim(field_constants->>'link_type'))=:old_l",
     )

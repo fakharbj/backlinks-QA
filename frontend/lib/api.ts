@@ -164,6 +164,8 @@ export type LinkType = {
   description: string | null;
   is_active: boolean;
   backlink_count: number;
+  // Merged-away spellings that now redirect to this master.
+  aliases?: string[];
 };
 
 export type ScoringParameter = {

@@ -45,34 +45,44 @@ async def list_types(db: AsyncSession, ctx: AuthContext) -> list[dict]:
             )
         ).all()
     )
+    # Merged-away spellings pointing at each master — shown as the master's
+    # aliases so admins can SEE that a merge took (and what folds into what).
+    alias_rows = (
+        await db.execute(
+            select(LinkType.merged_into_id, LinkType.name)
+            .where(
+                LinkType.workspace_id == ctx.workspace_id,
+                LinkType.merged_into_id.is_not(None),
+            )
+            .order_by(LinkType.name.asc())
+        )
+    ).all()
+    aliases: dict[uuid.UUID, list[str]] = {}
+    for master_id, alias_name in alias_rows:
+        aliases.setdefault(master_id, []).append(alias_name)
     return [
         {
             "id": t.id, "name": t.name, "slug": t.slug, "color": t.color,
             "description": t.description, "is_active": t.is_active,
             "backlink_count": int(counts.get(t.id, 0)),
+            "aliases": aliases.get(t.id, []),
         }
         for t in types
     ]
 
 
 async def create_type(db: AsyncSession, ctx: AuthContext, name: str, color=None, description=None) -> LinkType:
-    slug = slugify(name)
-    exists = (
-        await db.execute(
-            select(LinkType).where(
-                LinkType.workspace_id == ctx.workspace_id,
-                LinkType.slug == slug,
-                LinkType.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if exists is not None:
-        raise ConflictError("A link type with that name already exists")
-    lt = LinkType(
-        workspace_id=ctx.workspace_id, name=name.strip(), slug=slug,
-        color=color, description=description,
-    )
-    db.add(lt)
+    """Get-or-create THROUGH the alias layer. Re-adding a merged-away spelling
+    must return the surviving master (never re-split a merge), and re-adding a
+    plainly deleted type restores it — the slug is unique per workspace, so a
+    blind INSERT here would violate uq_link_types_ws_slug and 500."""
+    lt = await resolve_canonical(db, ctx.workspace_id, name)
+    if lt is None:
+        raise ConflictError("Link type name cannot be empty")
+    if color is not None and not lt.color:
+        lt.color = color
+    if description is not None and not lt.description:
+        lt.description = description
     await db.flush()
     return lt
 

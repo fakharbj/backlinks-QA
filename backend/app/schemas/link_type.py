@@ -15,6 +15,8 @@ class LinkTypeOut(BaseModel):
     description: str | None = None
     is_active: bool
     backlink_count: int = 0
+    # Merged-away spellings that now redirect to this master (read-only).
+    aliases: list[str] = []
 
 
 class LinkTypeCreate(BaseModel):
