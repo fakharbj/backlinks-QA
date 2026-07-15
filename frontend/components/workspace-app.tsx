@@ -120,6 +120,11 @@ export function WorkspaceApp() {
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectIdState] = useState<string>("");
   const [tab, setTabState] = useState<Tab>("overview");
+  // Person-dashboard section (Overview / Projects / Plans & calendar / Rates &
+  // leave) lives HERE so the MAIN sidebar can drive it like real pages; the
+  // Users desk reports which person is open so admin nav shows the sections too.
+  const [dashSection, setDashSection] = useState<DashSection>("overview");
+  const [dashPerson, setDashPerson] = useState<string | null>(null);
   // Toast stack: every onNotice(text) becomes a stacked, auto-dismissing toast.
   const [toasts, setToasts] = useState<Array<{ id: number; text: string; kind: "info" | "error" }>>([]);
   const setNotice = (text: string) => {
@@ -343,11 +348,16 @@ export function WorkspaceApp() {
               onSelect={setActiveProjectId}
               onNotice={setNotice}
               role={role}
+              dashSection={dashSection}
+              onDashSection={setDashSection}
+              dashSubFor={tab === "mydash" ? "mydash" : tab === "users" && dashPerson ? "users" : null}
             />
           </div>
         </aside>
         <section key={`${tab}-${activeProjectId}`} className="desk-enter min-w-0 flex-1 space-y-5">
-          <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} role={role} />
+          <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} role={role}
+            dashSection={dashSection} onDashSection={setDashSection}
+            dashSubFor={tab === "mydash" ? "mydash" : tab === "users" && dashPerson ? "users" : null} />
           {role !== "viewer" ? (
             <div className="lg:hidden">
               <ProjectPanel
@@ -419,7 +429,8 @@ export function WorkspaceApp() {
             <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onOpenUser={openUserDash} />
           ) : null}
           {tab === "users" ? (
-            <UserDashboardsDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onPlanWork={() => setTab("tasks")} />
+            <UserDashboardsDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onPlanWork={() => setTab("tasks")}
+              section={dashSection} onSectionChange={setDashSection} onPersonChange={setDashPerson} />
           ) : null}
           {tab === "tasks" ? (
             <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} />
@@ -438,7 +449,7 @@ export function WorkspaceApp() {
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
-          {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} /> : null}
+          {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} section={dashSection} onSectionChange={setDashSection} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
           {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
           {tab === "guidance" ? <GuidanceDesk token={token} fixed="next" /> : null}
@@ -777,6 +788,17 @@ const MY_NAV: NavGroup[] = [
   }
 ];
 
+// A person dashboard is a multi-PAGE surface: its sections live in the MAIN
+// sidebar (as sub-items under My Dashboard / User Dashboards while one is
+// open), so the dashboard reads as a large product area, not an inner widget.
+type DashSection = "overview" | "projects" | "calendar" | "rates";
+const DASH_SECTIONS: Array<[DashSection, string, NavIcon, string]> = [
+  ["overview", "Overview", Gauge, "KPIs, trends & quality"],
+  ["projects", "Projects", Layers, "Where the work happened"],
+  ["calendar", "Plans & calendar", CalendarDays, "Assignments & month view"],
+  ["rates", "Rates & leave", Activity, "Productivity & time off"]
+];
+
 // Role-safe navigation: hide what a role cannot use so nobody clicks into 403s.
 const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
   if (!role || role === "admin") return groups;
@@ -879,7 +901,10 @@ function Sidebar({
   activeProjectId,
   onSelect,
   onNotice,
-  role
+  role,
+  dashSection,
+  onDashSection,
+  dashSubFor
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
@@ -889,6 +914,11 @@ function Sidebar({
   onSelect: (id: string) => void;
   onNotice: (text: string) => void;
   role: string | null;
+  // Person-dashboard pages in the MAIN nav: which nav item currently expands
+  // into the dashboard sections ("mydash" | "users"), and the active section.
+  dashSection: DashSection;
+  onDashSection: (s: DashSection) => void;
+  dashSubFor: Tab | null;
 }) {
   return (
     <div className="space-y-4">
@@ -924,8 +954,8 @@ function Sidebar({
               {group.items.map(([id, label, Icon]) => {
                 const active = activeTab === id;
                 return (
+                  <Fragment key={id}>
                   <button
-                    key={id}
                     onClick={() => onTab(id)}
                     className={clsx(
                       "group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition",
@@ -940,6 +970,34 @@ function Sidebar({
                     <Icon className="h-4 w-4 shrink-0" />
                     {label}
                   </button>
+                  {/* The open person-dashboard expands into its PAGES right here in
+                      the main nav — a large dashboard area, not an inner widget. */}
+                  {active && dashSubFor === id ? (
+                    <div className="ml-3.5 mt-1 space-y-0.5 border-l-2 border-ocean/25 pl-2 pb-1">
+                      {DASH_SECTIONS.map(([sid, slabel, SIcon, sdesc]) => {
+                        const son = dashSection === sid;
+                        return (
+                          <button
+                            key={sid}
+                            onClick={() => { onTab(id); onDashSection(sid); }}
+                            className={clsx(
+                              "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition",
+                              son ? "bg-ocean/10" : "hover:bg-field"
+                            )}
+                          >
+                            <SIcon className={clsx("mt-0.5 h-3.5 w-3.5 shrink-0", son ? "text-ocean" : "text-muted")} />
+                            <span className="min-w-0">
+                              <span className={clsx("block text-[13px] leading-tight", son ? "font-semibold text-ocean" : "font-medium text-ink")}>
+                                {slabel}
+                              </span>
+                              <span className="block truncate text-[10px] leading-tight text-muted">{sdesc}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  </Fragment>
                 );
               })}
             </div>
@@ -954,18 +1012,24 @@ function MobileNav({
   activeTab,
   onTab,
   inProject,
-  role
+  role,
+  dashSection,
+  onDashSection,
+  dashSubFor
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
   inProject: boolean;
   role: string | null;
+  dashSection: DashSection;
+  onDashSection: (s: DashSection) => void;
+  dashSubFor: Tab | null;
 }) {
   return (
     <nav className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel p-1 shadow-card scrollbar-thin lg:hidden">
       {navGroups(inProject, role).flatMap((g) => g.items).map(([id, label, Icon]) => (
+        <Fragment key={id}>
         <button
-          key={id}
           onClick={() => onTab(id)}
           title={label}
           className={clsx(
@@ -976,6 +1040,24 @@ function MobileNav({
           <Icon className="h-4 w-4" />
           {label}
         </button>
+        {/* Dashboard pages inline, right after the open dashboard tab. */}
+        {activeTab === id && dashSubFor === id
+          ? DASH_SECTIONS.map(([sid, slabel, SIcon]) => (
+              <button
+                key={sid}
+                onClick={() => { onTab(id); onDashSection(sid); }}
+                title={slabel}
+                className={clsx(
+                  "flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition",
+                  dashSection === sid ? "border-ocean/40 bg-ocean/10 font-semibold text-ocean" : "border-line text-muted hover:bg-field"
+                )}
+              >
+                <SIcon className="h-3.5 w-3.5" />
+                {slabel}
+              </button>
+            ))
+          : null}
+        </Fragment>
       ))}
     </nav>
   );
@@ -4848,7 +4930,10 @@ function TaskDomainSuggestions({
 
 // Viewer "My Dashboard": the admin person-dashboard scoped to the signed-in
 // person (backend self-scopes via visible_labels; UI hides admin mutations).
-function MySelfDashboard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+function MySelfDashboard({ token, onNotice, section, onSectionChange }: {
+  token: string | null; onNotice: (text: string) => void;
+  section: DashSection; onSectionChange: (s: DashSection) => void;
+}) {
   const [label, setLabel] = useState("");
   const me = useQuery({
     queryKey: ["my-labels", token],
@@ -4898,6 +4983,8 @@ function MySelfDashboard({ token, onNotice }: { token: string | null; onNotice: 
         token={token}
         userLabel={active}
         selfView
+        section={section}
+        onSectionChange={onSectionChange}
         onClose={() => undefined}
         onOpenBacklinks={() => onNotice("Ask a manager to open the full Backlinks list for you.")}
         onNotice={onNotice}
@@ -7300,6 +7387,8 @@ function UserDashboard({
   onOpenBacklinks,
   onNotice,
   onPlanWork,
+  section,
+  onSectionChange,
   selfView = false
 }: {
   token: string | null;
@@ -7309,6 +7398,11 @@ function UserDashboard({
   onOpenBacklinks: (filters: Record<string, string>) => void;
   onNotice: (text: string) => void;
   onPlanWork?: () => void;
+  // The dashboard is paged: the ACTIVE page (Overview / Projects / Plans &
+  // calendar / Rates & leave) is owned by the app shell so the MAIN sidebar
+  // navigates it; the in-page band offers the same hops for convenience.
+  section: DashSection;
+  onSectionChange: (s: DashSection) => void;
   // Viewer "My Dashboard": same KPIs/charts scoped to the signed-in person,
   // with every admin mutation (quick-plan, mark-leave, rate editing) hidden.
   // The backend enforces self-scoping regardless (visible_labels).
@@ -7326,7 +7420,6 @@ function UserDashboard({
   const [dateType, setDateType] = useState<"created" | "checked" | "sheet">("created");
   const [projSort, setProjSort] = useState("links");
   const [projSortDir, setProjSortDir] = useState<"asc" | "desc">("desc");
-  const [dashTab, setDashTab] = useState<"overview" | "projects" | "calendar" | "rates">("overview");
   const [gran, setGran] = useState("week");
   // Disable "Day" on windows long enough to render thousands of dots; fall back to week.
   const windowDays =
@@ -7585,122 +7678,153 @@ function UserDashboard({
     return true;
   });
 
+  const sectionMeta = DASH_SECTIONS.find(([sid]) => sid === section) || DASH_SECTIONS[0];
+  const SectionIcon = sectionMeta[2];
+  // Live per-section headline for the hero strip + the section band.
+  const sectionStat = !d ? "" : section === "overview"
+    ? `${num(d.links.links)} links in this window`
+    : section === "projects"
+      ? `${(d.projects || []).length} project${(d.projects || []).length === 1 ? "" : "s"} worked`
+      : section === "calendar"
+        ? d.plan.completion_pct != null ? `${d.plan.completion_pct}% of plan reached` : `${num(d.plan.target)} links planned`
+        : `${(d.leaves || []).length} leave request${(d.leaves || []).length === 1 ? "" : "s"}`;
+  const windowCaption =
+    days === "custom" && customFrom && customTo
+      ? `${customFrom} → ${customTo}`
+      : (TIMEFRAMES.find(([v]) => v === days)?.[1] || "All time");
+
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {!selfView ? (
-          <button
-            onClick={onClose}
-            className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
-          >
-            ← All people
-          </button>
-        ) : null}
-        <div>
-          <h2 className="text-base font-semibold text-ink">{selfView ? "My Dashboard" : userLabel}</h2>
-          <p className="text-xs text-muted">
-            {selfView ? "Your hours, targets, production and quality" : "User dashboard — hours, targets, production, quality"}
-          </p>
-        </div>
-        {projFilter ? (
-          <span className="flex items-center gap-1 rounded-full border border-ocean/40 bg-ocean/10 px-2.5 py-1 text-xs font-medium text-ocean">
-            {projectName(projFilter)}
-            <button onClick={() => setProjFilter("")} title="Remove the project filter — show all projects" className="hover:text-danger">×</button>
+      {/* ── Premium hero: who this is + the numbers that matter, in one band.
+          The dashboard's PAGES live in the main sidebar on the left. ── */}
+      <div className="relative overflow-hidden rounded-2xl border border-ocean/25 bg-gradient-to-r from-ocean/10 via-panel to-plum/10 p-5 shadow-soft">
+        <div className="flex flex-wrap items-center gap-4">
+          {!selfView ? (
+            <button
+              onClick={onClose}
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-line bg-panel/70 px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              ← All people
+            </button>
+          ) : null}
+          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft dark:text-slate-900">
+            {userLabel.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
           </span>
-        ) : (
-          <span className="rounded-full bg-field px-2.5 py-1 text-xs font-medium text-muted">All projects</span>
-        )}
-        {onPlanWork ? (
-          <button
-            onClick={onPlanWork}
-            title="Open the Tasks desk to plan this person's week"
-            className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field"
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-ocean">
+              {selfView ? "My Dashboard" : "User dashboard"}
+            </div>
+            <h2 className="truncate text-2xl font-bold tracking-tight text-ink">{selfView ? userLabel || "My Dashboard" : userLabel}</h2>
+            <p className="text-xs text-muted">
+              {windowCaption} · {projFilter ? projectName(projFilter) : "all projects"}
+              {ltFilter ? ` · ${linkTypeLabel(ltFilter)}` : ""} · hours, targets, production & quality
+            </p>
+          </div>
+          <span className="ml-auto" />
+          {/* Live identity stats — the person's window in four numbers. */}
+          {d ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {([
+                ["Links", String(num(d.links.links)), null],
+                ["Qualified", d.links.qualified_rate != null ? `${d.links.qualified_rate}%` : "—", null],
+                ["Avg score", d.links.avg_score != null ? String(d.links.avg_score) : "—", null],
+                ["Plan", d.plan.completion_pct != null ? `${d.plan.completion_pct}%` : "—", null],
+                ...(d.team?.rank ? [["Team rank", `#${d.team.rank} of ${d.team.of}`, null] as [string, string, null]] : [])
+              ] as Array<[string, string, null]>).map(([lab, val]) => (
+                <div key={lab} className="rounded-xl border border-line/70 bg-panel/80 px-3 py-1.5 text-center shadow-card backdrop-blur">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">{lab}</div>
+                  <div className="text-base font-bold leading-tight text-ink">{val}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {onPlanWork ? (
+            <button
+              onClick={onPlanWork}
+              title="Open the Tasks desk to plan this person's week"
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-line bg-panel/70 px-3 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              <CalendarDays className="h-4 w-4" /> Plan work
+            </button>
+          ) : null}
+        </div>
+        {/* Filters — everyone gets them (project, link type, date basis, window). */}
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line/60 pt-3">
+          {projFilter ? (
+            <span className="flex items-center gap-1 rounded-full border border-ocean/40 bg-ocean/10 px-2.5 py-1 text-xs font-medium text-ocean">
+              {projectName(projFilter)}
+              <button onClick={() => setProjFilter("")} title="Remove the project filter — show all projects" className="hover:text-danger">×</button>
+            </span>
+          ) : (
+            <span className="rounded-full bg-field px-2.5 py-1 text-xs font-medium text-muted">All projects</span>
+          )}
+          <span className="ml-auto" />
+          <SearchSelect
+            value={projFilter}
+            onChange={setProjFilter}
+            options={(projectsQ.data || []).map((p) => ({ value: p.id, label: p.name }))}
+            placeholder="Project: all"
+            width="w-44"
+          />
+          <SearchSelect
+            value={ltFilter}
+            onChange={setLtFilter}
+            options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
+            placeholder="Link type: all"
+            width="w-40"
+          />
+          <select
+            value={dateType}
+            onChange={(e) => setDateType(e.target.value as "created" | "checked" | "sheet")}
+            title="Which link date the window and trends measure — when the link was created/imported, last QA-checked, or its sheet-created date"
+            className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
           >
-            <CalendarDays className="h-4 w-4" /> Plan work
-          </button>
-        ) : null}
-        <span className="ml-auto" />
-        <SearchSelect
-          value={projFilter}
-          onChange={setProjFilter}
-          options={(projectsQ.data || []).map((p) => ({ value: p.id, label: p.name }))}
-          placeholder="Project: all"
-          width="w-44"
-        />
-        <SearchSelect
-          value={ltFilter}
-          onChange={setLtFilter}
-          options={(linkTypes.data || []).map((lt) => ({ value: lt.name, label: linkTypeLabel(lt.name) }))}
-          placeholder="Link type: all"
-          width="w-40"
-        />
-        <select
-          value={dateType}
-          onChange={(e) => setDateType(e.target.value as "created" | "checked" | "sheet")}
-          title="Which link date the window and trends measure — when the link was created/imported, last QA-checked, or its sheet-created date"
-          className="h-9 rounded-lg border border-line bg-panel px-2 text-sm"
-        >
-          <option value="created">By created date</option>
-          <option value="checked">By QA-check date</option>
-          <option value="sheet">By sheet date</option>
-        </select>
-        <select value={days} onChange={(e) => setDays(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
-          {TIMEFRAMES.map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-          <option value="custom">Custom range…</option>
-        </select>
-        {days === "custom" ? (
-          <>
-            <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
-            <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
-            <DateRangePresets from={customFrom} to={customTo} onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
-          </>
-        ) : null}
+            <option value="created">By created date</option>
+            <option value="checked">By QA-check date</option>
+            <option value="sheet">By sheet date</option>
+          </select>
+          <select value={days} onChange={(e) => setDays(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+            {TIMEFRAMES.map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+            <option value="custom">Custom range…</option>
+          </select>
+          {days === "custom" ? (
+            <>
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+              <DateRangePresets from={customFrom} to={customTo} onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }} />
+            </>
+          ) : null}
+        </div>
       </div>
 
-      {/* ── Sidebar layout: big section tabs on the left (sticky), the section's
-          content fills the rest. On small screens the tabs become a scrollable
-          card row. Each tab shows a live number so the nav itself carries data. ── */}
-      <div className="items-start gap-4 lg:grid lg:grid-cols-[230px,minmax(0,1fr)]">
-      <aside className="mb-3 lg:sticky lg:top-16 lg:mb-0">
-        <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:gap-1.5 lg:overflow-visible lg:pb-0">
-          {([
-            ["overview", "Overview", Gauge, "KPIs, trends & quality",
-              d ? `${num(d.links.links)} links` : "—"],
-            ["projects", "Projects", Layers, "Where the work happened",
-              d ? `${(d.projects || []).length} project${(d.projects || []).length === 1 ? "" : "s"}` : "—"],
-            ["calendar", "Plans & calendar", CalendarDays, "Assignments, month view",
-              d && d.plan.completion_pct != null ? `${d.plan.completion_pct}% of plan` : d ? `${num(d.plan.target)} target` : "—"],
-            ["rates", "Rates & leave", Activity, "Productivity & time off",
-              d ? `${(d.leaves || []).length} leave request${(d.leaves || []).length === 1 ? "" : "s"}` : "—"]
-          ] as Array<["overview" | "projects" | "calendar" | "rates", string, typeof Gauge, string, string]>).map(([id, label, Icon, desc, stat]) => (
+      {/* ── Section band: which PAGE of the dashboard you're on (driven by the
+          main sidebar), stated big, with a live number and quick page hops. ── */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel px-4 py-3 shadow-card">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-ocean/10 text-ocean">
+          <SectionIcon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-lg font-bold leading-tight text-ink">{sectionMeta[1]}</h3>
+          <p className="text-xs text-muted">{sectionMeta[3]}{sectionStat ? ` · ${sectionStat}` : ""}</p>
+        </div>
+        <span className="ml-auto" />
+        <div className="flex flex-wrap gap-1">
+          {DASH_SECTIONS.map(([sid, slabel]) => (
             <button
-              key={id}
-              onClick={() => setDashTab(id)}
+              key={sid}
+              onClick={() => onSectionChange(sid)}
               className={clsx(
-                "flex min-w-[170px] shrink-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition lg:w-full lg:min-w-0",
-                dashTab === id
-                  ? "border-ocean/50 bg-ocean/10 shadow-card"
-                  : "border-line bg-panel hover:border-ocean/30 hover:bg-field/60"
+                "rounded-lg px-2.5 py-1.5 text-xs font-medium transition",
+                section === sid ? "bg-ocean/10 font-semibold text-ocean" : "text-muted hover:bg-field hover:text-ink"
               )}
             >
-              <span className={clsx(
-                "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
-                dashTab === id ? "bg-ocean text-white dark:text-slate-900" : "bg-field text-muted"
-              )}>
-                <Icon className="h-4 w-4" />
-              </span>
-              <span className="min-w-0">
-                <span className={clsx("block text-sm font-semibold", dashTab === id ? "text-ocean" : "text-ink")}>{label}</span>
-                <span className="block truncate text-[11px] text-muted">{desc}</span>
-                <span className={clsx("mt-0.5 block text-[11px] font-semibold", dashTab === id ? "text-ocean" : "text-ink")}>{stat}</span>
-              </span>
+              {slabel}
             </button>
           ))}
-        </nav>
-      </aside>
-      <div className="min-w-0 space-y-4">
+        </div>
+      </div>
 
       {dash.isLoading ? (
         <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
@@ -7711,7 +7835,7 @@ function UserDashboard({
         </p>
       ) : null}
 
-      {d && dashTab === "overview" ? (
+      {d && section === "overview" ? (
         <>
           {/* Plan & effort */}
           <div className="grid gap-3 md:grid-cols-4">
@@ -7887,7 +8011,7 @@ function UserDashboard({
         </>
       ) : null}
 
-      {d && dashTab === "projects" ? (
+      {d && section === "projects" ? (
         <>
           {/* Per-project comparison — sortable + exportable */}
           <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -7974,7 +8098,7 @@ function UserDashboard({
         </>
       ) : null}
 
-      {d && dashTab === "rates" ? (
+      {d && section === "rates" ? (
         <>
           <div className="grid gap-4 lg:grid-cols-2">
             {/* Rates in effect — with an inline personal-override editor */}
@@ -8057,7 +8181,7 @@ function UserDashboard({
         </>
       ) : null}
 
-      {dashTab === "calendar" ? (
+      {section === "calendar" ? (
         <>
       {/* Calendar with admin quick actions */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -8249,8 +8373,6 @@ function UserDashboard({
       </div>
         </>
       ) : null}
-      </div>{/* /sidebar-layout content */}
-      </div>{/* /sidebar-layout grid */}
     </section>
   );
 }
@@ -8482,18 +8604,33 @@ function UserDashboardsDesk({
   projectId,
   onOpenBacklinks,
   onNotice,
-  onPlanWork
+  onPlanWork,
+  section,
+  onSectionChange,
+  onPersonChange
 }: {
   token: string | null;
   projectId: string;
   onOpenBacklinks: (filters: Record<string, string>) => void;
   onNotice: (text: string) => void;
   onPlanWork?: () => void;
+  section: DashSection;
+  onSectionChange: (s: DashSection) => void;
+  // Tells the app shell whether a person dashboard is open, so the MAIN
+  // sidebar can expand "User Dashboards" into the dashboard's pages.
+  onPersonChange?: (label: string | null) => void;
 }) {
   const [person, setPerson] = useState<string>(() => {
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.search).get("f_user") || "";
   });
+  useEffect(() => {
+    onPersonChange?.(person || null);
+    // Reports open/close only — deliberately not reactive to the callback identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [person]);
+  // Desk unmounts when the user navigates elsewhere — clear the shell flag.
+  useEffect(() => () => onPersonChange?.(null), []);  // eslint-disable-line react-hooks/exhaustive-deps
   // Deep link: "Open dashboard" from Performance rows lands here with ?f_user=<label>
   // (mirrors the Batches f_batch reader) — consume it once, then clean the URL.
   useEffect(() => {
@@ -8539,6 +8676,8 @@ function UserDashboardsDesk({
         token={token}
         userLabel={person}
         initialProjectId={projectId || undefined}
+        section={section}
+        onSectionChange={onSectionChange}
         onClose={() => setPerson("")}
         onOpenBacklinks={onOpenBacklinks}
         onNotice={onNotice}
