@@ -57,6 +57,14 @@ def coerce_url_scheme(url: str) -> str:
     return u
 
 
+def looks_like_url(value: str) -> bool:
+    """True only when the (already coerced) value is actually crawlable. A
+    source cell holding plain text — an article title, "Pending", a note —
+    is normal sheet formatting: the row is IGNORED quietly, never an error."""
+    v = (value or "").strip().lower()
+    return "://" in v or v.startswith(("http:", "https:"))
+
+
 _REL_ALIASES = {
     "follow": RelType.DOFOLLOW, "dofollow": RelType.DOFOLLOW, "do-follow": RelType.DOFOLLOW,
     "nofollow": RelType.NOFOLLOW, "no-follow": RelType.NOFOLLOW,
@@ -244,9 +252,10 @@ async def _process_row(
     target = f"https://{project_domain}/" if project_domain else coerce_url_scheme(
         (data.get("target_url") or "").strip()
     )
-    if not source:
-        # A spacer/heading row without a URL is NORMAL sheet formatting (owner
-        # rule): ignore it quietly — green, never an error, never "partly failed".
+    if not looks_like_url(source):
+        # No URL in the source cell — empty, a heading/spacer, or plain text
+        # like an article title. NORMAL sheet formatting (owner rule): ignore
+        # it quietly — green, never an error, never "partly failed".
         row.status = ImportRowStatus.SKIPPED
         row.error = None
         imp.skipped_rows = (imp.skipped_rows or 0) + 1

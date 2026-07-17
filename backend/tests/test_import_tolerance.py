@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from app.services.import_parse import infer_user_column
-from app.services.import_service import coerce_url_scheme
+from app.services.import_service import coerce_url_scheme, looks_like_url
 
 
 def test_schemeless_url_is_repaired():
@@ -26,6 +26,19 @@ def test_schemed_and_garbage_untouched():
     assert coerce_url_scheme("just some words") == "just some words"
     assert coerce_url_scheme("") == ""
     assert coerce_url_scheme("Pending") == "Pending"
+
+
+def test_plain_text_source_is_ignored_not_errored():
+    # A title/note in the source column = normal sheet formatting → the row is
+    # SKIPPED quietly (green), never "Invalid source URL (unsupported_scheme)".
+    assert not looks_like_url("5 Smart Reasons to Hire a Professional Service")
+    assert not looks_like_url("Pending")
+    assert not looks_like_url("")
+    assert not looks_like_url("mailto:x@y.com")
+    # Real (coerced) links still crawl.
+    assert looks_like_url("https://a.com/x")
+    assert looks_like_url(coerce_url_scheme("open.substack.com/pub/x/p/y"))
+    assert looks_like_url("HTTP://UPPER.example")
 
 
 def test_infer_user_column_finds_ref_header():
