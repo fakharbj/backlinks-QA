@@ -84,9 +84,11 @@ async def _sync_main_async(workspace_id: uuid.UUID) -> dict:
     return {"discovered_projects": len(sheet_source_ids), "mode": "discover_only"}
 
 
-async def _sync_project_async(sheet_source_id: uuid.UUID) -> dict:
+async def _sync_project_async(sheet_source_id: uuid.UUID, parent_batch_id: str | None = None) -> dict:
     async with session_scope() as s:
-        result = await sheet_sync_service.sync_project(s, sheet_source_id)
+        result = await sheet_sync_service.sync_project(
+            s, sheet_source_id, parent_batch_id=parent_batch_id
+        )
 
     # Manual-QA-by-default: only queue first crawls when explicitly configured.
     new_ids = [uuid.UUID(i) for i in result.get("new_ids", [])]
@@ -112,10 +114,10 @@ def sync_main_sheet(self, workspace_id: str) -> dict:
     name="tasks.sheets.sync_project_sheet", bind=True, acks_late=True, max_retries=3,
     autoretry_for=(OperationalError,), retry_backoff=True,
 )
-def sync_project_sheet(self, sheet_source_id: str) -> dict:
+def sync_project_sheet(self, sheet_source_id: str, parent_batch_id: str | None = None) -> dict:
     return _run_serialized(
         self, f"sync:{sheet_source_id}",
-        lambda: run_async(_sync_project_async(uuid.UUID(sheet_source_id))),
+        lambda: run_async(_sync_project_async(uuid.UUID(sheet_source_id), parent_batch_id)),
     )
 
 
@@ -221,17 +223,44 @@ async def _auto_sync_tick_async() -> dict:
             if not got:
                 out[str(ws)] = "recently_ran"
                 continue
-            sources = (
+            # Active projects ONLY (owner rule) — deactivated projects are
+            # manual-sync only, never part of the automatic run.
+            from app.models.enums import ProjectStatus
+            from app.models.project import Project
+
+            pairs = (
                 await s.execute(
-                    select(SheetSource.id).where(SheetSource.workspace_id == ws)
+                    select(SheetSource.id, SheetSource.project_name)
+                    .join(Project, Project.id == SheetSource.project_id)
+                    .where(
+                        SheetSource.workspace_id == ws,
+                        Project.status == ProjectStatus.ACTIVE,
+                    )
                 )
-            ).scalars().all()
-            for i, sid in enumerate(sources):
+            ).all()
+            if not pairs:
+                out[str(ws)] = "no_active_sheets"
+                continue
+            from app.services import batch_service
+
+            parent_id = await batch_service.start(
+                "sheet_sync_all", ws,
+                label=f"Auto sync (office hours) — {len(pairs)} projects",
+                total=len(pairs),
+                meta={f"p:{sid}": {"name": name or "Project", "status": "pending"} for sid, name in pairs},
+            )
+            await batch_service.add_log(
+                parent_id,
+                f"Office-hours auto-sync: {len(pairs)} active project sheet(s) queued.",
+            )
+            for i, (sid, _name) in enumerate(pairs):
                 sync_project_sheet.apply_async(
-                    args=[str(sid)], queue="sheets.sync", countdown=i * 10
+                    args=[str(sid)],
+                    kwargs={"parent_batch_id": str(parent_id) if parent_id else None},
+                    queue="sheets.sync", countdown=i * 10,
                 )
-            log.info("sheets_auto_sync_queued", workspace_id=str(ws), sheets=len(sources))
-            out[str(ws)] = f"queued:{len(sources)}"
+            log.info("sheets_auto_sync_queued", workspace_id=str(ws), sheets=len(pairs))
+            out[str(ws)] = f"queued:{len(pairs)}"
     return out
 
 

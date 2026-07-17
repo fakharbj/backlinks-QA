@@ -69,8 +69,34 @@ async def update_project(
     db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID, payload: ProjectUpdate
 ) -> Project:
     project = await get_project(db, ctx, project_id)
+    was_active = getattr(project.status, "value", str(project.status)) == "active"
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(project, field, value)
+    now_active = getattr(project.status, "value", str(project.status)) == "active"
+    # ── Deactivation side effects (owner rule): a paused/archived project's
+    # FUTURE planned tasks (today onward) leave task management immediately —
+    # past days stay untouched in every user's history. Its standing weekly
+    # template rows go too, so the automation never re-creates plans for it.
+    if was_active and not now_active:
+        from datetime import date as _date
+
+        from sqlalchemy import delete as _delete
+
+        from app.models.workforce import TaskAssignment, TaskWeekTemplate
+
+        await db.execute(
+            _delete(TaskAssignment).where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.project_id == project.id,
+                TaskAssignment.day >= _date.today(),
+            )
+        )
+        await db.execute(
+            _delete(TaskWeekTemplate).where(
+                TaskWeekTemplate.workspace_id == ctx.workspace_id,
+                TaskWeekTemplate.project_id == project.id,
+            )
+        )
     await db.flush()
     return project
 

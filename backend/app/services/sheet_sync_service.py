@@ -374,15 +374,68 @@ async def _auto_provision_users(db: AsyncSession, source: SheetSource, batch_id)
     return created
 
 
-async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
+async def _maybe_finish_parent(parent_id: uuid.UUID) -> None:
+    """Close the bulk (parent) batch once every child project reported in.
+    Children run strictly one at a time (global sync lock), so this check is
+    race-free: the LAST child sees done == total and finishes the parent."""
+    from app.services import batch_service
+
+    row = await batch_service.get(parent_id)
+    if row is None:
+        return
+    totals = row.get("totals") or {}
+    counters = row.get("counters") or {}
+    total = int(totals.get("total") or 0)
+    done = int(counters.get("done") or 0)
+    if total and done >= total:
+        ok = int(counters.get("ok") or 0)
+        failed = int(counters.get("failed") or 0)
+        await batch_service.update(parent_id, totals={"done": done, "ok": ok, "failed": failed})
+        await batch_service.add_log(
+            parent_id,
+            f"Bulk sync finished — {ok} project(s) clean, {failed} with problems.",
+            level="warn" if failed else "info",
+        )
+        await batch_service.finish(parent_id)
+
+
+async def sync_project(
+    db: AsyncSession, sheet_source_id: uuid.UUID, parent_batch_id: str | None = None
+) -> dict:
     """Sync ALL sub-sheets (tabs) of a project spreadsheet. Each tab name = a link
     type; rows inherit it. Re-sync is idempotent per (tab, row). The whole run is
-    a ``sheet_sync`` batch with per-tab progress + plain-English logs."""
+    a ``sheet_sync`` batch with per-tab progress + plain-English logs. When part
+    of a bulk run, per-project progress is reported to the PARENT batch too."""
     from app.services import batch_service
+
+    parent = uuid.UUID(parent_batch_id) if parent_batch_id else None
+
+    async def _parent_state(status: str, note: str = "") -> None:
+        """Report this project's state into the parent bulk batch (one
+        shallow-merge-safe top-level meta key per project)."""
+        if parent is None:
+            return
+        await batch_service.update(
+            parent,
+            meta={f"p:{sheet_source_id}": {
+                "name": getattr(source, "project_name", None) or "Project",
+                "status": status, "note": note,
+            }},
+        )
 
     source = await db.get(SheetSource, sheet_source_id)
     if source is None:
+        # Still report to the parent — otherwise the bulk batch waits forever.
+        if parent is not None:
+            await batch_service.update(
+                parent,
+                meta={f"p:{sheet_source_id}": {"name": "Project", "status": "failed",
+                                               "note": "sheet connection no longer exists"}},
+                counters_inc={"done": 1, "failed": 1},
+            )
+            await _maybe_finish_parent(parent)
         return {"error": "sheet source not found"}
+    await _parent_state("running")
 
     source.last_sync_status = "running"
     source.last_sync_error = None
@@ -405,6 +458,13 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         await db.commit()
         await batch_service.add_log(batch_id, f"Could not open the spreadsheet: {exc}", level="error")
         await batch_service.finish(batch_id, status="failed", error=str(exc)[:500])
+        if parent is not None:
+            await _parent_state("failed", str(exc)[:160])
+            await batch_service.update(parent, counters_inc={"done": 1, "failed": 1})
+            await batch_service.add_log(
+                parent, f"{source.project_name}: FAILED — {exc}", level="error"
+            )
+            await _maybe_finish_parent(parent)
         return {"error": str(exc)}
 
     tabs = await _sync_tabs(db, source, worksheets)
@@ -610,6 +670,26 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         )
     await batch_service.update(batch_id, meta={"current_step": "Finished"})
     await batch_service.finish(batch_id)
+
+    if parent is not None:
+        outcome = "partial" if total_failed else "completed"
+        await _parent_state(
+            outcome,
+            f"{len(all_new)} new · {max(0, total_imported - len(all_new))} refreshed"
+            + (f" · {total_failed} errors" if total_failed else ""),
+        )
+        await batch_service.update(
+            parent,
+            counters_inc={"done": 1, ("failed" if total_failed else "ok"): 1},
+        )
+        await batch_service.add_log(
+            parent,
+            f"{source.project_name}: {len(all_new)} new, "
+            f"{max(0, total_imported - len(all_new))} refreshed"
+            + (f", {total_failed} row errors" if total_failed else " — clean"),
+            level="warn" if total_failed else "info",
+        )
+        await _maybe_finish_parent(parent)
 
     return {
         "tabs": len(enabled),

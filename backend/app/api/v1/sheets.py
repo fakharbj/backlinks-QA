@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.config import settings
@@ -143,40 +144,81 @@ async def sync_main(
     )
 
 
+class SyncAllIn(BaseModel):
+    # Empty/omitted = every ACTIVE project's sheet; set = exactly these sheets
+    # (the "selectable sync" option — still active-projects only).
+    sheet_source_ids: list[uuid.UUID] | None = None
+
+
 @router.post("/sync-all", response_model=SheetSyncResponse, status_code=202)
 async def sync_all(
     db: DbSession,
+    payload: SyncAllIn | None = None,
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
 ) -> SheetSyncResponse:
-    """Queue a sync for EVERY connected project sheet (manual trigger only).
-    The sheets.sync queue processes them one at a time (the sequential-sync
-    setting), so the read-rate limit is respected; live per-sheet progress shows
-    in the Sheets desk exactly like single syncs (batches kind=sheet_sync)."""
+    """Queue a bulk sync — ALL active projects' sheets, or a selected subset.
+    Deactivated (paused/archived) projects are NEVER bulk-synced (owner rule);
+    their per-row manual sync still works. The whole run is ONE parent batch
+    (kind=sheet_sync_all) with live per-project progress."""
     from sqlalchemy import select as _select
 
+    from app.models.enums import ProjectStatus
+    from app.models.project import Project
+    from app.services import batch_service
     from app.workers.tasks.sheets import sync_project_sheet
 
-    sources = (
-        await db.execute(
-            _select(SheetSource).where(SheetSource.workspace_id == ctx.workspace_id)
+    stmt = (
+        _select(SheetSource, Project.name)
+        .join(Project, Project.id == SheetSource.project_id)
+        .where(
+            SheetSource.workspace_id == ctx.workspace_id,
+            Project.status == ProjectStatus.ACTIVE,  # paused/archived projects: manual-only
         )
-    ).scalars().all()
+    )
+    wanted = set(payload.sheet_source_ids or []) if payload else set()
+    rows = (await db.execute(stmt)).all()
+    if wanted:
+        rows = [r for r in rows if r[0].id in wanted]
+    sources = [r[0] for r in rows]
     if not sources:
-        raise ValidationAppError("No project sheets are connected yet — run Discover first.")
+        raise ValidationAppError(
+            "Nothing to sync — no ACTIVE project sheets matched (deactivated "
+            "projects are excluded from bulk sync; use their row's Sync button)."
+        )
+    # ONE parent batch for the whole run; each project's live state lives in
+    # meta under its own top-level key (shallow-merge-safe).
+    parent_id = await batch_service.start(
+        "sheet_sync_all", ctx.workspace_id,
+        label=f"Bulk sheet sync — {len(sources)} project{'s' if len(sources) != 1 else ''}",
+        started_by=ctx.user.id, total=len(sources),
+        meta={
+            **{f"p:{s.id}": {"name": s.project_name or "Project", "status": "pending"} for s in sources},
+            "kind_note": "one row per project — click for details",
+        },
+    )
+    await batch_service.add_log(
+        parent_id,
+        f"Bulk sync queued for {len(sources)} active project sheet(s) — they run "
+        f"one at a time to respect the Google API limit.",
+    )
     await audit_service.record(
         db, action=AuditAction.IMPORT, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
         entity_type="sheet_sync", entity_id=ctx.workspace_id,
-        summary=f"Sync ALL sheets started ({len(sources)} sheets)",
+        summary=f"Bulk sheet sync started ({len(sources)} active sheets"
+                f"{' — selected subset' if wanted else ''})",
     )
     await db.commit()
     # Staggered start + the worker-side global sync lock = strictly one sheet
     # talking to the Google API at a time (the per-user read quota is 60/min —
     # parallel syncs used to trip it with a 429).
     for i, src in enumerate(sources):
-        sync_project_sheet.apply_async(args=[str(src.id)], queue="sheets.sync", countdown=i * 10)
+        sync_project_sheet.apply_async(
+            args=[str(src.id)], kwargs={"parent_batch_id": str(parent_id) if parent_id else None},
+            queue="sheets.sync", countdown=i * 10,
+        )
     return SheetSyncResponse(
-        message=f"Syncing all {len(sources)} sheets — they run one at a time to respect the "
-        "Google API limit. Live progress appears below; each sheet reports its own result."
+        message=f"Syncing {len(sources)} active sheet{'s' if len(sources) != 1 else ''} — one at a "
+        "time to respect the Google API limit. Follow the progress bar above the sheet list."
     )
 
 

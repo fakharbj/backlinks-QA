@@ -79,6 +79,27 @@ async def update(
         log.warning("batch_update_failed", batch_id=str(batch_id), error=repr(exc))
 
 
+async def get(batch_id: uuid.UUID | None) -> dict | None:
+    """Read a batch's totals/counters/meta (fail-open, own session) — used by
+    bulk-run children to decide when the parent batch is complete."""
+    if batch_id is None:
+        return None
+    try:
+        async with session_scope() as s:
+            row = await s.get(Batch, batch_id)
+            if row is None:
+                return None
+            return {
+                "id": row.id, "status": row.status,
+                "totals": dict(row.totals or {}),
+                "counters": dict(row.counters or {}),
+                "meta": dict(row.meta or {}),
+            }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("batch_get_failed", batch_id=str(batch_id), error=repr(exc))
+        return None
+
+
 async def add_log(
     batch_id: uuid.UUID | None,
     message: str,

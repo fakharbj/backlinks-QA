@@ -131,7 +131,7 @@ async def remove_member(
 
 
 # ── TeamLead member assignments (Phase 9) ────────────────────────────────────
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 
 class TeamLeadLabels(BaseModel):
@@ -299,3 +299,63 @@ async def reset_member_password(
     )
     await db.commit()
     return {"temp_password": temp}
+
+
+# ── Account editing: change a member's login email / display name ────────────
+class AccountUpdate(BaseModel):
+    email: str | None = Field(default=None, max_length=320)
+    full_name: str | None = Field(default=None, max_length=200)
+
+
+@router.patch("/members/{user_id}/account", response_model=Message)
+async def update_member_account(
+    user_id: uuid.UUID, payload: AccountUpdate, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_USERS)),
+) -> Message:
+    """Change a member's login email and/or display name (admin, audited).
+    Passwords are never viewable (they're one-way encrypted) — use
+    Reset password, which shows a one-time temporary password instead."""
+    from sqlalchemy import select as _select
+
+    from app.core.errors import ConflictError, NotFoundError, ValidationAppError
+    from app.models.user import User, WorkspaceMember
+
+    member = (
+        await db.execute(
+            _select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == ctx.workspace_id,
+                WorkspaceMember.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if member is None:
+        raise NotFoundError("Member not found in this workspace")
+    user = await db.get(User, user_id)
+    if user is None:
+        raise NotFoundError("User not found")
+    changed: list[str] = []
+    if payload.email is not None:
+        email = payload.email.strip().lower()
+        if not email or "@" not in email:
+            raise ValidationAppError("Enter a valid email address.")
+        if email != user.email:
+            exists = (
+                await db.execute(_select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if exists is not None:
+                raise ConflictError("That email is already used by another account.")
+            changed.append(f"email {user.email} → {email}")
+            user.email = email
+    if payload.full_name is not None and payload.full_name.strip():
+        if payload.full_name.strip() != (user.full_name or ""):
+            changed.append(f"name → {payload.full_name.strip()}")
+            user.full_name = payload.full_name.strip()
+    if not changed:
+        return Message(message="Nothing to change.")
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="user_account", entity_id=user_id,
+        summary=f"Account updated: {'; '.join(changed)}",
+    )
+    await db.commit()
+    return Message(message="Account updated — " + "; ".join(changed))

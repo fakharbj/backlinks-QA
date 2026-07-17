@@ -30,6 +30,9 @@ BATCH_KINDS = (
     # Review batches (0029): staged rows live in ``batch_items`` and reach the
     # production tables only when a user approves them.
     "link_review", "domain_import",
+    # Bulk sheet sync (parent): ONE batch per bulk/auto run — per-project live
+    # states in meta ("p:<sheet_source_id>"), children are sheet_sync batches.
+    "sheet_sync_all",
 )
 
 

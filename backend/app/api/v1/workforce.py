@@ -432,3 +432,146 @@ async def put_office_hours(
     )
     await db.commit()
     return value
+
+
+# ── Weekly capacity: daily hours assigned vs each person's capacity ──────────
+# Per-user daily working hours live in the Setting KV "user_daily_hours"
+# ({label: hours}); anyone without an entry uses the 8h default.
+
+
+class DailyHoursIn(BaseModel):
+    user_label: str = Field(min_length=1, max_length=200)
+    hours: float = Field(ge=0, le=24)
+
+
+@router.get("/capacity")
+async def weekly_capacity(
+    ctx: AuthCtx, db: ReadSession, week_start: date,
+) -> dict:
+    """One row per ACTIVE person × the 7 days of the week: hours assigned,
+    capacity (their personal daily hours, default 8; 0 on non-working days),
+    and free hours. Drives the Tasks-desk capacity table."""
+    from datetime import timedelta as _td
+
+    from sqlalchemy import func, select as _select
+
+    from app.models.settings import Setting
+    from app.models.workforce import TaskAssignment, WorkingDay
+    from app.services.workforce_service import _default_working, known_labels
+
+    monday = week_start - _td(days=week_start.weekday())
+    days = [monday + _td(days=i) for i in range(7)]
+    labels = await known_labels(db, ctx)  # active people, TeamLead-scoped
+
+    hours_cfg_row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "user_daily_hours"
+            )
+        )
+    ).scalar_one_or_none()
+    hours_cfg: dict = (
+        hours_cfg_row.value if hours_cfg_row is not None and isinstance(hours_cfg_row.value, dict) else {}
+    )
+
+    # Assigned hours per (person, day) in one grouped query.
+    rows = (
+        await db.execute(
+            _select(
+                TaskAssignment.user_label, TaskAssignment.day,
+                func.sum(TaskAssignment.hours),
+            )
+            .where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.day >= days[0], TaskAssignment.day <= days[-1],
+            )
+            .group_by(TaskAssignment.user_label, TaskAssignment.day)
+        )
+    ).all()
+    assigned: dict[tuple[str, str], float] = {
+        (lbl, d.isoformat()): float(h or 0) for lbl, d, h in rows
+    }
+
+    # Working-day overrides for the week (default: Mon–Sat working).
+    overrides = dict(
+        (
+            await db.execute(
+                _select(WorkingDay.day, WorkingDay.is_working).where(
+                    WorkingDay.workspace_id == ctx.workspace_id,
+                    WorkingDay.day >= days[0], WorkingDay.day <= days[-1],
+                )
+            )
+        ).all()
+    )
+    working = {
+        d.isoformat(): bool(overrides.get(d, _default_working(d))) for d in days
+    }
+
+    people = []
+    for lbl in labels:
+        cap = float(hours_cfg.get(lbl, 8) or 8)
+        day_cells = []
+        for d in days:
+            iso = d.isoformat()
+            a = round(assigned.get((lbl, iso), 0.0), 1)
+            c = cap if working[iso] else 0.0
+            day_cells.append({
+                "day": iso, "assigned": a, "capacity": c,
+                "free": round(max(0.0, c - a), 1), "working": working[iso],
+                "over": a > c and c > 0,
+            })
+        people.append({
+            "user_label": lbl, "daily_hours": cap, "days": day_cells,
+            "week_assigned": round(sum(x["assigned"] for x in day_cells), 1),
+            "week_capacity": round(sum(x["capacity"] for x in day_cells), 1),
+        })
+    # Per-day totals across everyone (the "how many hours are free each day" row).
+    day_totals = []
+    for i, d in enumerate(days):
+        a = round(sum(p["days"][i]["assigned"] for p in people), 1)
+        c = round(sum(p["days"][i]["capacity"] for p in people), 1)
+        day_totals.append({
+            "day": d.isoformat(), "assigned": a, "capacity": c,
+            "free": round(max(0.0, c - a), 1), "working": working[d.isoformat()],
+        })
+    return {
+        "week_start": days[0].isoformat(), "week_end": days[-1].isoformat(),
+        "people": people, "day_totals": day_totals, "default_daily_hours": 8,
+    }
+
+
+@router.put("/daily-hours", response_model=Message)
+async def set_daily_hours(
+    payload: DailyHoursIn, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
+) -> Message:
+    """Set one person's daily working hours (their capacity). 0 = removes the
+    override → back to the 8h default. Audited."""
+    from sqlalchemy import select as _select
+
+    from app.models.settings import Setting
+
+    label = payload.user_label.strip().lower()[:200]
+    row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "user_daily_hours"
+            )
+        )
+    ).scalar_one_or_none()
+    cfg = dict(row.value) if row is not None and isinstance(row.value, dict) else {}
+    if payload.hours and payload.hours > 0:
+        cfg[label] = float(payload.hours)
+    else:
+        cfg.pop(label, None)
+    if row is None:
+        db.add(Setting(workspace_id=ctx.workspace_id, key="user_daily_hours", value=cfg))
+    else:
+        row.value = cfg
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="user_daily_hours", entity_id=ctx.workspace_id,
+        summary=f"Daily working hours for {label}: {payload.hours or 'default (8)'}h",
+    )
+    await db.commit()
+    return Message(message=f"{label}: {payload.hours or 8}h/day saved")
