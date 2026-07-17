@@ -4858,17 +4858,55 @@ function TaskDomainSuggestions({
     return wantedNorm.some((w) => n === w || (n.length >= 3 && w.length >= 3 && (n.includes(w) || w.includes(n))));
   };
   const act = useMutation({
-    mutationFn: (v: { domain_key: string; status: "accepted" | "skipped" }) =>
+    mutationFn: (v: { domain_key: string; status: "accepted" | "skipped"; reason?: string; link_type_name?: string; note?: string }) =>
       api("/source-domains/recommendations/action", {
         token,
         method: "POST",
         body: JSON.stringify({
           domain_key: v.domain_key, status: v.status,
-          project_id: projectId, assignment_id: assignmentId
+          project_id: projectId, assignment_id: assignmentId,
+          ...(v.reason ? { reason: v.reason } : {}),
+          ...(v.link_type_name ? { link_type_name: v.link_type_name } : {}),
+          ...(v.note ? { note: v.note } : {})
         })
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["task-domain-suggestions"] })
+    onSuccess: () => {
+      setSkipFor(null);
+      queryClient.invalidateQueries({ queryKey: ["task-domain-suggestions"] });
+    }
   });
+  // Skip workflow: a skip always carries a REASON (predefined list, editable in
+  // Settings); link-type reasons also record which link type, "Other" requires
+  // a typed explanation.
+  const [skipFor, setSkipFor] = useState<string | null>(null);
+  const [skipReason, setSkipReason] = useState("");
+  const [skipLinkType, setSkipLinkType] = useState("");
+  const [skipOther, setSkipOther] = useState("");
+  const reasonsQ = useQuery({
+    queryKey: ["skip-reasons", token],
+    enabled: Boolean(token && skipFor),
+    queryFn: () => api<{ reasons: string[] }>("/source-domains/skip-reasons", { token })
+  });
+  const linkTypesQ = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token && skipFor),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+  const reasonIsLinkType = /link.?type/i.test(skipReason);
+  const reasonIsOther = skipReason.trim().toLowerCase() === "other";
+  const skipValid =
+    Boolean(skipReason) &&
+    (!reasonIsOther || skipOther.trim().length >= 3) &&
+    (!reasonIsLinkType || Boolean(skipLinkType));
+  const confirmSkip = () => {
+    if (!skipFor || !skipValid) return;
+    act.mutate({
+      domain_key: skipFor, status: "skipped",
+      reason: reasonIsOther ? `Other: ${skipOther.trim()}` : skipReason,
+      ...(reasonIsLinkType && skipLinkType ? { link_type_name: skipLinkType } : {}),
+      ...(reasonIsOther ? { note: skipOther.trim() } : {})
+    });
+  };
   if (sugg.isError) return null;
   const items = sugg.data?.items || [];
   return (
@@ -4930,7 +4968,7 @@ function TaskDomainSuggestions({
                     Accept
                   </button>
                   <button
-                    onClick={() => act.mutate({ domain_key: s.domain_key, status: "skipped" })}
+                    onClick={() => { setSkipFor(s.domain_key); setSkipReason(""); setSkipLinkType(""); setSkipOther(""); }}
                     className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
                   >
                     Skip
@@ -4971,6 +5009,62 @@ function TaskDomainSuggestions({
           })}
         </div>
       )}
+      {/* ── Skip-with-reason modal: no skip without saying why. ── */}
+      {skipFor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSkipFor(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-line bg-panel p-5 shadow-pop" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-ink">Skip {skipFor}?</h3>
+            <p className="mt-0.5 text-xs text-muted">
+              Pick why you&apos;re skipping — the reason is saved with the task so managers can fix
+              recurring problems (dead sites, wrong link types…).
+            </p>
+            <div className="mt-3 space-y-1.5">
+              {(reasonsQ.data?.reasons || []).map((r) => (
+                <label key={r} className={clsx(
+                  "flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition",
+                  skipReason === r ? "border-ocean bg-ocean/10 font-medium text-ink" : "border-line hover:bg-field"
+                )}>
+                  <input type="radio" name="skip-reason" checked={skipReason === r}
+                    onChange={() => setSkipReason(r)} className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]" />
+                  {r}
+                </label>
+              ))}
+              {reasonsQ.isLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted" /> : null}
+            </div>
+            {reasonIsLinkType ? (
+              <div className="mt-3">
+                <label className="mb-1 block text-xs font-semibold text-muted">Which link type is the problem?</label>
+                <select value={skipLinkType} onChange={(e) => setSkipLinkType(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm">
+                  <option value="">Choose a link type…</option>
+                  {(linkTypesQ.data || []).map((lt) => (
+                    <option key={lt.id} value={lt.name}>{linkTypeLabel(lt.name)}</option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            {reasonIsOther ? (
+              <div className="mt-3">
+                <label className="mb-1 block text-xs font-semibold text-muted">Tell us why (required)</label>
+                <textarea value={skipOther} onChange={(e) => setSkipOther(e.target.value)} rows={2}
+                  placeholder="What's wrong with this domain for this task?"
+                  className="w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-sm" />
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setSkipFor(null)}
+                className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted hover:bg-field">
+                Cancel
+              </button>
+              <button onClick={confirmSkip} disabled={!skipValid || act.isPending}
+                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50 dark:text-slate-900">
+                {act.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Skip task
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5387,6 +5481,12 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
 
   const rows = me.data?.rows || [];
   const todayRows = rows.filter((r) => r.day === today);
+  // Compact lists: a handful of rows first (urgent on top), "View all" expands.
+  const [showAllToday, setShowAllToday] = useState(false);
+  const [showAllWeek, setShowAllWeek] = useState(false);
+  const prioRank = (p?: string | null) => (p === "high" ? 0 : p === "medium" ? 1 : p === "low" ? 3 : 2);
+  const sortByPriority = <T extends { priority?: string | null; day?: string }>(list: T[]): T[] =>
+    [...list].sort((a, b) => prioRank(a.priority) - prioRank(b.priority) || String(a.day || "").localeCompare(String(b.day || "")));
   const weekTarget = rows.reduce((a, r) => a + (r.excused ? 0 : r.expected_links), 0);
   const weekDone = rows.reduce((a, r) => a + (r.excused ? 0 : r.actual_links), 0);
   const weekPct = weekTarget > 0 ? Math.round((100 * weekDone) / weekTarget) : null;
@@ -5486,29 +5586,48 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
           sub="Excused days (leave / days off) don't count against you" />
       </div>
 
-      <section className="rounded-xl border border-line bg-panel shadow-card">
-        <SectionTitle title="Today" />
-        <div className="space-y-2 p-3">
-          {todayRows.map(taskCard)}
-          {!todayRows.length ? <p className="p-2 text-sm text-muted">No tasks planned for today.</p> : null}
-        </div>
-      </section>
+      {/* Today + This week side by side on wide screens, stacked on phones;
+          both capped with "View all" so the page never drowns in rows. The
+          highest-priority tasks always sort first. */}
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex items-center justify-between pr-3">
+            <SectionTitle title={`Today · ${todayRows.length} task${todayRows.length === 1 ? "" : "s"}`} />
+            {todayRows.length > 4 ? (
+              <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
+                {showAllToday ? "Show less" : `View all ${todayRows.length}`}
+              </button>
+            ) : null}
+          </div>
+          <div className="space-y-2 p-3">
+            {sortByPriority(todayRows).slice(0, showAllToday ? undefined : 4).map(taskCard)}
+            {!todayRows.length ? <p className="p-2 text-sm text-muted">No tasks planned for today.</p> : null}
+          </div>
+        </section>
 
-      <section className="rounded-xl border border-line bg-panel shadow-card">
-        <SectionTitle title="This week" />
-        <div className="space-y-2 p-3">
-          {rows.filter((r) => r.day !== today).map((r) => (
-            <div key={r.id} className="flex items-start gap-3">
-              <span className="mt-3 w-20 shrink-0 whitespace-nowrap text-xs font-semibold text-muted">{formatDay(r.day)}</span>
-              <div className="min-w-0 flex-1">{taskCard(r)}</div>
-            </div>
-          ))}
-          {me.isLoading ? (
-            <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
-          ) : null}
-          {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
-        </div>
-      </section>
+        <section className="rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex items-center justify-between pr-3">
+            <SectionTitle title={`This week · ${rows.filter((r) => r.day !== today).length} more`} />
+            {rows.filter((r) => r.day !== today).length > 5 ? (
+              <button onClick={() => setShowAllWeek((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
+                {showAllWeek ? "Show less" : `View all ${rows.filter((r) => r.day !== today).length}`}
+              </button>
+            ) : null}
+          </div>
+          <div className="space-y-2 p-3">
+            {sortByPriority(rows.filter((r) => r.day !== today)).slice(0, showAllWeek ? undefined : 5).map((r) => (
+              <div key={r.id} className="flex items-start gap-3">
+                <span className="mt-3 w-20 shrink-0 whitespace-nowrap text-xs font-semibold text-muted">{formatDay(r.day)}</span>
+                <div className="min-w-0 flex-1">{taskCard(r)}</div>
+              </div>
+            ))}
+            {me.isLoading ? (
+              <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+            ) : null}
+            {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
+          </div>
+        </section>
+      </div>
 
       {/* The person's own QA picture: links, quality split, avg score. */}
       {me.data?.labels.length ? (
@@ -5680,10 +5799,10 @@ function TasksDesk({
     onError: (e: Error) => onNotice(e.message)
   });
   const applyTemplateMut = useMutation({
-    mutationFn: (mode: "week" | "month") =>
+    mutationFn: (body: { mode: "week" | "month" | "range"; range_from?: string; range_to?: string }) =>
       api<{ applied: number; cleared: number; skipped_inactive: number; range: string; warnings: string[] }>(
         "/workforce/templates/apply",
-        { token, method: "POST", body: JSON.stringify({ week_start: weekDays[0], mode, clear: true }) }
+        { token, method: "POST", body: JSON.stringify({ week_start: weekDays[0], clear: true, ...body }) }
       ),
     onSuccess: (r) => {
       onNotice(`Template applied to ${r.range} — ${r.applied} plan${r.applied === 1 ? "" : "s"} set, ${r.cleared} existing cleared.`);
@@ -5692,6 +5811,28 @@ function TasksDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  // Preview-then-confirm: the confirm dialog shows the EXACT number of
+  // assignments the apply would create/replace before anything changes.
+  const previewAndApply = async (body: { mode: "week" | "month" | "range"; range_from?: string; range_to?: string }, label: string) => {
+    try {
+      const p = await api<{ range: string; days: number; people: number; would_create: number; would_replace: number }>(
+        "/workforce/templates/apply",
+        { token, method: "POST", body: JSON.stringify({ week_start: weekDays[0], clear: true, preview: true, ...body }) }
+      );
+      if (
+        window.confirm(
+          `Apply the weekly template ${label} (${p.range})?\n\nThis will CREATE ${p.would_create} assignment${p.would_create === 1 ? "" : "s"} for ${p.people} ${p.people === 1 ? "person" : "people"} across ${p.days} day${p.days === 1 ? "" : "s"},\nand REPLACE ${p.would_replace} existing future assignment${p.would_replace === 1 ? "" : "s"} in that range.\n\nPast days are never touched.`
+        )
+      )
+        applyTemplateMut.mutate(body);
+    } catch (e) {
+      onNotice((e as Error).message);
+    }
+  };
+  // Custom-range picker state for "Apply to a custom date range".
+  const [tplRangeFrom, setTplRangeFrom] = useState("");
+  const [tplRangeTo, setTplRangeTo] = useState("");
+  const [showTplRange, setShowTplRange] = useState(false);
   // Working-day shading for the planner week (may span two months).
   const wm1 = { y: Number(weekDays[0].slice(0, 4)), m: Number(weekDays[0].slice(5, 7)) };
   const wm2 = { y: Number(weekDays[6].slice(0, 4)), m: Number(weekDays[6].slice(5, 7)) };
@@ -5770,6 +5911,25 @@ function TasksDesk({
     enabled: Boolean(token),
     queryFn: () => api<LinkType[]>("/link-types", { token })
   });
+  // Per-link-type default targets (admin-configured in Settings): selecting a
+  // type auto-fills an EMPTY target with its default (sum across several
+  // types). Always editable; no default → field stays empty with a hint.
+  const ltTargets = useQuery({
+    queryKey: ["lt-default-targets", token],
+    enabled: Boolean(token),
+    queryFn: () => api<{ targets: Record<string, string> }>("/link-types/default-targets", { token })
+  });
+  const typeDefaultSum = (typesCsv: string) => {
+    const map = ltTargets.data?.targets || {};
+    const vals = typesCsv.split(",").map((t) => Number(map[t.trim()])).filter((v) => Number.isFinite(v) && v > 0);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+  };
+  useEffect(() => {
+    if (fTarget !== "") return; // never clobber a value someone typed/loaded
+    const sum = typeDefaultSum(fTypes);
+    if (sum != null) setFTarget(String(sum));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fTypes, ltTargets.data]);
   // The assign form stays hidden until needed — the desk opens clean.
   const [showAssign, setShowAssign] = useState(false);
   // Planner cells prefill the form ("+ Add" or clicking a chip to edit).
@@ -6051,29 +6211,58 @@ function TasksDesk({
           ) : null}
           <span className="mx-1 h-5 w-px bg-line" />
           <button
-            onClick={() => {
-              if (window.confirm(`Apply the weekly template to the week of ${formatDay(weekDays[0])}?\n\n⚠ This OVERRIDES every assignment in that week (from today onward) — existing plans are wiped and replaced by the template. Past days are kept.`))
-                applyTemplateMut.mutate("week");
-            }}
+            onClick={() => void previewAndApply({ mode: "week" }, "to this week")}
             disabled={applyTemplateMut.isPending || !(templates.data?.total_entries || 0)}
-            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Wipe this week's assignments (today onward) and replace with the template"}
+            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Replace this week's assignments (today onward) with the template — you'll see exact counts first"}
             className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
           >
             {applyTemplateMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
             Apply to this week
           </button>
-          <button
-            onClick={() => {
-              if (window.confirm(`Apply the weekly template to ALL of next month?\n\n⚠ This OVERRIDES every assignment across next calendar month — existing plans are wiped and replaced by the template on each matching weekday. This cannot be undone.`))
-                applyTemplateMut.mutate("month");
+          {/* Longer horizons — every option previews exact counts before running. */}
+          <select
+            value=""
+            onChange={(e) => {
+              const v = e.target.value;
+              e.target.value = "";
+              const today = new Date();
+              const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+              const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+              const plusMonths = (n: number) => new Date(today.getFullYear(), today.getMonth() + n, 0);
+              if (v === "month_end") void previewAndApply({ mode: "range", range_from: iso(today), range_to: iso(endOfMonth) }, "until the end of this month");
+              else if (v === "months2") void previewAndApply({ mode: "range", range_from: iso(today), range_to: iso(plusMonths(2)) }, "for the next two months");
+              else if (v === "months3") void previewAndApply({ mode: "range", range_from: iso(today), range_to: iso(plusMonths(3)) }, "for the next three months");
+              else if (v === "next_month") void previewAndApply({ mode: "month" }, "to next month");
+              else if (v === "custom") setShowTplRange(true);
             }}
             disabled={applyTemplateMut.isPending || !(templates.data?.total_entries || 0)}
-            title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Wipe next calendar month's assignments and replace with the template"}
-            className="flex h-8 items-center gap-1.5 rounded-lg border border-ocean/50 px-3 text-xs font-semibold text-ocean transition hover:bg-ocean/10 disabled:opacity-40"
+            title="Apply the standing weekly template over a longer horizon — you always see exact counts before anything changes"
+            className="h-8 rounded-lg border border-ocean/50 bg-panel px-2 text-xs font-semibold text-ocean disabled:opacity-40"
           >
-            <CalendarDays className="h-3.5 w-3.5" />
-            Apply to next month
-          </button>
+            <option value="">Apply longer…</option>
+            <option value="month_end">Until the end of this month</option>
+            <option value="next_month">All of next month</option>
+            <option value="months2">Next two months</option>
+            <option value="months3">Next three months</option>
+            <option value="custom">Custom date range…</option>
+          </select>
+          {showTplRange ? (
+            <span className="flex items-center gap-1.5 rounded-lg border border-ocean/40 bg-ocean/5 px-2 py-1">
+              <input type="date" value={tplRangeFrom} onChange={(e) => setTplRangeFrom(e.target.value)}
+                className="h-7 rounded-md border border-line bg-panel px-1.5 text-xs" title="First day" />
+              <span className="text-xs text-muted">to</span>
+              <input type="date" value={tplRangeTo} onChange={(e) => setTplRangeTo(e.target.value)}
+                className="h-7 rounded-md border border-line bg-panel px-1.5 text-xs" title="Last day (inclusive)" />
+              <button
+                onClick={() => { if (tplRangeFrom && tplRangeTo) void previewAndApply({ mode: "range", range_from: tplRangeFrom, range_to: tplRangeTo }, "to the custom range"); }}
+                disabled={!tplRangeFrom || !tplRangeTo || applyTemplateMut.isPending}
+                className="h-7 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white disabled:opacity-40 dark:text-slate-900"
+              >
+                Preview &amp; apply
+              </button>
+              <button onClick={() => setShowTplRange(false)} className="text-xs text-muted hover:text-ink">×</button>
+            </span>
+          ) : null}
           <button
             onClick={() => {
               if (window.confirm("Save THIS week's plans as the standing weekly template?\n\nThis replaces the previous template. Coming weeks are filled from it automatically (manual changes are never overwritten)."))
@@ -6454,8 +6643,8 @@ function TasksDesk({
             min={0}
             value={fTarget}
             onChange={(e) => setFTarget(e.target.value)}
-            placeholder="Target (auto)"
-            title="Leave blank to calculate the target from productivity rates (personal rate beats global). Type a number to set it by hand — highest priority."
+            placeholder={fTypes && typeDefaultSum(fTypes) == null ? "Target (auto) — no default set for this type" : "Target (auto)"}
+            title="Auto-filled from the link type's default target (Settings → Link types) when one is configured; otherwise calculated from productivity rates. Type a number to override — highest priority."
             className="h-9 w-28 rounded-lg border border-line bg-panel px-2 text-sm"
           />
           <input
@@ -14090,10 +14279,13 @@ function EmployeesDesk({
                       onClick={() => {
                         const laidOff = m.is_active === false;
                         const msg = laidOff
-                          ? `Mark ${m.sheet_user_label} as ACTIVE again? They return to the assignment pickers and planner.`
+                          ? `Mark ${m.sheet_user_label} as ACTIVE again? They return to the assignment pickers and planner, and their login (if linked) is re-enabled.`
                           : `Mark ${m.sheet_user_label} as LAID OFF?
 
-They disappear from assignment pickers, the planner and weekly templates — all their past work stays.`;
+• Their login (if linked) is deactivated immediately — they can no longer sign in.
+• Their FUTURE planned tasks (today onward) and standing weekly plans are removed.
+• They disappear from assignment pickers, the planner and weekly templates.
+• ALL their past work, links and reports stay visible everywhere.`;
                         if (window.confirm(msg)) setActiveMut.mutate({ id: m.id, is_active: laidOff });
                       }}
                       className={clsx(
@@ -14791,6 +14983,129 @@ function LinkTypesCard({
           {proposal && !proposal.length ? (
             <p className="mt-2 text-sm text-muted">Catalog is clean — no duplicate groups detected.</p>
           ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Admin editor: default TARGET (expected links) per link type. Selecting a
+// type on the assign form auto-fills its default; always editable there.
+function LinkTypeTargetsCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  const types = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
+  const targets = useQuery({
+    queryKey: ["lt-default-targets", token],
+    enabled: Boolean(token),
+    queryFn: () => api<{ targets: Record<string, string> }>("/link-types/default-targets", { token })
+  });
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const valueFor = (name: string) => drafts[name] ?? (targets.data?.targets?.[name] || "");
+  const save = useMutation({
+    mutationFn: () => {
+      const out: Record<string, string> = { ...(targets.data?.targets || {}) };
+      for (const [k, v] of Object.entries(drafts)) {
+        if (v.trim()) out[k] = v.trim();
+        else delete out[k];
+      }
+      return api("/link-types/default-targets", { token, method: "PUT", body: JSON.stringify({ targets: out }) });
+    },
+    onSuccess: () => {
+      onNotice("Default targets saved — the assign form now pre-fills them.");
+      setDrafts({});
+      queryClient.invalidateQueries({ queryKey: ["lt-default-targets"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="Default targets per link type" />
+      <div className="space-y-2 p-4">
+        <p className="text-xs text-muted">
+          When someone assigns a task with a link type, the target field pre-fills with that
+          type&apos;s default (still editable). Leave a type empty for no default — the target then
+          calculates from productivity rates as before.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {(types.data || []).map((t) => (
+            <label key={t.id} className="flex items-center gap-2 rounded-lg border border-line bg-field/40 px-2.5 py-1.5">
+              <span className="min-w-0 flex-1 truncate text-sm text-ink" title={t.name}>{linkTypeLabel(t.name)}</span>
+              <input
+                type="number" min={0} placeholder="—"
+                value={valueFor(t.name)}
+                onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
+                className="h-8 w-20 rounded-md border border-line bg-panel px-2 text-right text-sm"
+              />
+            </label>
+          ))}
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={() => save.mutate()}
+            disabled={save.isPending || !Object.keys(drafts).length}
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+          >
+            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save default targets
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Admin editor for the task-skip reasons (one per line). Users must pick one
+// of these when skipping a suggested domain; "Other" always stays available.
+function SkipReasonsCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  const q = useQuery({
+    queryKey: ["skip-reasons", token],
+    enabled: Boolean(token),
+    queryFn: () => api<{ reasons: string[] }>("/source-domains/skip-reasons", { token })
+  });
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = draft ?? (q.data?.reasons || []).join("\n");
+  const save = useMutation({
+    mutationFn: () =>
+      api<{ reasons: string[] }>("/source-domains/skip-reasons", {
+        token, method: "PUT",
+        body: JSON.stringify({ reasons: value.split("\n").map((r) => r.trim()).filter(Boolean) })
+      }),
+    onSuccess: () => {
+      onNotice("Skip reasons saved");
+      setDraft(null);
+      queryClient.invalidateQueries({ queryKey: ["skip-reasons"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="Task skip reasons" />
+      <div className="space-y-2 p-4">
+        <p className="text-xs text-muted">
+          When a user skips a suggested domain they must pick one of these reasons (one per line).
+          Reasons containing “link type” also ask WHICH link type; “Other” requires a typed
+          explanation and is always kept in the list.
+        </p>
+        <textarea
+          value={value}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={7}
+          className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={() => save.mutate()}
+            disabled={save.isPending || !value.trim()}
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+          >
+            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save reasons
+          </button>
         </div>
       </div>
     </section>
@@ -15715,6 +16030,8 @@ function SettingsDesk({
     <section className="space-y-5">
       <BrandingCard token={token} projectId={projectId} onNotice={onNotice} />
       <LinkTypesCard token={token} onNotice={onNotice} />
+      <LinkTypeTargetsCard token={token} onNotice={onNotice} />
+      <SkipReasonsCard token={token} onNotice={onNotice} />
       <ProductivityCard token={token} onNotice={onNotice} />
       <QaSettingsCard token={token} onNotice={onNotice} />
       {!projectId ? (
@@ -15927,16 +16244,26 @@ function ConflictsDesk({
       return api<ConflictSummary>(`/conflicts/summary?${p.toString()}`, { token });
     }
   });
-  const conflictsRaw = useQuery({
+  type ConflictAgg = { open: number; resolved: number; total_duplicate_links: number; avg_similarity: number | null };
+  const conflictsRaw = useInfiniteQuery({
     queryKey: ["conflicts", token, query],
     enabled: Boolean(token),
-    queryFn: () =>
-      api<{ items?: ConflictGroup[]; list?: ConflictGroup[]; total: number }>(
-        `/conflicts?${query}`,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      api<{ items?: ConflictGroup[]; list?: ConflictGroup[]; total: number; aggregates?: ConflictAgg }>(
+        `/conflicts?${query}&offset=${pageParam}`,
         { token }
-      )
+      ),
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, p) => n + (p.items || p.list || []).length, 0);
+      return loaded < (last.total || 0) ? loaded : undefined;
+    }
   });
-  const groups = conflictsRaw.data?.items || conflictsRaw.data?.list || [];
+  const groups = (conflictsRaw.data?.pages || []).flatMap((p) => p.items || p.list || []);
+  // Filter-scoped truth for the KPI cards — same where-clause as the table, so
+  // a card can never show 709 while the table shows 200 again.
+  const listTotal = conflictsRaw.data?.pages?.[0]?.total ?? 0;
+  const listAgg = conflictsRaw.data?.pages?.[0]?.aggregates;
 
   // ── Selectable filter options ──
   // Users: authoritative workspace roster (incl. laid-off with real work), so the
@@ -16036,17 +16363,18 @@ function ConflictsDesk({
         <p className="text-sm text-muted">Every group shows why it's a duplicate, how similar the records are, and where the original lives.</p>
       </div>
 
-      {/* ── KPI row ── */}
+      {/* ── KPI row — computed over the SAME filters as the table below, so the
+          cards and the list always agree (list endpoint aggregates). ── */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <Metric label="Duplicate groups" value={s?.total ?? 0} icon={Layers} tone="ink"
-          help="Each group = one page URL that appears in more than one record." />
-        <Metric label="Open" value={s?.open ?? 0} icon={AlertTriangle} tone="ember"
-          help="Groups nobody has dealt with yet — review these first." />
-        <Metric label="Resolved" value={s?.resolved ?? 0} icon={CheckCircle2} tone="ocean"
-          help="Groups someone reviewed and closed." />
-        <Metric label="Duplicate links" value={s?.total_duplicate_links ?? 0} icon={Copy} tone="plum"
+        <Metric label="Duplicate groups" value={listTotal} icon={Layers} tone="ink"
+          help="Each group = one page URL that appears in more than one record. Matches the table below exactly (same filters)." />
+        <Metric label="Open" value={listAgg?.open ?? 0} icon={AlertTriangle} tone="ember"
+          help="Groups nobody has dealt with yet — review these first. Same filters as the table." />
+        <Metric label="Resolved" value={listAgg?.resolved ?? 0} icon={CheckCircle2} tone="ocean"
+          help="Groups someone reviewed and closed. Same filters as the table." />
+        <Metric label="Duplicate links" value={listAgg?.total_duplicate_links ?? 0} icon={Copy} tone="plum"
           help="Total redundant records = sum of (records in group − 1). Remove these to de-duplicate." />
-        <Metric label="Avg similarity" value={s?.avg_similarity != null ? `${Math.round(s.avg_similarity)}%` : "—"} icon={Gauge} tone="ink"
+        <Metric label="Avg similarity" value={listAgg?.avg_similarity != null ? `${Math.round(listAgg.avg_similarity)}%` : "—"} icon={Gauge} tone="ink"
           help="Average how alike the records inside each group are. 100% = identical rows." />
       </div>
 
@@ -16152,7 +16480,7 @@ function ConflictsDesk({
               />
               {selected.length ? `${selected.length} selected` : "Select all"}
             </label>
-            <span className="text-xs text-muted">{groups.length} group(s)</span>
+            <span className="text-xs text-muted">{groups.length} of {listTotal} loaded</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {selected.length ? (
@@ -16206,6 +16534,28 @@ function ConflictsDesk({
           ))}
           {!conflictsRaw.isLoading && !groups.length ? (
             <Empty label="No duplicate groups match these filters." />
+          ) : null}
+          {conflictsRaw.isLoading ? (
+            <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+          ) : null}
+          {/* Honest pagination: the count here always reconciles with the KPI card. */}
+          {groups.length ? (
+            <div className="flex flex-wrap items-center justify-center gap-3 border-t border-line p-3">
+              <span className="text-xs text-muted">
+                Showing <span className="font-semibold text-ink">{groups.length}</span> of{" "}
+                <span className="font-semibold text-ink">{listTotal}</span> groups
+              </span>
+              {conflictsRaw.hasNextPage ? (
+                <button
+                  onClick={() => conflictsRaw.fetchNextPage()}
+                  disabled={conflictsRaw.isFetchingNextPage}
+                  className="flex h-8 items-center gap-2 rounded-lg border border-line px-3 text-xs font-semibold text-ink transition hover:bg-field disabled:opacity-60"
+                >
+                  {conflictsRaw.isFetchingNextPage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  Load {Math.min(200, listTotal - groups.length)} more
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </section>
@@ -16503,7 +16853,20 @@ function ConflictComparisonModal({
               const diffCount = rows.filter((r) => !r.all_same).length;
               const shownRows = diffOnly ? rows.filter((r) => !r.all_same) : rows;
               const keepIdx = Math.max(0, members.findIndex((m) => m.backlink_id === d.suggested_keep));
-              const cellOf = (row: ConflictFieldMatrixRow, i: number) => (row.cells || row.values || [])[i];
+              // Aligned per-member cells; fall back to the member record's own
+              // field so a value NEVER renders "—" when the data exists.
+              const cellOf = (row: ConflictFieldMatrixRow, i: number) => {
+                const fromCells = row.cells ? row.cells[i] : undefined;
+                if (fromCells != null && fromCells !== "") return fromCells;
+                const m = members[i] as unknown as Record<string, unknown>;
+                const direct = m?.[row.field];
+                return direct == null || direct === "" ? fromCells : direct;
+              };
+              // The ORIGINAL = the earliest record (placement date, else created).
+              const originalIdx = members.reduce((best, m, i) => {
+                const key = (x: typeof m) => String(x.placement_date || x.created_at || "9999");
+                return key(m) < key(members[best]) ? i : best;
+              }, 0);
               return (
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -16539,6 +16902,12 @@ function ConflictComparisonModal({
                                 <span className="text-xs font-semibold text-ink">Record {mi + 1}</span>
                                 {d.suggested_keep === m.backlink_id ? (
                                   <span className="rounded-full bg-ember/15 px-1.5 text-[10px] font-semibold text-ember">keep</span>
+                                ) : null}
+                                {mi === originalIdx ? (
+                                  <span className="rounded-full bg-ocean/15 px-1.5 text-[10px] font-semibold text-ocean"
+                                    title="The original — the earliest record in this group (by placement date, else import date)">
+                                    original
+                                  </span>
                                 ) : null}
                               </div>
                               {/* Distinguishing sub-line so identical-user columns are tellable apart. */}
@@ -20065,17 +20434,18 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
         </div>
       </section>
 
-      {(members.data || []).some((m) => m.role === "manager") ? (
+      {(members.data || []).some((m) => m.role === "manager" || m.role === "qa") ? (
         <section className="rounded-xl border border-line bg-panel shadow-card">
-          <SectionTitle title="Team lead assignments" />
+          <SectionTitle title="Team scoping (Team Leads & QA)" />
           <p className="border-b border-line px-4 py-2.5 text-xs text-muted">
-            Give each Team Lead (Manager role) the people they oversee — comma-separated user
-            names as they appear in the sheets. With names set, that lead only sees those people
-            in Performance, Tasks and Leave. Leave empty to let them see everyone.
+            Give each Team Lead (Manager role) and each QA the people they oversee —
+            comma-separated user names as they appear in the sheets. With names set, that
+            person only sees those people (and their projects, tasks, performance and leave)
+            everywhere in the system. Leave empty to let them see everyone.
           </p>
           <div className="divide-y divide-line">
             {(members.data || [])
-              .filter((m) => m.role === "manager")
+              .filter((m) => m.role === "manager" || m.role === "qa")
               .map((m) => {
                 const saved = (leads.data || []).find((l) => l.manager_user_id === m.user_id);
                 const value = leadDrafts[m.user_id] ?? (saved?.labels || []).join(", ");

@@ -274,7 +274,7 @@ async def record_action(
     db: AsyncSession, ctx: AuthContext, *,
     domain_key: str, status: str, project_id: uuid.UUID | None = None,
     assignment_id: uuid.UUID | None = None, recommended_to: str | None = None,
-    note: str | None = None,
+    note: str | None = None, reason: str | None = None, link_type_name: str | None = None,
 ) -> DomainRecommendation:
     """A person acted on a suggestion (viewed/accepted/skipped) — upsert the row.
     Viewers act as themselves: when no label is passed, their own label is used."""
@@ -312,6 +312,12 @@ async def record_action(
         existing.status = status
     if note:
         existing.note = note[:300]
+    # Skip workflow: keep WHY it was skipped (+ the link type when the reason
+    # is a link-type problem) — reviewable later on the recommendations list.
+    if reason:
+        existing.reason = reason[:300]
+    if link_type_name:
+        existing.link_type_name = link_type_name[:80]
     if assignment_id is not None:
         existing.assignment_id = assignment_id
     existing.actor_user_id = ctx.user.id

@@ -22,9 +22,10 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
+from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require, require_role
 from app.core.errors import ValidationAppError
-from app.core.rbac import Permission
+from app.core.rbac import Permission, Role
+from sqlalchemy import select
 from app.models.enums import AuditAction
 from app.schemas.source_domain import (
     SavedFilterOut,
@@ -340,6 +341,10 @@ class RecommendActionIn(BaseModel):
     assignment_id: uuid.UUID | None = None
     recommended_to: str | None = Field(default=None, max_length=200)
     note: str | None = Field(default=None, max_length=300)
+    # Skip workflow: WHY it was skipped (required by the UI for skips) + the
+    # link type the reason refers to when it's a link-type problem.
+    reason: str | None = Field(default=None, max_length=300)
+    link_type_name: str | None = Field(default=None, max_length=80)
 
 
 class RecommendManualIn(BaseModel):
@@ -420,9 +425,74 @@ async def act_on_recommendation(
         db, ctx, domain_key=payload.domain_key, status=payload.status,
         project_id=payload.project_id, assignment_id=payload.assignment_id,
         recommended_to=payload.recommended_to, note=payload.note,
+        reason=payload.reason, link_type_name=payload.link_type_name,
     )
     await db.commit()
     return {"ok": True, "status": row.status}
+
+
+# ── Skip reasons (editable in Settings; used by the task-skip workflow) ───────
+_DEFAULT_SKIP_REASONS = [
+    "Website is unavailable",
+    "Website is temporarily down",
+    "Incorrect source domain",
+    "No suitable page found",
+    "Link type is not available",
+    "Duplicate task",
+    "Other",
+]
+
+
+@router.get("/skip-reasons")
+async def get_skip_reasons(ctx: AuthCtx, db: ReadSession) -> dict:
+    """The predefined skip reasons every user picks from (admin-editable)."""
+    from app.models.settings import Setting
+
+    row = (
+        await db.execute(
+            select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "skip_reasons"
+            )
+        )
+    ).scalar_one_or_none()
+    reasons = row.value if row is not None and isinstance(row.value, list) else _DEFAULT_SKIP_REASONS
+    return {"reasons": reasons, "defaults": _DEFAULT_SKIP_REASONS}
+
+
+class SkipReasonsIn(BaseModel):
+    reasons: list[str] = Field(min_length=1, max_length=30)
+
+
+@router.put("/skip-reasons")
+async def put_skip_reasons(
+    payload: SkipReasonsIn, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Replace the predefined skip-reason list (admin, audited). Keep an
+    "Other" entry — the UI requires a typed explanation for it."""
+    from app.models.settings import Setting
+
+    reasons = [r.strip()[:120] for r in payload.reasons if r.strip()]
+    if not any(r.lower() == "other" for r in reasons):
+        reasons.append("Other")
+    row = (
+        await db.execute(
+            select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "skip_reasons"
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(workspace_id=ctx.workspace_id, key="skip_reasons", value=reasons))
+    else:
+        row.value = reasons
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="skip_reasons", entity_id=ctx.workspace_id,
+        summary="Task-skip reasons updated", after={"reasons": reasons},
+    )
+    await db.commit()
+    return {"reasons": reasons}
 
 
 @router.post("/recommendations", status_code=status.HTTP_201_CREATED)

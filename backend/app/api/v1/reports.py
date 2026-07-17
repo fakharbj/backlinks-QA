@@ -77,7 +77,7 @@ async def get_report(report_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Rep
 @router.delete("/{report_id}")
 async def delete_report(
     report_id: uuid.UUID, db: DbSession,
-    ctx: AuthContext = Depends(require(Permission.EXPORT_REPORTS)),
+    ctx: AuthContext = Depends(require(Permission.DELETE_RECORDS)),
 ) -> dict:
     """Delete one report version. The stored file becomes unreferenced (no
     storage-delete API here) — harmless, and regenerating creates a fresh key."""

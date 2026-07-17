@@ -47,17 +47,21 @@ class Permission(str, enum.Enum):
     # admin→user email (Admin only: Role.ADMIN holds set(Permission), no other
     # role's set lists it — add to a role's set to widen later)
     SEND_EMAILS = "send_emails"
+    # Destructive deletion of important records (links, reports, competitor
+    # uploads, …). ADMIN-ONLY by design: managers manage, admins delete.
+    DELETE_RECORDS = "delete_records"
 
 
 # The §5 matrix, encoded once. ``QA`` may *suggest* alert config but not commit
 # it; that nuance is enforced at the service layer, not here.
 _MATRIX: dict[Role, set[Permission]] = {
     Role.ADMIN: set(Permission),  # everything
+    # Managers manage but do NOT delete: no DELETE_PROJECT, no DELETE_RECORDS —
+    # deleting users/projects/links/reports is admin-only (owner rule).
     Role.MANAGER: {
         Permission.VIEW_AUDIT_LOGS,  # own projects only — narrowed in service layer
         Permission.CREATE_PROJECT,
         Permission.EDIT_PROJECT,
-        Permission.DELETE_PROJECT,
         Permission.ASSIGN_MEMBERS,
         Permission.MANAGE_VENDORS,
         Permission.IMPORT_BACKLINKS,

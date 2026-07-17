@@ -829,14 +829,24 @@ async def list_conflicts(
         created_from=created_from, created_to=created_to, search=search,
     )
 
-    total = (
+    # One aggregate pass over the SAME filter as the page — the desk's KPI
+    # cards read these, so a card can never disagree with the table again
+    # (the old summary endpoint ignored most filters: KPI said 709, list 200).
+    agg = (
         await db.execute(
-            select(func.count())
+            select(
+                func.count(),
+                func.count().filter(BacklinkConflict.resolution_status == "open"),
+                func.count().filter(BacklinkConflict.resolution_status != "open"),
+                func.coalesce(func.sum(BacklinkConflict.member_count - 1), 0),
+                func.avg(BacklinkConflict.similarity),
+            )
             .select_from(BacklinkConflict)
             .outerjoin(CanonicalUrl, CanonicalUrl.id == BacklinkConflict.canonical_url_id)
             .where(*clauses)
         )
-    ).scalar_one()
+    ).one()
+    total = int(agg[0] or 0)
 
     stmt = (
         select(BacklinkConflict, CanonicalUrl.canonical_url, CanonicalUrl.fingerprint)
@@ -855,7 +865,15 @@ async def list_conflicts(
     for conflict, canonical_url, fingerprint in rows:
         items.append(_group_dict(conflict, canonical_url, fingerprint,
                                  members_by_conflict.get(conflict.id, [])))
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    return {
+        "items": items, "total": total, "limit": limit, "offset": offset,
+        "aggregates": {
+            "open": int(agg[1] or 0),
+            "resolved": int(agg[2] or 0),
+            "total_duplicate_links": int(agg[3] or 0),
+            "avg_similarity": round(float(agg[4]), 1) if agg[4] is not None else None,
+        },
+    }
 
 
 def _group_dict(conflict: BacklinkConflict, canonical_url, fingerprint, members: list[dict]) -> dict:

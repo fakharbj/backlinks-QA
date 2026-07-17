@@ -48,9 +48,11 @@ async def own_labels(db: AsyncSession, ctx: AuthContext) -> set[str]:
 async def visible_labels(db: AsyncSession, ctx: AuthContext) -> set[str] | None:
     """People-visibility scoping for every people-facing view:
 
-    * Admin / QA — unrestricted (``None``).
-    * TeamLead (manager) WITH member assignments — only those labels; with no
-      assignments — unrestricted.
+    * Admin — unrestricted (``None``).
+    * Manager (TeamLead) / QA WITH team assignments — only those labels (a QA
+      assigned to teams sees ONLY those teams' people, projects and work);
+      with no assignments yet — unrestricted (so accounts keep working until
+      the admin scopes them on the Team desk).
     * Viewer (standard user) — ONLY their own linked label(s); an empty set
       means they see nobody but themselves once linked (never the whole team).
     """
@@ -58,7 +60,7 @@ async def visible_labels(db: AsyncSession, ctx: AuthContext) -> set[str] | None:
 
     if ctx.role == Role.VIEWER:
         return await own_labels(db, ctx)
-    if ctx.role != Role.MANAGER:
+    if ctx.role not in (Role.MANAGER, Role.QA):
         return None
     rows = (
         await db.execute(
@@ -640,6 +642,8 @@ async def save_week_as_template(
 async def apply_template_to_week(
     db: AsyncSession, ctx: AuthContext, *, week_start: date,
     mode: str = "week", clear: bool = True,
+    range_from: date | None = None, range_to: date | None = None,
+    preview: bool = False,
 ) -> dict:
     """Materialize the standing weekly template into real assignments and OVERRIDE
     whatever was there.
@@ -668,7 +672,15 @@ async def apply_template_to_week(
         )
 
     today = date.today()
-    if mode == "month":
+    if mode == "range" and range_from and range_to:
+        if range_to < range_from:
+            raise ValidationAppError("The end date must be after the start date.")
+        span = (range_to - range_from).days + 1
+        if span > 120:
+            raise ValidationAppError("Custom ranges are capped at 120 days — apply in chunks.")
+        days = [range_from + timedelta(days=i) for i in range(span)]
+        range_label = f"{range_from.isoformat()} → {range_to.isoformat()}"
+    elif mode == "month":
         y = monday.year + (1 if monday.month == 12 else 0)
         m = 1 if monday.month == 12 else monday.month + 1
         ndays = _cal.monthrange(y, m)[1]
@@ -678,6 +690,35 @@ async def apply_template_to_week(
         days = [monday + timedelta(days=i) for i in range(7)]
         range_label = f"week of {monday.isoformat()}"
     future_days = [d for d in days if d >= today]  # never rewrite the past
+
+    tpl_by_weekday: dict[int, list] = {}
+    for t in tpl:
+        tpl_by_weekday.setdefault(t.weekday, []).append(t)
+    active = set(await known_labels(db, ctx))
+
+    if preview:
+        # Dry run — the exact numbers the confirm dialog shows, nothing written.
+        would_create = 0
+        people: set[str] = set()
+        for d in future_days:
+            for t in tpl_by_weekday.get(d.weekday(), []):
+                if t.user_label in active:
+                    would_create += 1
+                    people.add(t.user_label)
+        existing = (
+            await db.execute(
+                select(func.count()).select_from(TaskAssignment).where(
+                    TaskAssignment.workspace_id == ctx.workspace_id,
+                    TaskAssignment.day.in_(future_days or [today]),
+                )
+            )
+        ).scalar_one() if future_days else 0
+        return {
+            "preview": True, "range": range_label,
+            "days": len(future_days), "people": len(people),
+            "would_create": would_create,
+            "would_replace": int(existing) if clear else 0,
+        }
 
     cleared = 0
     if clear and future_days:
@@ -689,10 +730,6 @@ async def apply_template_to_week(
         )
         cleared = res.rowcount or 0
 
-    tpl_by_weekday: dict[int, list] = {}
-    for t in tpl:
-        tpl_by_weekday.setdefault(t.weekday, []).append(t)
-    active = set(await known_labels(db, ctx))
     applied = skipped = 0
     all_warnings: list[str] = []
     for d in future_days:

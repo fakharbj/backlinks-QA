@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require_role
 from app.core.rbac import Role
@@ -65,7 +66,7 @@ async def update_link_type(
 @router.delete("/{type_id}")
 async def delete_link_type(
     type_id: uuid.UUID, db: DbSession,
-    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
 ) -> dict:
     await svc.delete_type(db, ctx, type_id)
     await audit_service.record(
@@ -74,6 +75,68 @@ async def delete_link_type(
     )
     await db.commit()
     return {"ok": True}
+
+
+# ── Default targets per link type (Setting KV; declared before /{type_id}) ──
+_TARGETS_KEY = "link_type_targets"
+
+
+@router.get("/default-targets")
+async def get_default_targets(ctx: AuthCtx, db: ReadSession) -> dict:
+    """{link type name → default target URL} used to pre-fill the task-assign
+    form when that link type is selected. Empty when nothing is configured."""
+    from sqlalchemy import select as _select
+
+    from app.models.settings import Setting
+
+    row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == _TARGETS_KEY
+            )
+        )
+    ).scalar_one_or_none()
+    return {"targets": row.value if row is not None and isinstance(row.value, dict) else {}}
+
+
+class DefaultTargetsIn(BaseModel):
+    targets: dict[str, str]
+
+
+@router.put("/default-targets")
+async def put_default_targets(
+    payload: DefaultTargetsIn, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Replace the per-link-type default targets (admin, audited). Empty values
+    remove a type's default."""
+    from sqlalchemy import select as _select
+
+    from app.models.settings import Setting
+
+    clean = {
+        k.strip()[:80]: v.strip()[:500]
+        for k, v in payload.targets.items()
+        if k.strip() and v.strip()
+    }
+    row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == _TARGETS_KEY
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(workspace_id=ctx.workspace_id, key=_TARGETS_KEY, value=clean))
+    else:
+        row.value = clean
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="link_type_targets", entity_id=ctx.workspace_id,
+        summary="Link-type default targets updated", after={"targets": clean},
+    )
+    await db.commit()
+    return {"targets": clean}
 
 
 # ── Standardization: scan → review → merge/rename (Phase 10 P1) ──────────────

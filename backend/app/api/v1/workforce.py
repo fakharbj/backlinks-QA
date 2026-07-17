@@ -118,8 +118,12 @@ async def all_people(
 # ── Weekly templates ("set the week up once") ────────────────────────────────
 class TemplateWeek(BaseModel):
     week_start: date  # any day of the target week — normalized to Monday
-    mode: str = "week"       # "week" (this week) or "month" (next calendar month)
+    # "week" (this week) | "month" (next calendar month) | "range" (explicit dates)
+    mode: str = "week"
     clear: bool = True       # override: wipe existing future assignments in range first
+    range_from: date | None = None   # mode="range": first day to materialize
+    range_to: date | None = None     # mode="range": last day (inclusive, ≤120 days)
+    preview: bool = False    # dry-run: return the counts, write nothing
 
 
 @router.post("/templates/save-week")
@@ -143,13 +147,17 @@ async def apply_week_template(
     payload: TemplateWeek, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
 ) -> dict:
-    """Apply the standing weekly template to this week or the next whole month,
-    overriding existing assignments in the range (see service)."""
-    mode = payload.mode if payload.mode in ("week", "month") else "week"
+    """Apply the standing weekly template to this week, the next whole month,
+    or ANY explicit date range — with a dry-run preview (``preview=true``) that
+    returns exactly how many assignments would be created/replaced."""
+    mode = payload.mode if payload.mode in ("week", "month", "range") else "week"
     result = await workforce_service.apply_template_to_week(
         db, ctx, week_start=payload.week_start, mode=mode, clear=payload.clear,
+        range_from=payload.range_from, range_to=payload.range_to,
+        preview=payload.preview,
     )
-    await db.commit()
+    if not payload.preview:
+        await db.commit()
     return result
 
 

@@ -229,8 +229,50 @@ async def update_mapping(
     m = await db.get(UserEmployeeMapping, mapping_id)
     if m is None or m.workspace_id != ctx.workspace_id:
         raise NotFoundError("Mapping not found")
+    was_active = m.is_active is not False
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(m, field, value)
+    # ── Lay-off side effects (owner rule): a laid-off person must not be able
+    # to log in and must leave every ACTIVE planning surface immediately —
+    # history (past assignments, links, reports) is untouched. ──
+    if was_active and m.is_active is False:
+        from datetime import date as _date
+
+        from sqlalchemy import delete as _delete
+
+        from app.models.workforce import TaskAssignment, TaskWeekTemplate
+
+        # 1) Block sign-in: deactivate the linked login + kill its sessions.
+        if m.user_id is not None:
+            from app.models.user import User
+            from app.services.auth_service import _revoke_user_tokens
+
+            u = await db.get(User, m.user_id)
+            if u is not None:
+                u.is_active = False
+                await _revoke_user_tokens(db, u.id)
+        # 2) Clear FUTURE plans (today onward) + standing weekly templates so
+        # the person disappears from the planner and task tables; past days stay.
+        await db.execute(
+            _delete(TaskAssignment).where(
+                TaskAssignment.workspace_id == ctx.workspace_id,
+                TaskAssignment.user_label == m.sheet_user_label,
+                TaskAssignment.day >= _date.today(),
+            )
+        )
+        await db.execute(
+            _delete(TaskWeekTemplate).where(
+                TaskWeekTemplate.workspace_id == ctx.workspace_id,
+                TaskWeekTemplate.user_label == m.sheet_user_label,
+            )
+        )
+    elif not was_active and m.is_active is True and m.user_id is not None:
+        # Re-hire: let the person log in again (they sign in fresh).
+        from app.models.user import User
+
+        u = await db.get(User, m.user_id)
+        if u is not None:
+            u.is_active = True
     await db.flush()
     return m
 

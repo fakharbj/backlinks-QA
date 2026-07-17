@@ -86,7 +86,7 @@ async def update_code(
 @router.delete("/codes/{code_id}")
 async def delete_code(
     code_id: uuid.UUID, db: DbSession,
-    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
 ) -> dict:
     await svc.delete_code(db, ctx, code_id)
     await audit_service.record(

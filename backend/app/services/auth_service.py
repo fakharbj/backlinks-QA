@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AuthenticationError, ConflictError
+from app.core.logging import get_logger
 from app.core.rbac import Role
 from app.core.redis import revoke_jti
 from app.core.security import (
@@ -31,6 +32,8 @@ from app.models.enums import AuditAction
 from app.models.user import RefreshToken, User, Workspace, WorkspaceMember
 from app.schemas.auth import TokenPair
 from app.services import audit_service
+
+log = get_logger("services.auth")
 
 _DUMMY_HASH = hash_password("dummy-password-placeholder")  # constant-time login for unknown emails
 
@@ -151,11 +154,41 @@ async def rotate_refresh(
         await db.execute(select(RefreshToken).where(RefreshToken.jti == jti))
     ).scalar_one_or_none()
 
-    if stored is None or stored.revoked or stored.expires_at < _now():
-        # Reuse of a revoked token → revoke the whole lineage (token theft defence).
-        if stored is not None and stored.revoked:
-            await _revoke_user_tokens(db, user_id)
+    if stored is None or stored.expires_at < _now():
         raise AuthenticationError("Refresh token expired or revoked")
+    if stored.revoked:
+        # Rotation grace for HONEST clients: two tabs (or a request racing the
+        # 10-min proactive refresh) can present the just-rotated token. If this
+        # token was rotated moments ago and its replacement chain is still
+        # alive, follow the chain to the live head and rotate THAT — both tabs
+        # end up with valid sessions. Without this, any stale reuse revoked the
+        # user's ENTIRE token lineage, logging every session out ("random
+        # logout" reports). Beyond the grace window we reject just this call —
+        # never the whole lineage (an old tab waking from sleep is not theft).
+        grace = timedelta(seconds=max(0, settings.REFRESH_REUSE_GRACE_SECONDS))
+        rotated_recently = stored.updated_at is not None and (_now() - stored.updated_at) <= grace
+        head = stored
+        hops = 0
+        while rotated_recently and head.replaced_by_jti and hops < 5:
+            nxt = (
+                await db.execute(
+                    select(RefreshToken).where(RefreshToken.jti == head.replaced_by_jti)
+                )
+            ).scalar_one_or_none()
+            if nxt is None:
+                break
+            head = nxt
+            hops += 1
+        if rotated_recently and not head.revoked and head.expires_at >= _now():
+            log.info("refresh_reuse_grace", user_id=str(user_id), hops=hops)
+            stored = head  # rotate the live head below — honest race resolved
+        else:
+            log.warning(
+                "refresh_reuse_rejected", user_id=str(user_id),
+                rotated_recently=rotated_recently,
+            )
+            raise AuthenticationError("Refresh token expired or revoked")
+    jti = stored.jti
 
     user = await db.get(User, user_id)
     if user is None or not user.is_active:

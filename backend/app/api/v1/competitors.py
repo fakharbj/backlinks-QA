@@ -115,7 +115,7 @@ async def sheet_backlinks(sheet_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
 @router.delete("/sheets/{sheet_id}")
 async def delete_sheet(
     sheet_id: uuid.UUID, db: DbSession,
-    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+    ctx: AuthContext = Depends(require(Permission.DELETE_RECORDS)),
 ) -> dict:
     name = await competitor_service.delete_sheet(db, ctx, sheet_id)
     await audit_service.record(

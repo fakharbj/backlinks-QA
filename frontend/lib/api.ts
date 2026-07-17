@@ -861,6 +861,16 @@ let _access: string | null = null;
 let _refresh: string | null = null;
 let _refreshing: Promise<boolean> | null = null;
 
+// Cross-tab sync: when another tab rotates the pair, adopt it immediately so
+// this tab never presents a stale refresh token (stale reuse looked like theft
+// server-side and used to log EVERY session out).
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === "ls_access") _access = e.newValue;
+    if (e.key === "ls_refresh") _refresh = e.newValue;
+  });
+}
+
 export function loadTokens(): string | null {
   if (typeof window !== "undefined") {
     _access = localStorage.getItem("ls_access");
@@ -891,22 +901,44 @@ export function getAccessToken(): string | null {
   return _access;
 }
 
-/** Exchange the refresh token for a fresh pair (single-flight). */
+/** Exchange the refresh token for a fresh pair (single-flight).
+ *
+ * Returns whether the SESSION is still alive — false ONLY when the server
+ * says the refresh token is truly dead (401/403). A network blip, an API
+ * restart mid-deploy, or a 5xx is transient: the caller's request may fail,
+ * but the session must NOT be cleared (this was a source of "random logout").
+ */
 export async function refreshAccess(): Promise<boolean> {
+  if (typeof window !== "undefined") {
+    // Another tab may have rotated the pair — always refresh with the newest.
+    const latest = localStorage.getItem("ls_refresh");
+    if (latest && latest !== _refresh) {
+      _refresh = latest;
+      _access = localStorage.getItem("ls_access");
+    }
+  }
   if (!_refresh) return false;
   if (!_refreshing) {
     _refreshing = (async () => {
       try {
-        const resp = await fetch(`${API_BASE}/auth/refresh`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: _refresh })
-        });
-        if (!resp.ok) return false;
+        const attempt = () =>
+          fetch(`${API_BASE}/auth/refresh`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: _refresh })
+          });
+        let resp = await attempt();
+        if (resp.status >= 500 || resp.status === 429) {
+          // Transient server trouble — one quick retry before giving up.
+          await new Promise((r) => setTimeout(r, 1500));
+          resp = await attempt();
+        }
+        if (resp.status === 401 || resp.status === 403) return false; // truly dead
+        if (!resp.ok) return true; // transient → keep the session
         setTokens((await resp.json()) as TokenPair);
         return true;
       } catch {
-        return false;
+        return true; // network error → transient, never log out for this
       } finally {
         _refreshing = null;
       }

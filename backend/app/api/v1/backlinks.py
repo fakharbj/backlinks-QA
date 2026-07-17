@@ -477,7 +477,7 @@ async def override_backlink(
 @router.delete("/{backlink_id}", response_model=Message)
 async def delete_backlink(
     backlink_id: uuid.UUID, db: DbSession,
-    ctx: AuthContext = Depends(require(Permission.EDIT_BACKLINKS)),
+    ctx: AuthContext = Depends(require(Permission.DELETE_RECORDS)),
 ) -> Message:
     source_url = await backlink_service.delete_backlink(db, ctx, backlink_id)
     await audit_service.record(

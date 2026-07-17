@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_TTL_MINUTES: int = 15
     REFRESH_TOKEN_TTL_DAYS: int = 7
+    # Rotation grace: a just-rotated refresh token presented again within this
+    # window (two tabs racing, request crossing the proactive refresh) resolves
+    # to the live token instead of failing — prevents spurious full logouts.
+    REFRESH_REUSE_GRACE_SECONDS: int = 60
     PASSWORD_RESET_TTL_MINUTES: int = 30
     LOGIN_MAX_FAILED_ATTEMPTS: int = 5
     LOGIN_LOCKOUT_MINUTES: int = 15

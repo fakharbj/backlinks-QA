@@ -56,6 +56,16 @@ class ConflictOut(BaseModel):
     members: list[ConflictMemberOut] = []
 
 
+class ConflictAggregatesOut(BaseModel):
+    """Filter-scoped KPI numbers — computed over the SAME where-clause as the
+    page, so cards and table can never disagree."""
+
+    open: int = 0
+    resolved: int = 0
+    total_duplicate_links: int = 0
+    avg_similarity: float | None = None
+
+
 class ConflictListOut(BaseModel):
     """Paginated list envelope (offset + total)."""
 
@@ -63,6 +73,7 @@ class ConflictListOut(BaseModel):
     total: int = 0
     limit: int = 100
     offset: int = 0
+    aggregates: ConflictAggregatesOut = ConflictAggregatesOut()
 
 
 class FieldMatrixRow(BaseModel):

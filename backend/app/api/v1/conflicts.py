@@ -67,6 +67,7 @@ async def list_conflicts(
     return ConflictListOut(
         items=[ConflictOut(**row) for row in res["items"]],
         total=res["total"], limit=res["limit"], offset=res["offset"],
+        aggregates=res.get("aggregates") or {},
     )
 
 
