@@ -11,7 +11,16 @@
       "Bash(ls -1 backend/tests)",
       "Bash(ls -1 scripts)",
       "Bash(ls -1 tests)",
-      "Bash(ls -1 conftest.py pyproject.toml pytest.ini)"
+      "Bash(ls -1 conftest.py pyproject.toml pytest.ini)",
+      "Bash(ssh -o ConnectTimeout=20 root@72.62.81.34 \"pm2 restart api worker beat >/dev/null 2>&1 && echo BACKEND_RESTARTED\")",
+      "Bash(scp -o ConnectTimeout=25 frontend/components/workspace-app.tsx frontend/lib/api.ts root@72.62.81.34:/tmp/)",
+      "Bash(ssh -o ConnectTimeout=20 root@72.62.81.34 \"mv /tmp/workspace-app.tsx /home/ls_user/htdocs/72.62.81.34.nip.io/frontend/components/workspace-app.tsx && mv /tmp/api.ts /home/ls_user/htdocs/72.62.81.34.nip.io/frontend/lib/api.ts && cd /home/ls_user/htdocs/72.62.81.34.nip.io/frontend && rm -f /tmp/fe_build.log && setsid nohup npm run build > /tmp/fe_build.log 2>&1 < /dev/null & echo BUILD_STARTED\")",
+      "Bash(tar czf *)",
+      "Bash(ssh -o ConnectTimeout=25 root@72.62.81.34 \"tar xzf - -C /home/ls_user/htdocs/72.62.81.34.nip.io && cd /home/ls_user/htdocs/72.62.81.34.nip.io/backend && venv/bin/python -c 'import app.workers.tasks.crawl; print\\(\\\\\"OK\\\\\"\\)' && venv/bin/python -m pytest 2>&1 | grep -oE '[0-9]+ passed' | tail -1 && pm2 restart worker >/dev/null 2>&1 && echo WORKER_RESTARTED\")",
+      "Bash(awk 'NR>=10895 && NR<=11120 && \\(/return \\\\\\(/ || /<section/ || /Import domains/ || /Recompute/ || /<h2/\\)' frontend/components/workspace-app.tsx)",
+      "Bash(ssh -o ConnectTimeout=25 root@72.62.81.34 \"tar xzf - -C /home/ls_user/htdocs/72.62.81.34.nip.io && cd /home/ls_user/htdocs/72.62.81.34.nip.io/backend && venv/bin/python -c 'import app.main; print\\(\\\\\"IMPORT_OK\\\\\"\\)' && venv/bin/python -m pytest 2>&1 | grep -oE '[0-9]+ passed' | tail -1 && pm2 restart api >/dev/null 2>&1 && echo API_RESTARTED\")",
+      "Bash(ssh *)",
+      "Bash(scp -o ConnectTimeout=25 frontend/components/workspace-app.tsx root@72.62.81.34:/home/ls_user/htdocs/72.62.81.34.nip.io/frontend/components/workspace-app.tsx)"
     ]
   }
 }

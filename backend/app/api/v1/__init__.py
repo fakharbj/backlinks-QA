@@ -22,6 +22,7 @@ from app.api.v1 import (
     performance,
     project_settings,
     projects,
+    qa_test,
     reports,
     scoring,
     settings,
@@ -58,3 +59,4 @@ api_router.include_router(sheets.router)
 api_router.include_router(source_domains.router)
 api_router.include_router(team.router)
 api_router.include_router(workforce.router)
+api_router.include_router(qa_test.router)

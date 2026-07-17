@@ -109,7 +109,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mytoday" | "myweek" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mytoday" | "myweek" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -197,7 +197,7 @@ export function WorkspaceApp() {
     const nextTab = navTabs(Boolean(next), role).includes(tab)
       ? tab
       : role === "viewer"
-        ? "mywork"
+        ? "mydash"
         : "overview";
     setActiveProjectIdState(next);
     setTabState(nextTab);
@@ -275,7 +275,7 @@ export function WorkspaceApp() {
   useEffect(() => {
     if (!role) return;
     if (!navTabs(Boolean(activeProjectId), role).includes(tab)) {
-      const fallback: Tab = role === "viewer" ? "mywork" : "overview";
+      const fallback: Tab = role === "viewer" ? "mydash" : "overview";
       setTabState(fallback);
       syncUrl(activeProjectId, fallback, false);
     }
@@ -376,7 +376,7 @@ export function WorkspaceApp() {
               />
             </div>
           ) : null}
-          <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[380px] max-w-[92vw] flex-col gap-2">
+          <div className="pointer-events-none fixed bottom-4 right-4 z-[70] flex w-[380px] max-w-[92vw] flex-col gap-2">
             {toasts.map((t) => (
               <div
                 key={t.id}
@@ -449,6 +449,7 @@ export function WorkspaceApp() {
             <ReportsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "qatest" ? <QaTestDesk token={token} onNotice={setNotice} /> : null}
           {tab === "scoring" ? (
             <ScoringDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
@@ -745,6 +746,7 @@ const WORKSPACE_NAV: NavGroup[] = [
     items: [
       ["tasks", "Tasks & Calendar", CalendarDays],
       ["team", "Team", Users],
+      ["qatest", "Temp QA (tests)", ShieldAlert],
       ["scoring", "Scoring", SlidersHorizontal],
       ["settings", "Settings", Settings]
     ]
@@ -784,6 +786,12 @@ const PROJECT_NAV: NavGroup[] = [
 // completion and leave — never the team-wide/admin desks.
 const MY_NAV: NavGroup[] = [
   {
+    // Dashboard first — the richest at-a-glance overview; its section pages
+    // (Overview / Projects / Plans & calendar / Rates & leave) expand under it.
+    label: "My Dashboard",
+    items: [["mydash", "My Dashboard", Gauge]]
+  },
+  {
     label: "My Work",
     items: [
       ["mywork", "My Work", CalendarDays],
@@ -792,10 +800,6 @@ const MY_NAV: NavGroup[] = [
       ["mycal", "My calendar", CalendarDays],
       ["mylinks", "My recent links", Link2]
     ]
-  },
-  {
-    label: "My Dashboard",
-    items: [["mydash", "My Dashboard", Gauge]]
   },
   {
     label: "Grow",
@@ -1240,7 +1244,7 @@ function ProjectPanel({
             {active ? active.name : "Dashboard"}
           </span>
           <span className="block truncate text-[11px] text-muted">
-            {active ? (active.client_name || "Project workspace") : "Company view — everything combined"}
+            {active ? projectSubtitle(active) : "Company view — everything combined"}
           </span>
         </span>
         <ChevronDown className={clsx("h-4 w-4 shrink-0 text-muted transition", open && "rotate-180")} />
@@ -1295,7 +1299,7 @@ function ProjectPanel({
                 )}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-ink">{p.name}</span>
-                  <span className="block truncate text-[11px] text-muted">{p.client_name || "—"}</span>
+                  <span className="block truncate text-[11px] text-muted">{projectSubtitle(p)}</span>
                 </span>
                 {activeProjectId === p.id ? <CheckCircle2 className="h-4 w-4 shrink-0 text-plum" /> : null}
               </button>
@@ -4005,7 +4009,7 @@ function ColorLegend() {
         🎨 What do the colors mean?
       </button>
       {open ? (
-        <div className="absolute right-0 top-full z-30 mt-1 w-72 space-y-1.5 rounded-lg border border-line bg-panel p-3 text-xs shadow-pop">
+        <div className="absolute right-0 top-full z-40 mt-1 w-72 space-y-1.5 rounded-lg border border-line bg-panel p-3 text-xs shadow-pop">
           <p className="font-semibold uppercase tracking-wide text-muted">Completion</p>
           <Row swatch="border border-ocean/50 bg-ocean/20" label="Green — target reached (100%+)" />
           <Row swatch="border border-ember/50 bg-ember/20" label="Amber — getting there (60–99%)" />
@@ -5547,11 +5551,15 @@ function MyWorkDesk({ token, onNotice, focus }: {
   // Compact lists: a handful of rows first (urgent on top), "View all" expands.
   const [showAllToday, setShowAllToday] = useState(false);
   const [showAllWeek, setShowAllWeek] = useState(false);
-  // Section gates for the focused single-tab pages.
+  // Section gates. The main "My Work" tab is now a clean, task-focused landing
+  // (hero → KPIs → Today + This week → recommendations → leave). Calendar and
+  // recent links live on their OWN sidebar tabs; the rich QA/performance
+  // panels live on My Dashboard (no duplication).
   const showToday = !focus || focus === "today";
   const showWeek = !focus || focus === "week";
-  const showCal = !focus || focus === "calendar";
-  const showLinks = !focus || focus === "links";
+  const showCal = focus === "calendar";
+  const showLinks = focus === "links";
+  const showLanding = !focus; // hero, KPIs, recommendations, leave — main tab only
   const uncap = Boolean(focus); // focused pages list EVERYTHING
   const prioRank = (p?: string | null) => (p === "high" ? 0 : p === "medium" ? 1 : p === "low" ? 3 : 2);
   const sortByPriority = <T extends { priority?: string | null; day?: string }>(list: T[]): T[] =>
@@ -5704,18 +5712,10 @@ function MyWorkDesk({ token, onNotice, focus }: {
         ) : null}
       </div>
 
-      {/* The person's own QA picture: links, quality split, avg score. */}
-      {!focus && me.data?.labels.length ? (
-        <MyQaSummary token={token} userLabel={me.data.labels[0]} />
-      ) : null}
-
-      {/* Visual performance: 90-day trend + project/link-type breakdowns. */}
-      {!focus && me.data?.labels.length ? (
-        <MyPerformancePanel token={token} userLabel={me.data.labels[0]} />
-      ) : null}
-
-      {/* Domains a manager hand-picked (or the engine queued) for this person. */}
-      {!focus && me.data?.labels.length ? (
+      {/* Domains a manager hand-picked (or the engine queued) for this person —
+          actionable, so it stays on the main My Work landing. The rich QA +
+          performance panels now live on My Dashboard (no duplication). */}
+      {showLanding && me.data?.labels.length ? (
         <MyRecommendationsPanel token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
@@ -5741,6 +5741,7 @@ function MyWorkDesk({ token, onNotice, focus }: {
       </section>
       ) : null}
 
+      {showLanding ? (
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="My leave" />
         <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
@@ -5769,6 +5770,7 @@ function MyWorkDesk({ token, onNotice, focus }: {
           {!(me.data?.leaves || []).length ? <p className="p-3 text-sm text-muted">No leave requests yet.</p> : null}
         </div>
       </section>
+      ) : null}
     </section>
   );
 }
@@ -5848,6 +5850,10 @@ function TasksDesk({
   // The list view shows a page at a time — long ranges stay scannable.
   const [listShown, setListShown] = useState(25);
   useEffect(() => setListShown(25), [filterUser, filterProject, view]);
+  // The planner / by-project grids also cap their ROWS (people / projects) so a
+  // big team or many projects never make one giant wall of a table.
+  const [gridShown, setGridShown] = useState(12);
+  useEffect(() => setGridShown(12), [view, weekStart, filterUser, filterProject]);
   // Live office-hours status (config lives in Settings → Office hours).
   const officeHours = useQuery({
     queryKey: ["office-hours", token],
@@ -6485,7 +6491,7 @@ function TasksDesk({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-line">
-                      {gridProjects.map((pid) => (
+                      {gridProjects.slice(0, gridShown).map((pid) => (
                         <tr key={pid} className="align-top">
                           <Td><span className="font-medium text-ink">{projectName(pid)}</span></Td>
                           {weekDays.map((d) => {
@@ -6536,6 +6542,18 @@ function TasksDesk({
                           })}
                         </tr>
                       ))}
+                      {gridProjects.length > gridShown ? (
+                        <tr>
+                          <td colSpan={weekDays.length + 1} className="p-3 text-center">
+                            <button
+                              onClick={() => setGridShown((n) => n + 20)}
+                              className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field"
+                            >
+                              Load more projects ({gridProjects.length - gridShown} hidden)
+                            </button>
+                          </td>
+                        </tr>
+                      ) : null}
                     </tbody>
                   </table>
                 );
@@ -6560,7 +6578,7 @@ function TasksDesk({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
-                    {gridUsers.map((u) => (
+                    {gridUsers.slice(0, gridShown).map((u) => (
                       <tr key={u} className="align-top">
                         <Td><span className="whitespace-nowrap font-medium text-ink">{u}</span></Td>
                         {weekDays.map((d) => {
@@ -6588,6 +6606,18 @@ function TasksDesk({
                         })}
                       </tr>
                     ))}
+                    {gridUsers.length > gridShown ? (
+                      <tr>
+                        <td colSpan={weekDays.length + 1} className="p-3 text-center">
+                          <button
+                            onClick={() => setGridShown((n) => n + 20)}
+                            className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field"
+                          >
+                            Load more people ({gridUsers.length - gridShown} hidden)
+                          </button>
+                        </td>
+                      </tr>
+                    ) : null}
                   </tbody>
                 </table>
               );
@@ -7604,7 +7634,7 @@ function TrendChart({
       {/* Floating tooltip — follows the hovered bucket, clamped to the panel. */}
       {hover != null ? (
         <div
-          className="pointer-events-none absolute top-6 z-10 -translate-x-1/2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-xs shadow-pop"
+          className="pointer-events-none absolute top-6 z-[55] -translate-x-1/2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-xs shadow-pop"
           style={{ left: `clamp(64px, ${hoverLeftPct}%, calc(100% - 64px))` }}
         >
           <div className="mb-0.5 font-semibold text-ink">{fmtLabel(labels[hover])}</div>
@@ -7841,7 +7871,7 @@ function HelpTip({ text }: { text: string }) {
   return (
     <span className="group relative inline-flex align-middle">
       <Info className="h-3.5 w-3.5 cursor-help text-muted transition group-hover:text-ocean" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-1.5 hidden w-72 -translate-x-1/2 rounded-lg border border-line bg-panel p-2.5 text-left text-xs font-normal normal-case leading-snug text-ink shadow-pop group-hover:block">
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-[60] mb-1.5 hidden w-72 -translate-x-1/2 rounded-lg border border-line bg-panel p-2.5 text-left text-xs font-normal normal-case leading-snug text-ink shadow-pop group-hover:block">
         {text}
       </span>
     </span>
@@ -13368,7 +13398,7 @@ function SourceDomainsDesk({
             <ChevronDown className="h-3.5 w-3.5 text-muted" />
           </button>
           {savedOpen ? (
-            <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-xl border border-line bg-panel p-2 shadow-pop">
+            <div className="absolute right-0 top-full z-40 mt-1 w-72 rounded-xl border border-line bg-panel p-2 shadow-pop">
               <div className="max-h-56 overflow-y-auto">
                 {(savedFilters.data || []).length ? (
                   (savedFilters.data || []).map((f) => (
@@ -14607,7 +14637,11 @@ function MergeSuggestionCard({
   pending: boolean;
   onMerge: (v: { canonical_label: string; alias_labels: string[]; user_id: string | null }) => void;
 }) {
-  const [canonical, setCanonical] = useState(cluster.canonical);
+  // Default the keeper to the name with the MOST links (the strongest identity)
+  // rather than the raw suggestion — so there's always ≥1 alias to merge and
+  // the button isn't mysteriously disabled.
+  const topMember = [...cluster.members].sort((a, b) => b.backlink_count - a.backlink_count)[0];
+  const [canonical, setCanonical] = useState(cluster.canonical || topMember?.label || "");
   const [members, setMembers] = useState<Set<string>>(() => new Set(cluster.members.map((m) => m.label)));
   const inCluster = new Set(cluster.members.map((m) => m.label));
   const byLabel = new Map(allLabels.map((l) => [l.label, l] as const));
@@ -14625,6 +14659,12 @@ function MergeSuggestionCard({
     });
   const aliases = Array.from(members).filter((l) => l.trim() && l.toLowerCase() !== canonical.trim().toLowerCase());
   const canMerge = Boolean(canonical.trim()) && aliases.length >= 1 && !pending;
+  // Plain-English reason the button is off, shown as its tooltip.
+  const disabledReason = !canonical.trim()
+    ? "Type or pick the name to keep."
+    : aliases.length < 1
+      ? "Select at least one OTHER name (different from the keeper) to merge in."
+      : "";
 
   return (
     <div className="space-y-2.5 rounded-lg border border-line bg-field/40 p-3">
@@ -14679,6 +14719,7 @@ function MergeSuggestionCard({
         />
         <button
           disabled={!canMerge}
+          title={disabledReason || `Merge ${aliases.join(", ")} → ${canonical.trim()}`}
           onClick={() => onMerge({ canonical_label: canonical.trim(), alias_labels: aliases, user_id: null })}
           className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
         >
@@ -14686,6 +14727,12 @@ function MergeSuggestionCard({
           Merge into {canonical.trim() || "…"}
         </button>
       </div>
+      {/* Always show what WILL happen — or why the button is waiting. */}
+      <p className="text-[11px] text-muted">
+        {canMerge
+          ? `Will merge ${aliases.length} name${aliases.length === 1 ? "" : "s"} (${aliases.join(", ")}) into "${canonical.trim()}" — all their links and history move to the keeper.`
+          : disabledReason}
+      </p>
     </div>
   );
 }
@@ -15462,6 +15509,316 @@ function SkipReasonsCard({ token, onNotice }: { token: string | null; onNotice: 
           </button>
         </div>
       </div>
+    </section>
+  );
+}
+
+// ── Temp QA lab (Phase 11): auto-QA candidate test links, FULLY ISOLATED ─────
+// Nothing here touches projects, dashboards, analytics or production links —
+// it's a throwaway space for evaluating a candidate's backlink-building test.
+function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [showNew, setShowNew] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // New-test form.
+  const [cName, setCName] = useState("");
+  const [cEmail, setCEmail] = useState("");
+  const [cRole, setCRole] = useState("");
+  const [cTarget, setCTarget] = useState("");
+  const [cNotes, setCNotes] = useState("");
+  const [cLinks, setCLinks] = useState("");
+
+  type TestRow = {
+    id: string; candidate_name: string; candidate_email: string | null; role_applied: string | null;
+    notes: string | null; status: string; created_at: string | null;
+    total: number; checked: number; passed: number; failed: number; avg_score: number | null;
+  };
+  type TestLink = {
+    id: string; source_url: string; target_url: string | null; anchor_text: string | null;
+    link_type: string | null; state: string; status: string | null; score: number | null;
+    link_found: boolean | null; http_status: number | null; current_rel: string | null;
+    current_anchor: string | null; indexability: string | null; matched_href: string | null;
+    top_issue: string | null; facts: Record<string, unknown>; error: string | null; checked_at: string | null;
+  };
+  type TestDetail = TestRow & { links: TestLink[] };
+
+  const list = useQuery({
+    queryKey: ["qa-tests", token],
+    enabled: Boolean(token) && !openId,
+    retry: false,
+    refetchInterval: 15000,
+    queryFn: () => api<{ tests: TestRow[] }>("/qa-tests", { token })
+  });
+  const detail = useQuery({
+    queryKey: ["qa-test", token, openId],
+    enabled: Boolean(token && openId),
+    retry: false,
+    // Live-poll while any link is still checking.
+    refetchInterval: (q) => {
+      const d = q.state.data as TestDetail | undefined;
+      return d && d.links.some((l) => l.state === "pending" || l.state === "checking") ? 3000 : false;
+    },
+    queryFn: () => api<TestDetail>(`/qa-tests/${openId}`, { token })
+  });
+  const create = useMutation({
+    mutationFn: () =>
+      api<TestDetail>("/qa-tests", {
+        token, method: "POST",
+        body: JSON.stringify({
+          candidate_name: cName.trim(), candidate_email: cEmail.trim() || null,
+          role_applied: cRole.trim() || null, notes: cNotes.trim() || null,
+          default_target: cTarget.trim() || null, links_text: cLinks, run_now: true
+        })
+      }),
+    onSuccess: (d) => {
+      onNotice(`Test created for ${d.candidate_name} — auto-QA started on ${d.links.length} links.`);
+      setShowNew(false);
+      setCName(""); setCEmail(""); setCRole(""); setCTarget(""); setCNotes(""); setCLinks("");
+      queryClient.invalidateQueries({ queryKey: ["qa-tests"] });
+      setOpenId(d.id);
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const rerun = useMutation({
+    mutationFn: (id: string) => api<TestDetail>(`/qa-tests/${id}/run`, { token, method: "POST" }),
+    onSuccess: () => { onNotice("Re-running QA on this test…"); queryClient.invalidateQueries({ queryKey: ["qa-test"] }); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/qa-tests/${id}`, { token, method: "DELETE" }),
+    onSuccess: () => { onNotice("Test deleted."); setOpenId(null); queryClient.invalidateQueries({ queryKey: ["qa-tests"] }); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  // ── Detail view ──
+  if (openId && detail.data) {
+    const d = detail.data;
+    const running = d.links.some((l) => l.state === "pending" || l.state === "checking");
+    const done = d.links.filter((l) => l.state === "checked" || l.state === "failed").length;
+    const avg = d.links.filter((l) => l.score != null);
+    const avgScore = avg.length ? Math.round(avg.reduce((a, l) => a + (l.score || 0), 0) / avg.length) : null;
+    return (
+      <section className="space-y-4">
+        <div className="relative overflow-hidden rounded-2xl border border-plum/25 bg-gradient-to-r from-plum/10 via-panel to-ocean/10 p-5 shadow-soft">
+          <button onClick={() => setOpenId(null)} className="mb-3 flex h-8 items-center gap-1.5 rounded-lg border border-line bg-panel/70 px-3 text-sm font-medium text-ink hover:bg-field">
+            <ArrowLeft className="h-4 w-4" /> All tests
+          </button>
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-plum to-ocean text-lg font-bold text-white">
+              {d.candidate_name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
+            </span>
+            <div className="min-w-0">
+              <div className="text-[11px] font-bold uppercase tracking-widest text-plum">Candidate QA test · isolated</div>
+              <h2 className="truncate text-2xl font-bold text-ink">{d.candidate_name}</h2>
+              <p className="text-xs text-muted">
+                {[d.role_applied, d.candidate_email].filter(Boolean).join(" · ") || "No contact details"}
+                {d.notes ? ` · ${d.notes}` : ""}
+              </p>
+            </div>
+            <span className="ml-auto" />
+            {d.links.length ? <ArcGauge value={avgScore} label="Avg score" size={110} /> : null}
+            <div className="flex flex-wrap gap-2">
+              {([["Links", String(d.links.length)], ["Checked", `${done}/${d.links.length}`],
+                 ["Qualified", String(d.links.filter((l) => l.status === "PASS").length)],
+                 ["Not qualified", String(d.links.filter((l) => l.status === "FAIL").length)]] as Array<[string, string]>).map(([lab, val]) => (
+                <div key={lab} className="rounded-xl border border-line/70 bg-panel/80 px-3 py-1.5 text-center shadow-card backdrop-blur">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">{lab}</div>
+                  <div className="text-base font-bold leading-tight text-ink">{val}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/60 pt-3">
+            {running ? (
+              <span className="flex items-center gap-2 rounded-lg border border-ocean/40 bg-ocean/10 px-3 py-1.5 text-xs font-medium text-ocean">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Auto-QA running — {done}/{d.links.length} checked
+              </span>
+            ) : (
+              <span className="rounded-lg border border-line bg-field px-3 py-1.5 text-xs font-medium text-muted">QA complete</span>
+            )}
+            <span className="ml-auto" />
+            <button onClick={() => rerun.mutate(d.id)} disabled={running}
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink hover:bg-field disabled:opacity-50">
+              <RefreshCw className="h-4 w-4" /> Re-run QA
+            </button>
+            <ExportButton disabled={!d.links.length}
+              onClick={() => downloadCsv(
+                `qa-test-${d.candidate_name.replace(/\s+/g, "-")}.csv`,
+                ["Source URL", "Target", "Link type", "Verdict", "Score", "Found", "HTTP", "Rel", "Indexable", "Top issue"],
+                d.links.map((l) => [l.source_url, l.target_url || "", l.link_type || "", l.status || l.state, l.score ?? "", l.link_found === true ? "yes" : l.link_found === false ? "no" : "", l.http_status ?? "", l.current_rel || "", l.indexability || "", l.top_issue || ""])
+              )} />
+            <button onClick={() => { if (window.confirm(`Delete this QA test for ${d.candidate_name}? This removes the candidate's links and results (nothing in your projects is affected).`)) remove.mutate(d.id); }}
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-danger/40 px-3 text-sm font-medium text-danger hover:bg-danger/10">
+              <Trash2 className="h-4 w-4" /> Delete
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-line bg-panel shadow-card">
+          <table className="w-full min-w-[820px] text-left text-sm">
+            <thead className="bg-field text-xs uppercase text-muted">
+              <tr><Th>Source page</Th><Th>Verdict</Th><Th>Score</Th><Th>Found</Th><Th>HTTP</Th><Th>Rel</Th><Th>Indexable</Th><Th>Top issue</Th></tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {d.links.map((l) => {
+                const exp = expanded.has(l.id);
+                return (
+                  <Fragment key={l.id}>
+                    <tr className="cursor-pointer align-top hover:bg-field/60"
+                      onClick={() => setExpanded((s) => { const n = new Set(s); n.has(l.id) ? n.delete(l.id) : n.add(l.id); return n; })}>
+                      <Td>
+                        <span className="flex items-start gap-1.5">
+                          <ChevronRight className={clsx("mt-0.5 h-3.5 w-3.5 shrink-0 text-muted transition", exp && "rotate-90")} />
+                          <a href={l.source_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+                            className="block max-w-[360px] truncate text-ocean hover:underline">{l.source_url}</a>
+                        </span>
+                      </Td>
+                      <Td>
+                        {l.state === "checking" || l.state === "pending" ? (
+                          <span className="flex items-center gap-1 text-xs text-muted"><Loader2 className="h-3 w-3 animate-spin" /> checking</span>
+                        ) : l.state === "failed" ? (
+                          <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger">check failed</span>
+                        ) : <Status value={l.status || "PENDING"} compact />}
+                      </Td>
+                      <Td><span className={clsx("font-semibold", (l.score ?? 0) >= 70 ? "text-ocean" : (l.score ?? 0) >= 40 ? "text-ember" : "text-danger")}>{l.score ?? "—"}</span></Td>
+                      <Td>{l.link_found == null ? "—" : l.link_found ? <span className="text-ocean">yes</span> : <span className="text-danger">no</span>}</Td>
+                      <Td>{l.http_status ?? "—"}</Td>
+                      <Td>{l.current_rel || "—"}</Td>
+                      <Td>{l.indexability || "—"}</Td>
+                      <Td><span className="text-xs text-muted">{l.top_issue ? l.top_issue.replaceAll("_", " ") : "—"}</span></Td>
+                    </tr>
+                    {exp ? (
+                      <tr className="bg-field/30">
+                        <td colSpan={8} className="px-4 py-3">
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1 text-xs">
+                              <div><span className="text-muted">Target:</span> <span className="text-ink">{l.target_url || "—"}</span></div>
+                              <div><span className="text-muted">Link type:</span> <span className="text-ink">{l.link_type ? linkTypeLabel(l.link_type) : "—"}</span></div>
+                              <div><span className="text-muted">Matched href:</span> <span className="break-all text-ink">{l.matched_href || "—"}</span></div>
+                              <div><span className="text-muted">Anchor found:</span> <span className="text-ink">{l.current_anchor || "—"}</span></div>
+                              <div><span className="text-muted">Final URL:</span> <span className="break-all text-ink">{String((l.facts?.final_url as string) || "—")}</span></div>
+                              {l.error ? <div className="text-danger">Error: {l.error}</div> : null}
+                            </div>
+                            <div>
+                              <div className="mb-1 text-[11px] font-semibold uppercase text-muted">Issues found</div>
+                              {Array.isArray(l.facts?.issues) && (l.facts.issues as unknown[]).length ? (
+                                <ul className="space-y-1">
+                                  {(l.facts.issues as Array<{ label?: string; severity?: string; message?: string }>).map((iss, i) => (
+                                    <li key={i} className="rounded-md border border-line bg-panel p-1.5 text-[11px]">
+                                      <span className={clsx("font-semibold", iss.severity === "critical" || iss.severity === "major" ? "text-danger" : "text-ember")}>
+                                        {(iss.label || "issue").replaceAll("_", " ")}
+                                      </span>
+                                      {iss.message ? <span className="text-muted"> — {iss.message}</span> : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : <p className="text-[11px] text-muted">No blocking issues.</p>}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    );
+  }
+
+  // ── List view ──
+  const tests = list.data?.tests || [];
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
+            <ShieldAlert className="h-5 w-5 text-plum" /> Temp QA — candidate tests
+          </h2>
+          <p className="mt-0.5 max-w-2xl text-sm text-muted">
+            Auto-QA a candidate&apos;s test backlinks in a space that&apos;s <span className="font-semibold text-ink">completely
+            separate</span> from your projects. Nothing here appears in any dashboard, analytics, or the
+            production link database — it&apos;s just for evaluating tests, and you can delete it anytime.
+          </p>
+        </div>
+        <button onClick={() => setShowNew((v) => !v)}
+          className="flex h-9 items-center gap-2 rounded-lg bg-gradient-to-r from-ocean to-plum px-4 text-sm font-semibold text-white shadow-glow">
+          <Plus className="h-4 w-4" /> New test
+        </button>
+      </div>
+
+      {showNew ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <SectionTitle title="New candidate QA test" flush />
+          <div className="grid gap-3 pt-3 md:grid-cols-2">
+            <label className="text-sm"><span className="mb-1 block text-xs font-semibold text-muted">Candidate name *</span>
+              <input value={cName} onChange={(e) => setCName(e.target.value)} className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" placeholder="e.g. Jordan Smith" /></label>
+            <label className="text-sm"><span className="mb-1 block text-xs font-semibold text-muted">Email</span>
+              <input value={cEmail} onChange={(e) => setCEmail(e.target.value)} className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" placeholder="candidate@email.com" /></label>
+            <label className="text-sm"><span className="mb-1 block text-xs font-semibold text-muted">Role applied for</span>
+              <input value={cRole} onChange={(e) => setCRole(e.target.value)} className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" placeholder="e.g. Off-page SEO Executive" /></label>
+            <label className="text-sm"><span className="mb-1 block text-xs font-semibold text-muted">Default target (optional)</span>
+              <input value={cTarget} onChange={(e) => setCTarget(e.target.value)} className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" placeholder="https://target-site.com — used when a row has no target" /></label>
+          </div>
+          <label className="mt-3 block text-sm"><span className="mb-1 block text-xs font-semibold text-muted">Notes</span>
+            <input value={cNotes} onChange={(e) => setCNotes(e.target.value)} className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" placeholder="Anything to remember about this test" /></label>
+          <label className="mt-3 block text-sm">
+            <span className="mb-1 block text-xs font-semibold text-muted">Links * — one source URL per line, or CSV (source_url, target_url, anchor, link_type)</span>
+            <textarea value={cLinks} onChange={(e) => setCLinks(e.target.value)} rows={7}
+              className="w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-xs"
+              placeholder={"https://blog.example.com/their-guest-post\nhttps://web20site.com/profile/candidate, https://target-site.com, brand anchor, Web 2.0"} />
+          </label>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={() => setShowNew(false)} className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted hover:bg-field">Cancel</button>
+            <button onClick={() => create.mutate()} disabled={create.isPending || !cName.trim() || !cLinks.trim()}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50">
+              {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Create &amp; run QA
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {tests.map((t) => {
+          const running = t.status === "running" || t.checked < t.total;
+          return (
+            <button key={t.id} onClick={() => setOpenId(t.id)}
+              className="card-lift rounded-xl border border-line bg-panel p-4 text-left shadow-card">
+              <div className="flex items-center gap-2.5">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-plum to-ocean text-sm font-bold text-white">
+                  {t.candidate_name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-semibold text-ink">{t.candidate_name}</div>
+                  <div className="truncate text-[11px] text-muted">{t.role_applied || t.candidate_email || "Candidate test"}</div>
+                </div>
+                {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-ocean" />}
+              </div>
+              <div className="mt-3 grid grid-cols-4 gap-1 text-center">
+                {([["Links", t.total], ["Done", t.checked], ["Pass", t.passed], ["Fail", t.failed]] as Array<[string, number]>).map(([lab, val]) => (
+                  <div key={lab}>
+                    <div className="text-lg font-bold text-ink">{val}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted">{lab}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[11px] text-muted">
+                <span>{t.avg_score != null ? `Avg score ${t.avg_score}` : "—"}</span>
+                <span>{t.created_at ? fmtChartLabel(t.created_at.slice(0, 10), true) : ""}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {list.isLoading ? <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div> : null}
+      {list.isError ? <Empty label="Temp QA is available to managers and admins." /> : null}
+      {!list.isLoading && !list.isError && !tests.length ? (
+        <Empty label="No candidate tests yet — click “New test”, paste their links, and QA runs automatically." />
+      ) : null}
     </section>
   );
 }
@@ -17408,24 +17765,24 @@ function Metric({
     danger: "bg-danger/10 text-danger",
     plum: "bg-plum/10 text-plum"
   }[tone];
+  // Tonal corner wash baked into the card background (radial-gradient) so the
+  // card needs NO overflow-hidden — HelpTip tooltips render freely above it.
+  const washColor = {
+    ink: "var(--ocean)", ocean: "var(--ocean)", ember: "var(--ember)",
+    danger: "var(--danger)", plum: "var(--plum)"
+  }[tone];
   return (
     <div
       onClick={onClick}
       title={onClick ? "Click to see these links" : undefined}
+      style={{
+        backgroundImage: `radial-gradient(120px 90px at 100% 0%, rgb(${washColor} / ${tone === "ink" ? 0.06 : 0.12}), transparent 70%)`
+      }}
       className={clsx(
-        "card-lift relative overflow-hidden rounded-xl border border-line bg-panel p-3.5 shadow-card",
+        "card-lift relative rounded-xl border border-line bg-panel p-3.5 shadow-card",
         onClick && "cursor-pointer"
       )}
     >
-      {/* Soft tonal wash in the icon corner — the premium tile look. */}
-      <span
-        aria-hidden
-        className={clsx(
-          "pointer-events-none absolute -right-6 -top-8 h-24 w-24 rounded-full blur-2xl",
-          tone === "ocean" ? "bg-ocean/15" : tone === "ember" ? "bg-ember/15"
-            : tone === "danger" ? "bg-danger/15" : tone === "plum" ? "bg-plum/15" : "bg-ocean/8"
-        )}
-      />
       <div className="relative flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted">
           {label}
@@ -17867,7 +18224,7 @@ function Status({ value, reason, compact }: { value: string; reason?: string | n
         {label}
       </span>
       {help ? (
-        <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-72 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
+        <span className="pointer-events-none absolute bottom-full left-0 z-[60] mb-1.5 hidden w-72 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
           {compact ? (
             <span className="block text-xs font-semibold normal-case text-ink">
               {(help.label || value).replaceAll("_", " ")}
@@ -17923,7 +18280,7 @@ function ScoreTip({
       <span className="cursor-help font-semibold underline decoration-dotted decoration-line underline-offset-2">
         {score ?? "-"}
       </span>
-      <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-80 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
+      <span className="pointer-events-none absolute bottom-full left-0 z-[60] mb-1.5 hidden w-80 rounded-lg border border-line bg-panel p-2.5 text-left shadow-pop group-hover:block">
         <span className="block text-[11px] font-semibold uppercase tracking-wide text-muted">
           How this score was calculated
         </span>
@@ -18024,7 +18381,7 @@ function SearchSelect({
         </span>
       </button>
       {open ? (
-        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-line bg-panel p-1.5 shadow-pop">
+        <div className="absolute left-0 top-full z-40 mt-1 w-64 rounded-lg border border-line bg-panel p-1.5 shadow-pop">
           <input
             autoFocus
             value={q}
@@ -18139,7 +18496,7 @@ function FilterMultiSelect({
         )}
       </button>
       {open ? (
-        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-panel p-2 shadow-pop">
+        <div className="absolute left-0 top-full z-40 mt-1 w-64 rounded-xl border border-line bg-panel p-2 shadow-pop">
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -19964,6 +20321,27 @@ function dateAxisTooltip(row: BacklinkRow): string {
 function linkTypeLabel(name: string | null | undefined) {
   if (!name) return "";
   return name.replace(/\s*submissions?\s*$/i, "").trim() || name;
+}
+
+// Bare domain for display: strip scheme, "www.", any path/query, trailing slash.
+// "https://www.brightandshiny.com/about" → "brightandshiny.com".
+function prettyDomain(v: string | null | undefined): string {
+  if (!v) return "";
+  return v
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .split(/[/?#]/)[0]
+    .trim();
+}
+
+// The best one-line subtitle for a project row: client name, else its target
+// domain (cleaned), else a neutral label — never a bare "—".
+function projectSubtitle(p: { client_name?: string | null; target_domain?: string | null; target_urls?: string[] | null }): string {
+  const client = (p.client_name || "").trim();
+  if (client) return client;
+  const dom = prettyDomain(p.target_domain || (p.target_urls && p.target_urls[0]) || "");
+  return dom || "No target set";
 }
 
 function compactNum(n: number) {
