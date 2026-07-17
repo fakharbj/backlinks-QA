@@ -387,10 +387,12 @@ async def _maybe_finish_parent(parent_id: uuid.UUID) -> None:
     counters = row.get("counters") or {}
     total = int(totals.get("total") or 0)
     done = int(counters.get("done") or 0)
+    ok = int(counters.get("ok") or 0)
+    failed = int(counters.get("failed") or 0)
+    # Mirror progress into totals every time → the Batches LIST progress bar
+    # (which reads totals.done) moves live during the run, not just at the end.
+    await batch_service.update(parent_id, totals={"done": done, "ok": ok, "failed": failed})
     if total and done >= total:
-        ok = int(counters.get("ok") or 0)
-        failed = int(counters.get("failed") or 0)
-        await batch_service.update(parent_id, totals={"done": done, "ok": ok, "failed": failed})
         await batch_service.add_log(
             parent_id,
             f"Bulk sync finished — {ok} project(s) clean, {failed} with problems.",
