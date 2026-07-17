@@ -15527,6 +15527,7 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
   const [cRole, setCRole] = useState("");
   const [cTarget, setCTarget] = useState("");
   const [cNotes, setCNotes] = useState("");
+  const [cBrief, setCBrief] = useState("");
   const [cLinks, setCLinks] = useState("");
 
   type TestRow = {
@@ -15540,8 +15541,10 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
     link_found: boolean | null; http_status: number | null; current_rel: string | null;
     current_anchor: string | null; indexability: string | null; matched_href: string | null;
     top_issue: string | null; facts: Record<string, unknown>; error: string | null; checked_at: string | null;
+    account_email: string | null; account_password: string | null;
+    claimed_da: number | null; claimed_spam: number | null; is_competitor: boolean;
   };
-  type TestDetail = TestRow & { links: TestLink[] };
+  type TestDetail = TestRow & { brief: string | null; links: TestLink[] };
 
   const list = useQuery({
     queryKey: ["qa-tests", token],
@@ -15568,13 +15571,14 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
         body: JSON.stringify({
           candidate_name: cName.trim(), candidate_email: cEmail.trim() || null,
           role_applied: cRole.trim() || null, notes: cNotes.trim() || null,
+          brief: cBrief.trim() || null,
           default_target: cTarget.trim() || null, links_text: cLinks, run_now: true
         })
       }),
     onSuccess: (d) => {
       onNotice(`Test created for ${d.candidate_name} — auto-QA started on ${d.links.length} links.`);
       setShowNew(false);
-      setCName(""); setCEmail(""); setCRole(""); setCTarget(""); setCNotes(""); setCLinks("");
+      setCName(""); setCEmail(""); setCRole(""); setCTarget(""); setCNotes(""); setCBrief(""); setCLinks("");
       queryClient.invalidateQueries({ queryKey: ["qa-tests"] });
       setOpenId(d.id);
     },
@@ -15594,10 +15598,19 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
   // ── Detail view ──
   if (openId && detail.data) {
     const d = detail.data;
-    const running = d.links.some((l) => l.state === "pending" || l.state === "checking");
-    const done = d.links.filter((l) => l.state === "checked" || l.state === "failed").length;
-    const avg = d.links.filter((l) => l.score != null);
+    const backlinks = d.links.filter((l) => !l.is_competitor);
+    const competitors = d.links.filter((l) => l.is_competitor);
+    const running = backlinks.some((l) => l.state === "pending" || l.state === "checking");
+    const done = backlinks.filter((l) => l.state === "checked" || l.state === "failed").length;
+    const avg = backlinks.filter((l) => l.score != null);
     const avgScore = avg.length ? Math.round(avg.reduce((a, l) => a + (l.score || 0), 0) / avg.length) : null;
+    // Submitted counts by (normalized) link type — check against the brief
+    // ("Create 3 Article Submission + 2 Business Listing + …").
+    const byType = new Map<string, number>();
+    for (const l of backlinks) {
+      const key = l.link_type ? linkTypeLabel(l.link_type) : "Untyped";
+      byType.set(key, (byType.get(key) || 0) + 1);
+    }
     return (
       <section className="space-y-4">
         <div className="relative overflow-hidden rounded-2xl border border-plum/25 bg-gradient-to-r from-plum/10 via-panel to-ocean/10 p-5 shadow-soft">
@@ -15617,11 +15630,12 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
               </p>
             </div>
             <span className="ml-auto" />
-            {d.links.length ? <ArcGauge value={avgScore} label="Avg score" size={110} /> : null}
+            {backlinks.length ? <ArcGauge value={avgScore} label="Avg score" size={110} /> : null}
             <div className="flex flex-wrap gap-2">
-              {([["Links", String(d.links.length)], ["Checked", `${done}/${d.links.length}`],
-                 ["Qualified", String(d.links.filter((l) => l.status === "PASS").length)],
-                 ["Not qualified", String(d.links.filter((l) => l.status === "FAIL").length)]] as Array<[string, string]>).map(([lab, val]) => (
+              {([["Backlinks", String(backlinks.length)], ["Checked", `${done}/${backlinks.length}`],
+                 ["Qualified", String(backlinks.filter((l) => l.status === "PASS").length)],
+                 ["Not qualified", String(backlinks.filter((l) => l.status === "FAIL").length)],
+                 ...(competitors.length ? [["Competitors", String(competitors.length)] as [string, string]] : [])] as Array<[string, string]>).map(([lab, val]) => (
                 <div key={lab} className="rounded-xl border border-line/70 bg-panel/80 px-3 py-1.5 text-center shadow-card backdrop-blur">
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">{lab}</div>
                   <div className="text-base font-bold leading-tight text-ink">{val}</div>
@@ -15629,6 +15643,23 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
               ))}
             </div>
           </div>
+          {/* Submitted mix by type — compare against the task brief at a glance. */}
+          {byType.size ? (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Submitted:</span>
+              {Array.from(byType.entries()).map(([t, n]) => (
+                <span key={t} className="rounded-full border border-line bg-panel/70 px-2 py-0.5 text-[11px] text-ink">
+                  {t} <span className="font-bold text-ocean">{n}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {d.brief ? (
+            <details className="mt-3 rounded-lg border border-line/60 bg-panel/50 p-2 text-xs">
+              <summary className="cursor-pointer font-medium text-muted">Task brief (what the candidate was asked to do)</summary>
+              <pre className="mt-2 whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-ink">{d.brief}</pre>
+            </details>
+          ) : null}
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/60 pt-3">
             {running ? (
               <span className="flex items-center gap-2 rounded-lg border border-ocean/40 bg-ocean/10 px-3 py-1.5 text-xs font-medium text-ocean">
@@ -15645,8 +15676,8 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
             <ExportButton disabled={!d.links.length}
               onClick={() => downloadCsv(
                 `qa-test-${d.candidate_name.replace(/\s+/g, "-")}.csv`,
-                ["Source URL", "Target", "Link type", "Verdict", "Score", "Found", "HTTP", "Rel", "Indexable", "Top issue"],
-                d.links.map((l) => [l.source_url, l.target_url || "", l.link_type || "", l.status || l.state, l.score ?? "", l.link_found === true ? "yes" : l.link_found === false ? "no" : "", l.http_status ?? "", l.current_rel || "", l.indexability || "", l.top_issue || ""])
+                ["Source URL", "Type", "Account email", "Claimed DA", "Claimed SS", "Verdict", "Our score", "Found", "HTTP", "Rel", "Indexable", "Top issue", "Is competitor"],
+                d.links.map((l) => [l.source_url, l.link_type || "", l.account_email || "", l.claimed_da ?? "", l.claimed_spam ?? "", l.is_competitor ? "competitor" : (l.status || l.state), l.score ?? "", l.link_found === true ? "yes" : l.link_found === false ? "no" : "", l.http_status ?? "", l.current_rel || "", l.indexability || "", l.top_issue || "", l.is_competitor ? "yes" : ""])
               )} />
             <button onClick={() => { if (window.confirm(`Delete this QA test for ${d.candidate_name}? This removes the candidate's links and results (nothing in your projects is affected).`)) remove.mutate(d.id); }}
               className="flex h-9 items-center gap-1.5 rounded-lg border border-danger/40 px-3 text-sm font-medium text-danger hover:bg-danger/10">
@@ -15656,12 +15687,16 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
         </div>
 
         <div className="overflow-x-auto rounded-xl border border-line bg-panel shadow-card">
-          <table className="w-full min-w-[820px] text-left text-sm">
+          <table className="w-full min-w-[980px] text-left text-sm">
             <thead className="bg-field text-xs uppercase text-muted">
-              <tr><Th>Source page</Th><Th>Verdict</Th><Th>Score</Th><Th>Found</Th><Th>HTTP</Th><Th>Rel</Th><Th>Indexable</Th><Th>Top issue</Th></tr>
+              <tr>
+                <Th>Source page</Th><Th>Type</Th><Th>Account</Th>
+                <Th><span title="DA / Spam Score the candidate claimed">Claimed DA/SS</span></Th>
+                <Th>Verdict</Th><Th>Our score</Th><Th>Found</Th><Th>HTTP</Th><Th>Rel</Th><Th>Indexable</Th><Th>Top issue</Th>
+              </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {d.links.map((l) => {
+              {backlinks.map((l) => {
                 const exp = expanded.has(l.id);
                 return (
                   <Fragment key={l.id}>
@@ -15671,7 +15706,15 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                         <span className="flex items-start gap-1.5">
                           <ChevronRight className={clsx("mt-0.5 h-3.5 w-3.5 shrink-0 text-muted transition", exp && "rotate-90")} />
                           <a href={l.source_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-                            className="block max-w-[360px] truncate text-ocean hover:underline">{l.source_url}</a>
+                            className="block max-w-[320px] truncate text-ocean hover:underline">{l.source_url}</a>
+                        </span>
+                      </Td>
+                      <Td><span className="whitespace-nowrap text-xs text-ink">{l.link_type ? linkTypeLabel(l.link_type) : "—"}</span></Td>
+                      <Td><span className="whitespace-nowrap text-xs text-muted" title={l.account_password ? `Password: ${l.account_password}` : undefined}>{l.account_email || "—"}</span></Td>
+                      <Td>
+                        <span className="whitespace-nowrap text-xs">
+                          {l.claimed_da != null ? <span className="font-semibold text-ink">DA {l.claimed_da}</span> : <span className="text-muted">—</span>}
+                          {l.claimed_spam != null ? <span className="text-muted"> / SS {l.claimed_spam}</span> : null}
                         </span>
                       </Td>
                       <Td>
@@ -15690,11 +15733,12 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                     </tr>
                     {exp ? (
                       <tr className="bg-field/30">
-                        <td colSpan={8} className="px-4 py-3">
+                        <td colSpan={11} className="px-4 py-3">
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1 text-xs">
                               <div><span className="text-muted">Target:</span> <span className="text-ink">{l.target_url || "—"}</span></div>
-                              <div><span className="text-muted">Link type:</span> <span className="text-ink">{l.link_type ? linkTypeLabel(l.link_type) : "—"}</span></div>
+                              <div><span className="text-muted">Account:</span> <span className="text-ink">{l.account_email || "—"}{l.account_password ? ` · ${l.account_password}` : ""}</span></div>
+                              <div><span className="text-muted">Candidate claimed:</span> <span className="text-ink">{l.claimed_da != null ? `DA ${l.claimed_da}` : "DA —"}, {l.claimed_spam != null ? `Spam ${l.claimed_spam}` : "Spam —"}</span></div>
                               <div><span className="text-muted">Matched href:</span> <span className="break-all text-ink">{l.matched_href || "—"}</span></div>
                               <div><span className="text-muted">Anchor found:</span> <span className="text-ink">{l.current_anchor || "—"}</span></div>
                               <div><span className="text-muted">Final URL:</span> <span className="break-all text-ink">{String((l.facts?.final_url as string) || "—")}</span></div>
@@ -15725,6 +15769,22 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
             </tbody>
           </table>
         </div>
+
+        {/* Competitor references — recorded, not QA'd (they carry no backlink). */}
+        {competitors.length ? (
+          <section className="rounded-xl border border-line bg-panel shadow-card">
+            <SectionTitle title={`Competitors submitted · ${competitors.length}`} />
+            <div className="divide-y divide-line">
+              {competitors.map((c) => (
+                <div key={c.id} className="flex items-center gap-2 px-4 py-2 text-sm">
+                  <Swords className="h-4 w-4 shrink-0 text-plum" />
+                  <a href={c.source_url} target="_blank" rel="noreferrer" className="truncate text-ocean hover:underline">{c.source_url}</a>
+                  <CopyButton text={c.source_url} title="Copy competitor URL" />
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </section>
     );
   }
@@ -15766,10 +15826,20 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
           <label className="mt-3 block text-sm"><span className="mb-1 block text-xs font-semibold text-muted">Notes</span>
             <input value={cNotes} onChange={(e) => setCNotes(e.target.value)} className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" placeholder="Anything to remember about this test" /></label>
           <label className="mt-3 block text-sm">
-            <span className="mb-1 block text-xs font-semibold text-muted">Links * — one source URL per line, or CSV (source_url, target_url, anchor, link_type)</span>
-            <textarea value={cLinks} onChange={(e) => setCLinks(e.target.value)} rows={7}
+            <span className="mb-1 block text-xs font-semibold text-muted">Task brief (optional) — paste what the candidate was asked to do</span>
+            <textarea value={cBrief} onChange={(e) => setCBrief(e.target.value)} rows={3}
+              className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-xs"
+              placeholder={"Create 3 Article Submission + 2 Business Listing + 2 Web 2.0 + 2 Forum for: https://limo.black/service/airport-limo-service/"} />
+          </label>
+          <label className="mt-3 block text-sm">
+            <span className="mb-1 block text-xs font-semibold text-muted">
+              Links * — paste the candidate&apos;s sheet directly. Recognizes a header row like
+              <span className="font-mono text-ink"> Links · Type · Email · Password · DA · SS</span> (tab or comma),
+              skips the task text and blank rows, and treats <span className="font-mono text-ink">competitor</span> rows as references. One URL per line also works.
+            </span>
+            <textarea value={cLinks} onChange={(e) => setCLinks(e.target.value)} rows={9}
               className="w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-xs"
-              placeholder={"https://blog.example.com/their-guest-post\nhttps://web20site.com/profile/candidate, https://target-site.com, brand anchor, Web 2.0"} />
+              placeholder={"Links\tType\tEmail\tPassword\tDA\tSS\nhttps://site.wordpress.com/post\tWeb 2.0\tuser@gmail.com\tpass123\t94\t1\nhttps://directory.co/listing\tBusiness Listing\tuser@gmail.com\tpass123\t38\t1\nhttps://rival.com/\tcompetitor"} />
           </label>
           <div className="mt-3 flex items-center justify-end gap-2">
             <button onClick={() => setShowNew(false)} className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-muted hover:bg-field">Cancel</button>

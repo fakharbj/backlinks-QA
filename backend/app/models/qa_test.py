@@ -27,6 +27,8 @@ class QATestBatch(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     candidate_email: Mapped[str | None] = mapped_column(String(255))
     role_applied: Mapped[str | None] = mapped_column(String(120))
     notes: Mapped[str | None] = mapped_column(String(1000))
+    # The candidate's original task brief (free text, kept for reference).
+    brief: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(12), default="draft", nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
@@ -45,6 +47,14 @@ class QATestLink(UUIDPrimaryKeyMixin, Base):
     anchor_text: Mapped[str | None] = mapped_column(String(500))
     link_type: Mapped[str | None] = mapped_column(String(80))
     expected_rel: Mapped[str | None] = mapped_column(String(20))
+    # Candidate submission extras (from their sheet): the account they made for
+    # the link, and the DA / Spam Score they CLAIM (for claimed-vs-measured).
+    account_email: Mapped[str | None] = mapped_column(String(255))
+    account_password: Mapped[str | None] = mapped_column(String(255))
+    claimed_da: Mapped[int | None] = mapped_column(Integer)
+    claimed_spam: Mapped[int | None] = mapped_column(Integer)
+    # "competitor" rows are reference URLs, not backlinks — recorded, not QA'd.
+    is_competitor: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # pending → checking → checked | failed
     state: Mapped[str] = mapped_column(String(12), default="pending", nullable=False)
     status: Mapped[str | None] = mapped_column(String(24))

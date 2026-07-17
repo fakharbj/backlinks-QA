@@ -23,6 +23,7 @@ class QATestCreate(BaseModel):
     candidate_email: str | None = Field(default=None, max_length=255)
     role_applied: str | None = Field(default=None, max_length=120)
     notes: str | None = Field(default=None, max_length=1000)
+    brief: str | None = Field(default=None, max_length=8000)
     links_text: str = Field(min_length=1)
     default_target: str | None = Field(default=None, max_length=500)
     run_now: bool = True
@@ -44,7 +45,7 @@ async def create_test(
     batch = await qa_test_service.create_batch(
         db, ctx, candidate_name=payload.candidate_name,
         candidate_email=payload.candidate_email, role_applied=payload.role_applied,
-        notes=payload.notes, links_text=payload.links_text,
+        notes=payload.notes, brief=payload.brief, links_text=payload.links_text,
         default_target=payload.default_target,
     )
     await db.commit()

@@ -93,10 +93,14 @@ def _facts(artifact, result) -> dict:
 async def _run_async(batch_id_str: str) -> dict:
     batch_id = uuid.UUID(batch_id_str)
     async with session_scope() as s:
+        # Only real backlinks are QA'd — competitor references are recorded, not checked.
         links = list(
             (
                 await s.execute(
-                    select(QATestLink).where(QATestLink.batch_id == batch_id)
+                    select(QATestLink).where(
+                        QATestLink.batch_id == batch_id,
+                        QATestLink.is_competitor.is_(False),
+                    )
                 )
             ).scalars().all()
         )
@@ -106,6 +110,11 @@ async def _run_async(batch_id_str: str) -> dict:
         for link in links:
             link.state = "checking"
     if not links:
+        # Nothing to QA (e.g. only competitors) — mark done immediately.
+        async with session_scope() as s:
+            batch = await s.get(QATestBatch, batch_id)
+            if batch is not None:
+                batch.status = "done"
         return {"processed": 0}
 
     config = dataclasses.replace(
