@@ -276,6 +276,47 @@ def _unique_headers(raw: list) -> list[str]:
     return out
 
 
+def _merged_ranges(ws) -> list[tuple[int, int, int, int]]:
+    """Merged-cell ranges for THIS worksheet as (r0, r1, c0, c1) — 0-based,
+    end-exclusive, matching ``get_all_values`` indices. Empty on any failure."""
+    try:
+        _throttle_read()  # metadata is one more Sheets read — count it against quota
+        meta = ws.spreadsheet.fetch_sheet_metadata()
+    except Exception as exc:  # noqa: BLE001 — merge fill is best-effort
+        log.warning("sheets_merge_meta_failed", error=repr(exc))
+        return []
+    out: list[tuple[int, int, int, int]] = []
+    for sheet in meta.get("sheets", []):
+        if (sheet.get("properties") or {}).get("sheetId") != ws.id:
+            continue
+        for m in sheet.get("merges", []) or []:
+            out.append((
+                int(m.get("startRowIndex", 0)),
+                int(m.get("endRowIndex", 0)),
+                int(m.get("startColumnIndex", 0)),
+                int(m.get("endColumnIndex", 0)),
+            ))
+    return out
+
+
+def _fill_merged_cells(values: list[list], merges: list[tuple[int, int, int, int]]) -> None:
+    """Google returns a merged block's value ONLY in its top-left cell; every
+    other cell in the block comes back blank. People vertically-merge the User
+    / Date columns, so those links looked 'unassigned'. Copy the anchor value
+    into every cell of each merge so grouped rows inherit it (in place)."""
+    for r0, r1, c0, c1 in merges:
+        if r0 >= len(values) or c0 >= len(values[r0]):
+            continue
+        anchor = values[r0][c0]
+        if anchor is None or str(anchor).strip() == "":
+            continue
+        for r in range(r0, min(r1, len(values))):
+            row = values[r]
+            for c in range(c0, min(c1, len(row))):
+                if row[c] is None or str(row[c]).strip() == "":
+                    row[c] = anchor
+
+
 @_quota_retry
 def read_project_sheet(
     spreadsheet_id: str, tab: str | None = None, header_row: int = 1
@@ -283,13 +324,18 @@ def read_project_sheet(
     """Return (headers, rows) for a project sheet; rows are dicts keyed by header.
     Tolerates duplicate/blank header cells (common after write-back). ``header_row``
     is the 1-based row where the headers live (default 1 keeps prior behaviour);
-    everything below it is data."""
+    everything below it is data. Merged cells (e.g. a User/Date column merged
+    down a group of rows) are filled so grouped links keep their assignee."""
     client = _client()
     ws = _open_worksheet(client, spreadsheet_id, tab)
     _throttle_read()
     values = ws.get_all_values()
     if not values:
         return [], []
+    # Fill vertically/horizontally merged cells before extracting rows.
+    merges = _merged_ranges(ws)
+    if merges:
+        _fill_merged_cells(values, merges)
     idx = max(1, header_row) - 1
     if idx >= len(values):
         return [], []
