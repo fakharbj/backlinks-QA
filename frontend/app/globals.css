@@ -2,38 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Design tokens ─────────────────────────────────────────────────────────
+   Premium SaaS look: violet primary + fuchsia secondary on near-black
+   elevated surfaces (dark) / crisp neutral surfaces (light). Every component
+   reads these via Tailwind tokens, so the whole app re-themes from here. */
 :root {
   color-scheme: light;
-  --ink: 17 24 39;        /* slate-900-ish text */
-  --muted: 100 116 139;   /* slate-500 */
+  --ink: 23 23 33;        /* near-black with a violet hint */
+  --muted: 107 109 130;
   --panel: 255 255 255;
-  --panel2: 248 250 252;  /* subtle raised surface */
-  --line: 226 232 240;    /* slate-200 */
-  --field: 241 245 249;   /* slate-100 */
-  --ocean: 13 148 136;    /* teal-600 — primary */
-  --plum: 124 58 237;     /* violet-600 */
+  --panel2: 249 249 252;  /* subtle raised surface */
+  --line: 228 228 237;
+  --field: 243 243 248;
+  --ocean: 124 58 237;    /* violet-600 — PRIMARY */
+  --plum: 192 38 211;     /* fuchsia-600 — secondary */
   --ember: 217 119 6;     /* amber-600 */
-  --danger: 220 38 38;    /* red-600 */
-  --accent: 20 184 166;   /* teal-500 */
-  --shadow: 15 23 42;     /* slate-900 base for shadows */
-  --app-bg: 239 243 248;
+  --danger: 225 29 72;    /* rose-600 */
+  --accent: 139 92 246;   /* violet-500 */
+  --shadow: 26 20 47;     /* violet-black shadow base */
+  --app-bg: 244 244 250;
 }
 
 .dark {
   color-scheme: dark;
-  --ink: 226 232 240;     /* slate-200 text */
-  --muted: 148 163 184;   /* slate-400 */
-  --panel: 18 25 35;      /* dark surface */
-  --panel2: 24 33 47;
-  --line: 39 51 69;       /* dark hairline */
-  --field: 30 41 57;      /* dark field */
-  --ocean: 45 212 191;    /* teal-300 — brighter for dark */
-  --plum: 167 139 250;    /* violet-400 */
+  --ink: 237 237 245;
+  --muted: 154 156 178;
+  --panel: 19 19 27;      /* elevated card on near-black */
+  --panel2: 26 26 37;
+  --line: 44 44 60;       /* dark hairline */
+  --field: 31 31 43;      /* inputs / wells */
+  --ocean: 139 92 246;    /* violet-500 — vivid on dark */
+  --plum: 232 121 249;    /* fuchsia-400 */
   --ember: 251 191 36;    /* amber-300 */
-  --danger: 248 113 113;  /* red-400 */
-  --accent: 45 212 191;
+  --danger: 251 113 133;  /* rose-400 */
+  --accent: 167 139 250;  /* violet-400 */
   --shadow: 0 0 0;
-  --app-bg: 9 13 20;
+  --app-bg: 10 10 15;     /* near-black canvas */
 }
 
 * {
@@ -49,13 +53,23 @@ body {
   margin: 0;
   color: rgb(var(--ink));
   background:
-    radial-gradient(1100px 540px at 100% -8%, rgb(var(--ocean) / 0.07), transparent 60%),
-    radial-gradient(900px 480px at -5% 0%, rgb(var(--plum) / 0.05), transparent 55%),
+    radial-gradient(1100px 540px at 100% -8%, rgb(var(--ocean) / 0.08), transparent 60%),
+    radial-gradient(900px 480px at -5% 0%, rgb(var(--plum) / 0.06), transparent 55%),
     rgb(var(--app-bg));
   background-attachment: fixed;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* The dark canvas gets stronger aurora glows — the premium dashboard feel. */
+.dark body {
+  background:
+    radial-gradient(1200px 600px at 85% -10%, rgb(139 92 246 / 0.14), transparent 55%),
+    radial-gradient(900px 520px at -10% 5%, rgb(232 121 249 / 0.08), transparent 50%),
+    radial-gradient(1000px 700px at 50% 115%, rgb(139 92 246 / 0.07), transparent 55%),
+    rgb(var(--app-bg));
+  background-attachment: fixed;
 }
 
 button,
@@ -67,6 +81,37 @@ textarea {
 
 ::placeholder {
   color: rgb(var(--muted) / 0.7);
+}
+
+::selection {
+  background: rgb(var(--ocean) / 0.28);
+}
+
+/* Brand gradient text — hero titles, the product mark. */
+.text-gradient {
+  background: linear-gradient(92deg, rgb(var(--ocean)), rgb(var(--plum)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Gradient hairline card — wrap a panel to give it a luminous edge. */
+.ring-gradient {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(rgb(var(--panel)), rgb(var(--panel))) padding-box,
+    linear-gradient(135deg, rgb(var(--ocean) / 0.55), rgb(var(--line)) 40%, rgb(var(--plum) / 0.45)) border-box;
+}
+
+/* Interactive cards lift subtly — used with shadow-card panels. */
+.card-lift {
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.card-lift:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 8px 28px -10px rgb(var(--shadow) / 0.35),
+    0 0 0 1px rgb(var(--ocean) / 0.18);
 }
 
 /* Modern, theme-aware scrollbars */

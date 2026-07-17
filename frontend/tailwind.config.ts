@@ -28,10 +28,12 @@ const config: Config = {
         "2xl": "1.1rem"
       },
       boxShadow: {
-        focus: "0 0 0 3px rgb(var(--ocean) / 0.18)",
-        card: "0 1px 2px rgb(var(--shadow) / 0.05), 0 1px 3px rgb(var(--shadow) / 0.06)",
-        soft: "0 6px 22px -8px rgb(var(--shadow) / 0.14)",
-        pop: "0 16px 40px -12px rgb(var(--shadow) / 0.28)"
+        focus: "0 0 0 3px rgb(var(--ocean) / 0.22)",
+        card: "0 1px 2px rgb(var(--shadow) / 0.06), 0 2px 6px rgb(var(--shadow) / 0.07)",
+        soft: "0 8px 26px -10px rgb(var(--shadow) / 0.18)",
+        pop: "0 18px 44px -12px rgb(var(--shadow) / 0.32)",
+        // Violet halo for primary actions / active elements (the premium glow).
+        glow: "0 0 0 1px rgb(var(--ocean) / 0.35), 0 4px 24px -4px rgb(var(--ocean) / 0.45)"
       },
       fontFamily: {
         sans: ["Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"]

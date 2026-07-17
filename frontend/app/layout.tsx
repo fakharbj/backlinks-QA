@@ -7,8 +7,10 @@ export const metadata: Metadata = {
   description: "SEO performance & backlink QA operations"
 };
 
-// Apply the saved (or system) theme before first paint to avoid a flash.
-const themeInit = `try{var t=localStorage.getItem('ls-theme');if(t==='dark'||(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}`;
+// Apply the saved theme before first paint to avoid a flash. The premium dark
+// look is the DEFAULT for anyone who hasn't chosen — the toggle still saves an
+// explicit light choice.
+const themeInit = `try{var t=localStorage.getItem('ls-theme');if(t!=='light'){document.documentElement.classList.add('dark')}}catch(e){}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

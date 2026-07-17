@@ -612,7 +612,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
             <button
               type="submit"
               disabled={forgot.isPending || !email.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
             >
               {forgot.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Email me a reset code
@@ -636,7 +636,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
             <button
               type="submit"
               disabled={reset.isPending || !resetCode.trim() || password.length < 8}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
             >
               {reset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
               Set new password
@@ -666,7 +666,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
             <button
               type="submit"
               disabled={submit.isPending || !email.trim() || !password}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-ocean px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-ocean to-plum px-4 py-2.5 text-sm font-semibold text-white shadow-glow transition hover:opacity-90 disabled:opacity-50 disabled:shadow-none"
             >
               {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
               {mode === "login" ? "Sign in" : "Create account"}
@@ -895,7 +895,7 @@ function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () =
             </div>
           )}
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-bold tracking-tight text-ink">Performance</span>
+            <span className="text-gradient text-sm font-extrabold tracking-tight">Performance</span>
             <span className="hidden text-[10px] font-medium uppercase tracking-wide text-muted sm:inline">
               by Techsa · {branding.data?.company_name || "SEO operations"}
             </span>
@@ -962,10 +962,11 @@ function Sidebar({
           </button>
         </div>
       ) : null}
-      <nav className="rounded-xl border border-line bg-panel p-2 shadow-card">
+      <nav className="ring-gradient rounded-xl p-2 shadow-card">
         {navGroups(Boolean(activeProjectId), role).map((group) => (
           <div key={group.label} className="mb-1 last:mb-0">
-            <div className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+            <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              <span aria-hidden className="h-1 w-1 rounded-full bg-gradient-to-r from-ocean to-plum" />
               {group.label}
             </div>
             <div className="space-y-0.5">
@@ -978,14 +979,14 @@ function Sidebar({
                     className={clsx(
                       "group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition",
                       active
-                        ? "bg-ocean/10 font-semibold text-ocean"
+                        ? "bg-gradient-to-r from-ocean/15 to-plum/10 font-semibold text-ocean shadow-[inset_0_0_0_1px_rgb(var(--ocean)/0.25)]"
                         : "font-medium text-muted hover:bg-field hover:text-ink"
                     )}
                   >
                     {active ? (
-                      <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-ocean" />
+                      <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-gradient-to-b from-ocean to-plum shadow-glow" />
                     ) : null}
-                    <Icon className="h-4 w-4 shrink-0" />
+                    <Icon className={clsx("h-4 w-4 shrink-0", active && "drop-shadow-[0_0_6px_rgb(var(--ocean)/0.6)]")} />
                     {label}
                   </button>
                   {/* The open person-dashboard expands into its PAGES right here in
@@ -1188,7 +1189,7 @@ function ProjectPanel({
         ) : (
           <span
             className={clsx(
-              "grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white dark:text-slate-900",
+              "grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white",
               active ? "bg-gradient-to-br from-plum to-ocean" : "bg-gradient-to-br from-ocean to-teal-500"
             )}
           >
@@ -1223,7 +1224,7 @@ function ProjectPanel({
                 !activeProjectId && "bg-ocean/10"
               )}
             >
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-ocean to-teal-500 text-white dark:text-slate-900">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-ocean to-teal-500 text-white">
                 <Globe className="h-4 w-4" />
               </span>
               <span className="min-w-0 flex-1">
@@ -1249,7 +1250,7 @@ function ProjectPanel({
                     className="h-8 w-8 shrink-0 rounded-lg object-cover"
                   />
                 ) : (
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white dark:text-slate-900">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white">
                     {initials(p.name)}
                   </span>
                 )}
@@ -1281,7 +1282,7 @@ function ProjectPanel({
                 <Field label="Client" value={client} onChange={setClient} />
                 <Field label="Target domain (required)" value={domain} onChange={setDomain} />
                 <div className="flex gap-2">
-                  <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+                  <button className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90">
                     {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                     Create
                   </button>
@@ -1386,7 +1387,7 @@ function Overview({
         // ── Project hero: unmistakably a single project's home ───────────
         <div className="relative overflow-hidden rounded-2xl border border-plum/30 bg-gradient-to-r from-plum/15 via-panel to-ocean/10 p-5 shadow-soft">
           <div className="flex flex-wrap items-center gap-4">
-            <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-plum to-ocean text-lg font-bold text-white shadow-soft dark:text-slate-900">
+            <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-plum to-ocean text-lg font-bold text-white shadow-soft">
               {(activeProject?.name || "P").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
             </span>
             <div className="min-w-0 flex-1">
@@ -1418,7 +1419,7 @@ function Overview({
       ) : (
         // ── Company header: the whole-workspace view ─────────────────────
         <div className="flex items-center gap-3">
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-teal-500 text-white shadow-soft dark:text-slate-900">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-teal-500 text-white shadow-soft">
             <Globe className="h-5 w-5" />
           </span>
           <div>
@@ -1564,7 +1565,7 @@ function Overview({
                   onClick={() => setTrendGran(v)}
                   className={`h-9 px-2.5 text-sm font-medium transition-colors ${
                     trendGran === v
-                      ? "bg-ocean text-white dark:text-slate-900"
+                      ? "bg-ocean text-white"
                       : "bg-panel text-muted hover:bg-field"
                   }`}
                 >
@@ -2420,7 +2421,7 @@ function Backlinks({
             ) : null}
             <button
               onClick={checkPending}
-              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
               title="QA-check links that were never checked (new imports) — the safe everyday action"
             >
               {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -2977,7 +2978,7 @@ function BacklinkDetailDrawer({
             </button>
             <button
               onClick={() => recheck.mutate()}
-              className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
             >
               {recheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Recheck
@@ -3005,7 +3006,7 @@ function BacklinkDetailDrawer({
                 <button
                   onClick={() => recheck.mutate()}
                   disabled={recheck.isPending}
-                  className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+                  className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60"
                 >
                   {recheck.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
                   Retry QA now
@@ -3438,7 +3439,7 @@ function PlacementDateEditor({
         <button
           disabled={pending || !dirty}
           onClick={() => onSave(draft ? draft : null)}
-          className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
         >
           {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
           Save
@@ -3873,7 +3874,7 @@ function ImportDesk({
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={() => onOpenBatch(staged.batch_id)}
-              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
             >
               <Play className="h-4 w-4" /> Open review batch
             </button>
@@ -3898,7 +3899,7 @@ function ImportDesk({
               <button
                 onClick={() => submit.mutate()}
                 disabled={submit.isPending || !effectiveProject}
-                className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+                className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
               >
                 {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 Stage for review
@@ -4176,7 +4177,7 @@ function ApiUsageDesk({ token }: { token: string | null }) {
             <button
               onClick={() => saveLimits.mutate()}
               disabled={saveLimits.isPending}
-              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60"
             >
               {saveLimits.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Save limits
@@ -4280,7 +4281,7 @@ function ApiUsageDesk({ token }: { token: string | null }) {
                 onClick={() => setGran(g)}
                 className={clsx(
                   "h-8 px-2.5 text-xs font-medium capitalize",
-                  gran === g ? "bg-ocean text-white dark:text-slate-900" : "bg-panel text-muted hover:bg-field"
+                  gran === g ? "bg-ocean text-white" : "bg-panel text-muted hover:bg-field"
                 )}
               >
                 {g === "hour" ? "Hourly" : "Daily"}
@@ -4366,7 +4367,7 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
                     <span className="truncate text-sm font-semibold text-ink">{d.domain_key}</span>
                     <CopyButton text={d.domain_key} title="Copy domain" />
                   </span>
-                  {i === 0 ? <span className="mt-0.5 inline-block rounded bg-ocean px-1.5 py-0.5 text-[10px] font-bold uppercase text-white dark:text-slate-900">Best available</span> : null}
+                  {i === 0 ? <span className="mt-0.5 inline-block rounded bg-ocean px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">Best available</span> : null}
                 </span>
                 <span className={clsx(
                   "shrink-0 rounded-lg px-2 py-1 text-sm font-bold",
@@ -4479,7 +4480,7 @@ function GuidanceDesk({ token, fixed }: { token: string | null; fixed?: "next" |
             <button
               key={v}
               onClick={() => setGTab(v)}
-              className={clsx("px-3 py-1.5 transition", gTab === v ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+              className={clsx("px-3 py-1.5 transition", gTab === v ? "bg-ocean text-white" : "text-muted hover:bg-field")}
             >
               {l}
             </button>
@@ -4702,7 +4703,7 @@ function MyTaskCalendar({ token }: { token: string | null }) {
                 onClick={() => setMode(m)}
                 className={clsx(
                   "h-8 px-2.5 text-xs font-medium capitalize transition-colors",
-                  mode === m ? "bg-ocean text-white dark:text-slate-900" : "bg-panel text-muted hover:bg-field"
+                  mode === m ? "bg-ocean text-white" : "bg-panel text-muted hover:bg-field"
                 )}
               >
                 {m}
@@ -4937,7 +4938,7 @@ function TaskDomainSuggestions({
                   {i < 3 ? (
                     <span className={clsx(
                       "rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
-                      i === 0 ? "bg-ocean text-white dark:text-slate-900" : "bg-ocean/10 text-ocean"
+                      i === 0 ? "bg-ocean text-white" : "bg-ocean/10 text-ocean"
                     )}>
                       {i === 0 ? "Top pick" : `#${i + 1}`}
                     </span>
@@ -5057,7 +5058,7 @@ function TaskDomainSuggestions({
                 Cancel
               </button>
               <button onClick={confirmSkip} disabled={!skipValid || act.isPending}
-                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50 dark:text-slate-900">
+                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50">
                 {act.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Skip task
               </button>
@@ -5545,7 +5546,7 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
       {/* Premium hero: who you are, where you stand, at a glance (Techsa accent). */}
       <div className="relative overflow-hidden rounded-2xl border border-ocean/30 bg-gradient-to-r from-ocean/15 via-panel to-plum/10 p-5 shadow-soft">
         <div className="flex flex-wrap items-center gap-4">
-          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft dark:text-slate-900">
+          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft">
             {(me.data?.labels[0] || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
           </span>
           <div className="min-w-0 flex-1">
@@ -5673,7 +5674,7 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
           <button
             onClick={() => requestLeave.mutate()}
             disabled={requestLeave.isPending}
-            className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+            className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             Request leave
           </button>
@@ -6155,20 +6156,20 @@ function TasksDesk({
               <button
                 onClick={() => setView("planner")}
                 title="Weekly planner — people down the side, weekdays across the top; click any cell to plan"
-                className={clsx("px-2.5 py-1 transition", view === "planner" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+                className={clsx("px-2.5 py-1 transition", view === "planner" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
               >
                 Week planner
               </button>
               <button
                 onClick={() => setView("project")}
                 title="By project — who works on each project, day by day"
-                className={clsx("px-2.5 py-1 transition", view === "project" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+                className={clsx("px-2.5 py-1 transition", view === "project" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
               >
                 By project
               </button>
               <button
                 onClick={() => setView("list")}
-                className={clsx("px-2.5 py-1 transition", view === "list" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+                className={clsx("px-2.5 py-1 transition", view === "list" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
               >
                 List
               </button>
@@ -6214,7 +6215,7 @@ function TasksDesk({
             onClick={() => void previewAndApply({ mode: "week" }, "to this week")}
             disabled={applyTemplateMut.isPending || !(templates.data?.total_entries || 0)}
             title={!(templates.data?.total_entries || 0) ? "No template yet — set one week up, then Save week as template" : "Replace this week's assignments (today onward) with the template — you'll see exact counts first"}
-            className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+            className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
           >
             {applyTemplateMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
             Apply to this week
@@ -6256,7 +6257,7 @@ function TasksDesk({
               <button
                 onClick={() => { if (tplRangeFrom && tplRangeTo) void previewAndApply({ mode: "range", range_from: tplRangeFrom, range_to: tplRangeTo }, "to the custom range"); }}
                 disabled={!tplRangeFrom || !tplRangeTo || applyTemplateMut.isPending}
-                className="h-7 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white disabled:opacity-40 dark:text-slate-900"
+                className="h-7 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white disabled:opacity-40"
               >
                 Preview &amp; apply
               </button>
@@ -6581,7 +6582,7 @@ function TasksDesk({
         <div>
           <button
             onClick={() => setShowAssign(true)}
-            className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+            className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
             Assign work
@@ -6660,7 +6661,7 @@ function TasksDesk({
           <button
             onClick={() => addAssignment.mutate()}
             disabled={addAssignment.isPending || !fUser.trim() || !(fProject || projectId)}
-            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             {addAssignment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Assign
@@ -7080,7 +7081,7 @@ function GranularityToggle({
             title={disabled ? "Pick a shorter timeframe to see day-by-day detail" : undefined}
             className={`h-8 px-2.5 text-xs font-medium transition-colors ${
               value === v
-                ? "bg-ocean text-white dark:text-slate-900"
+                ? "bg-ocean text-white"
                 : disabled
                 ? "cursor-not-allowed bg-panel text-muted/40"
                 : "bg-panel text-muted hover:bg-field"
@@ -7090,6 +7091,67 @@ function GranularityToggle({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// Semi-circular score dial (the "AI Grader" look): gradient arc 0-100 with a
+// big number in the middle. Pure SVG, theme-aware, animates on mount.
+function ArcGauge({
+  value,
+  label,
+  size = 132
+}: {
+  value: number | null | undefined; // 0-100
+  label: string;
+  size?: number;
+}) {
+  const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setMounted(true), 30);
+    return () => clearTimeout(t);
+  }, []);
+  const v = value == null ? null : Math.max(0, Math.min(100, Math.round(value)));
+  const W = size;
+  const H = size * 0.62;
+  const r = size * 0.42;
+  const cx = W / 2;
+  const cy = H - 4;
+  const arc = Math.PI * r; // semicircle length
+  const frac = v == null ? 0 : v / 100;
+  const tone = v == null ? "var(--muted)" : v >= 70 ? "var(--ocean)" : v >= 40 ? "var(--ember)" : "var(--danger)";
+  return (
+    <div className="flex flex-col items-center">
+      <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label={`${label}: ${v ?? "—"} of 100`}>
+        <defs>
+          <linearGradient id={`ag-${uid}`} x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" stopColor="rgb(var(--danger))" />
+            <stop offset="45%" stopColor="rgb(var(--ember))" />
+            <stop offset="100%" stopColor="rgb(var(--ocean))" />
+          </linearGradient>
+        </defs>
+        <path
+          d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+          fill="none" stroke="rgb(var(--field))" strokeWidth={size * 0.075} strokeLinecap="round"
+        />
+        <path
+          d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+          fill="none" stroke={`url(#ag-${uid})`} strokeWidth={size * 0.075} strokeLinecap="round"
+          strokeDasharray={arc}
+          strokeDashoffset={mounted ? arc * (1 - frac) : arc}
+          style={{ transition: "stroke-dashoffset 1s cubic-bezier(.4,0,.2,1)" }}
+        />
+        <text x={cx} y={cy - size * 0.1} textAnchor="middle" fontSize={size * 0.21} fontWeight={800}
+          fill={`rgb(${tone})`}>
+          {v ?? "—"}
+        </text>
+        <text x={cx} y={cy - size * 0.005} textAnchor="middle" fontSize={size * 0.07} fontWeight={600}
+          fill="rgb(var(--muted))">
+          / 100
+        </text>
+      </svg>
+      <span className="-mt-1 text-[10px] font-semibold uppercase tracking-widest text-muted">{label}</span>
     </div>
   );
 }
@@ -8163,7 +8225,7 @@ function UserDashboard({
               ← All people
             </button>
           ) : null}
-          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft dark:text-slate-900">
+          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft">
             {userLabel.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
           </span>
           <div className="min-w-0">
@@ -8177,21 +8239,25 @@ function UserDashboard({
             </p>
           </div>
           <span className="ml-auto" />
-          {/* Live identity stats — the person's window in four numbers. */}
+          {/* Live identity stats — the score dial + the window in four numbers. */}
           {d ? (
-            <div className="flex flex-wrap items-center gap-2">
-              {([
-                ["Links", String(num(d.links.links)), null],
-                ["Qualified", d.links.qualified_rate != null ? `${d.links.qualified_rate}%` : "—", null],
-                ["Avg score", d.links.avg_score != null ? String(d.links.avg_score) : "—", null],
-                ["Plan", d.plan.completion_pct != null ? `${d.plan.completion_pct}%` : "—", null],
-                ...(d.team?.rank ? [["Team rank", `#${d.team.rank} of ${d.team.of}`, null] as [string, string, null]] : [])
-              ] as Array<[string, string, null]>).map(([lab, val]) => (
-                <div key={lab} className="rounded-xl border border-line/70 bg-panel/80 px-3 py-1.5 text-center shadow-card backdrop-blur">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">{lab}</div>
-                  <div className="text-base font-bold leading-tight text-ink">{val}</div>
-                </div>
-              ))}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-2xl border border-line/70 bg-panel/80 px-3 pt-1 shadow-card backdrop-blur">
+                <ArcGauge value={d.links.avg_score} label="Quality score" size={116} />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {([
+                  ["Links", String(num(d.links.links)), null],
+                  ["Qualified", d.links.qualified_rate != null ? `${d.links.qualified_rate}%` : "—", null],
+                  ["Plan", d.plan.completion_pct != null ? `${d.plan.completion_pct}%` : "—", null],
+                  ...(d.team?.rank ? [["Team rank", `#${d.team.rank} of ${d.team.of}`, null] as [string, string, null]] : [])
+                ] as Array<[string, string, null]>).map(([lab, val]) => (
+                  <div key={lab} className="rounded-xl border border-line/70 bg-panel/80 px-3 py-1.5 text-center shadow-card backdrop-blur">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">{lab}</div>
+                    <div className="text-base font-bold leading-tight text-ink">{val}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
           {onPlanWork ? (
@@ -8752,7 +8818,7 @@ function UserDashboard({
               <button
                 onClick={() => saveQuick.mutate()}
                 disabled={saveQuick.isPending || !qProject}
-                className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+                className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
               >
                 Save
               </button>
@@ -10234,7 +10300,7 @@ function BatchDetails({
                 if (window.confirm(`Run the isolated QA check on ${scopeNote}? Real crawls run on the worker; results stay inside this batch.`))
                   runCheck.mutate({ ...selection() });
               }}
-              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
               title="Crawl + QA-test the staged links in isolation — same engine as the main QA, but verdicts stay in this batch"
             >
               {runCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -10244,7 +10310,7 @@ function BatchDetails({
             <>
               <button
                 onClick={() => runCheck.mutate({ ...selection() })}
-                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
                 title="Fetch DA/PA/Spam (Moz), AS/traffic (Semrush) and domain age for the staged domains — results stay in this batch"
               >
                 {runCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gauge className="h-4 w-4" />}
@@ -10458,7 +10524,7 @@ function BatchDetails({
               <button
                 key={lv}
                 onClick={() => setLogLevel(lv)}
-                className={clsx("rounded-md px-2 py-0.5 capitalize transition", logLevel === lv ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+                className={clsx("rounded-md px-2 py-0.5 capitalize transition", logLevel === lv ? "bg-ocean text-white" : "text-muted hover:bg-field")}
               >
                 {lv}
               </button>
@@ -10778,7 +10844,7 @@ function DomainImportDesk({
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={() => onOpenBatch(staged.batch_id)}
-              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
             >
               <Play className="h-4 w-4" /> Open review batch
             </button>
@@ -10804,7 +10870,7 @@ function DomainImportDesk({
               <button
                 onClick={() => submit.mutate()}
                 disabled={!lineCount || submit.isPending}
-                className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+                className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
               >
                 {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
                 Stage {lineCount || ""} domain{lineCount === 1 ? "" : "s"} for review
@@ -11089,7 +11155,7 @@ function CompetitorDesk({
               onClick={runImport}
               disabled={ingest.isPending || !pasted.trim() || !compUrl.trim()}
               title={!compUrl.trim() ? "Enter the competitor's website URL first" : "Import the pasted links"}
-              className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
+              className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
             >
               {ingest.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               Import links
@@ -12045,7 +12111,7 @@ function ReportsDesk({
               "flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition",
               showBuilder
                 ? "border border-line text-ink hover:bg-field"
-                : "bg-ocean text-white hover:opacity-90 dark:text-slate-900"
+                : "bg-ocean text-white hover:opacity-90"
             )}
           >
             {showBuilder ? <XCircle className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
@@ -12214,7 +12280,7 @@ function ReportsDesk({
                 <button
                   onClick={() => create.mutate()}
                   disabled={create.isPending}
-                  className="flex h-11 items-center justify-center gap-2 rounded-lg bg-ocean px-5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+                  className="flex h-11 items-center justify-center gap-2 rounded-lg bg-ocean px-5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
                 >
                   {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
                   Generate {activeType?.label || "report"}
@@ -12723,7 +12789,7 @@ function OpportunitiesPanel({ token, onNotice }: { token: string | null; onNotic
                         <button
                           onClick={() => pickUser && recommend.mutate({ domain_key: d.domain_key, user_label: pickUser })}
                           disabled={!pickUser || recommend.isPending}
-                          className="rounded bg-ocean px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 dark:text-slate-900"
+                          className="rounded bg-ocean px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
                         >
                           Send
                         </button>
@@ -13022,14 +13088,14 @@ function SourceDomainsDesk({
     <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
       <button
         onClick={() => setSdMode("catalog")}
-        className={clsx("px-2.5 py-1 transition", sdMode === "catalog" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+        className={clsx("px-2.5 py-1 transition", sdMode === "catalog" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
       >
         Catalog
       </button>
       <button
         onClick={() => setSdMode("opportunities")}
         title="Available domains nobody is working on yet — quality-scored, robots-checked, ready to hand out"
-        className={clsx("px-2.5 py-1 transition", sdMode === "opportunities" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+        className={clsx("px-2.5 py-1 transition", sdMode === "opportunities" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
       >
         Opportunities
       </button>
@@ -13070,7 +13136,7 @@ function SourceDomainsDesk({
         ) : null}
         <button
           onClick={() => recompute.mutate()}
-          className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+          className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
         >
           {recompute.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           Recompute
@@ -13161,7 +13227,7 @@ function SourceDomainsDesk({
           <SlidersHorizontal className="h-4 w-4" />
           Filters
           {activeFilterCount ? (
-            <span className="rounded-full bg-ocean px-1.5 text-[11px] font-bold text-white dark:text-slate-900">
+            <span className="rounded-full bg-ocean px-1.5 text-[11px] font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
@@ -13214,7 +13280,7 @@ function SourceDomainsDesk({
                 <button
                   disabled={!saveName.trim() || saveFilter.isPending}
                   onClick={() => saveFilter.mutate(saveName.trim())}
-                  className="h-8 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+                  className="h-8 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
                 >
                   Save
                 </button>
@@ -13748,7 +13814,7 @@ function SourceDomainRules({
             setDraft(emptyRuleDraft());
             setEditingId(null);
           }}
-          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90"
         >
           <Plus className="h-3.5 w-3.5" /> New rule
         </button>
@@ -13866,7 +13932,7 @@ function SourceDomainRules({
             <button
               onClick={saveDraft}
               disabled={saving}
-              className="h-9 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+              className="h-9 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
             >
               {saving ? "Saving…" : editingId ? "Update rule" : "Save rule"}
             </button>
@@ -13905,7 +13971,7 @@ function SourceDomainRules({
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => applyRule.mutate(r.id)}
-                  className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+                  className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-2.5 text-xs font-semibold text-white transition hover:opacity-90"
                 >
                   {applyRule.isPending && applyRule.variables === r.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -14152,7 +14218,7 @@ function EmployeesDesk({
         </p>
         <button
           onClick={() => sync.mutate()}
-          className="flex h-9 items-center gap-2 self-start rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+          className="flex h-9 items-center gap-2 self-start rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
         >
           {sync.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           Sync from sheets
@@ -14213,7 +14279,7 @@ function EmployeesDesk({
                 }
                 merge.mutate({ canonical_label: canon, alias_labels: aliases, user_id: mergeUserId || null });
               }}
-              className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+              className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
             >
               {merge.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCompare className="h-3.5 w-3.5" />}
               Merge {selected.size}
@@ -14392,7 +14458,7 @@ function EmployeesDesk({
             value={newCodeName}
             onChange={(event) => setNewCodeName(event.target.value)}
           />
-          <button className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+          <button className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90">
             {addCode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Add code
           </button>
@@ -14489,7 +14555,7 @@ function MergeSuggestionCard({
         <button
           disabled={!canMerge}
           onClick={() => onMerge({ canonical_label: canonical.trim(), alias_labels: aliases, user_id: null })}
-          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
         >
           {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCompare className="h-3.5 w-3.5" />}
           Merge into {canonical.trim() || "…"}
@@ -14812,7 +14878,7 @@ function LinkTypesCard({
             <button
               onClick={() => void applyManual()}
               disabled={manualBusy}
-              className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+              className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60"
             >
               {manualBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCompare className="h-3.5 w-3.5" />}
               Preview &amp; merge
@@ -14844,7 +14910,7 @@ function LinkTypesCard({
               autoFocus
               onChange={(e) => setRenameFor({ ...renameFor, name: e.target.value })}
             />
-            <button className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white dark:text-slate-900">
+            <button className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white">
               {renameOne.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Apply"}
             </button>
             <button type="button" onClick={() => setRenameFor(null)} className="h-8 rounded-md border border-line px-3 text-xs">
@@ -14868,7 +14934,7 @@ function LinkTypesCard({
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
-          <button className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+          <button className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90">
             {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Add
           </button>
@@ -14968,7 +15034,7 @@ function LinkTypesCard({
                         <button
                           onClick={() => applyGroup(gi, g)}
                           disabled={busyGroup !== null}
-                          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+                          className="flex h-8 items-center gap-1.5 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-60"
                         >
                           {busyGroup === gi ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
                           Preview &amp; merge
@@ -15047,7 +15113,7 @@ function LinkTypeTargetsCard({ token, onNotice }: { token: string | null; onNoti
           <button
             onClick={() => save.mutate()}
             disabled={save.isPending || !Object.keys(drafts).length}
-            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60"
           >
             {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save default targets
@@ -15101,7 +15167,7 @@ function SkipReasonsCard({ token, onNotice }: { token: string | null; onNotice: 
           <button
             onClick={() => save.mutate()}
             disabled={save.isPending || !value.trim()}
-            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60 dark:text-slate-900"
+            className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60"
           >
             {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save reasons
@@ -15449,7 +15515,7 @@ function ScoringDesk({
                 <button
                   onClick={() => save.mutate()}
                   disabled={save.isPending}
-                  className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+                  className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
                 >
                   {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                   Save version
@@ -15684,7 +15750,7 @@ function BrandingCard({
           <button
             onClick={() => saveBranding.mutate()}
             disabled={saveBranding.isPending}
-            className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+            className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             {saveBranding.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -15803,7 +15869,7 @@ function QaSettingsCard({ token, onNotice }: { token: string | null; onNotice: (
         <button
           onClick={onSave}
           disabled={save.isPending || !Object.keys(draft).length}
-          className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+          className="flex h-8 items-center gap-1.5 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
         >
           {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
           Save changes
@@ -16098,7 +16164,7 @@ function SettingsDesk({
               value={newDomain}
               onChange={(event) => setNewDomain(event.target.value)}
             />
-            <button className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+            <button className="flex h-10 items-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90">
               {addDomain.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -16515,7 +16581,7 @@ function ConflictsDesk({
             />
             <button
               onClick={() => rebuild.mutate()}
-              className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900"
+              className="flex h-9 items-center gap-2 rounded-md bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90"
             >
               {rebuild.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Rebuild
@@ -16833,7 +16899,7 @@ function ConflictComparisonModal({
                 ) : null}
                 {d.resolution_status !== "resolved" ? (
                   <button onClick={() => resolve.mutate("resolved")}
-                    className="h-9 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 dark:text-slate-900">
+                    className="h-9 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90">
                     Resolve
                   </button>
                 ) : (
@@ -17057,11 +17123,20 @@ function Metric({
       onClick={onClick}
       title={onClick ? "Click to see these links" : undefined}
       className={clsx(
-        "rounded-xl border border-line bg-panel p-3.5 shadow-card transition hover:shadow-soft",
-        onClick && "cursor-pointer hover:border-ocean/50"
+        "card-lift relative overflow-hidden rounded-xl border border-line bg-panel p-3.5 shadow-card",
+        onClick && "cursor-pointer"
       )}
     >
-      <div className="flex items-center justify-between">
+      {/* Soft tonal wash in the icon corner — the premium tile look. */}
+      <span
+        aria-hidden
+        className={clsx(
+          "pointer-events-none absolute -right-6 -top-8 h-24 w-24 rounded-full blur-2xl",
+          tone === "ocean" ? "bg-ocean/15" : tone === "ember" ? "bg-ember/15"
+            : tone === "danger" ? "bg-danger/15" : tone === "plum" ? "bg-plum/15" : "bg-ocean/8"
+        )}
+      />
+      <div className="relative flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted">
           {label}
           {help ? <HelpTip text={help} /> : null}
@@ -17070,8 +17145,8 @@ function Metric({
           <Icon className="h-4 w-4" />
         </span>
       </div>
-      <div className="mt-1.5 text-3xl font-bold tracking-tight text-ink">{value}</div>
-      {sub ? <div className="mt-0.5 text-[11px] font-medium text-muted">{sub}</div> : null}
+      <div className="relative mt-1.5 text-3xl font-bold tracking-tight text-ink">{value}</div>
+      {sub ? <div className="relative mt-0.5 text-[11px] font-medium text-muted">{sub}</div> : null}
     </div>
   );
 }
@@ -17250,7 +17325,10 @@ function IssueWord({ label, count }: { label: string | null; count: number }) {
 function SectionTitle({ title, flush = false }: { title: string; flush?: boolean }) {
   return (
     <div className={clsx("border-b border-line", flush ? "pb-3" : "px-4 py-3")}>
-      <h2 className="text-base font-semibold text-ink">{title}</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
+        <span aria-hidden className="h-4 w-1 shrink-0 rounded-full bg-gradient-to-b from-ocean to-plum" />
+        {title}
+      </h2>
     </div>
   );
 }
@@ -17763,7 +17841,7 @@ function FilterMultiSelect({
       >
         {label}
         {selected.length ? (
-          <span className="rounded-full bg-ocean px-1.5 text-[11px] font-bold text-white dark:text-slate-900">
+          <span className="rounded-full bg-ocean px-1.5 text-[11px] font-bold text-white">
             {selected.length}
           </span>
         ) : (
@@ -17964,7 +18042,7 @@ function SheetsDesk({
             <button
               onClick={() => syncAll.mutate()}
               disabled={!cfg?.enabled || syncAll.isPending}
-              className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 dark:text-slate-900 disabled:opacity-50"
+              className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
             >
               {syncAll.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Discover projects from main sheet
@@ -18349,7 +18427,7 @@ function SheetMappingEditor({
                 title={t.import_enabled ? t.tab_name : `${t.tab_name} — ignored (won't sync)`}
                 className={clsx(
                   "rounded-md px-2.5 py-1 transition",
-                  (selectedTab ?? d.tab_id) === t.id ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field",
+                  (selectedTab ?? d.tab_id) === t.id ? "bg-ocean text-white" : "text-muted hover:bg-field",
                   !t.import_enabled && (selectedTab ?? d.tab_id) !== t.id && "line-through opacity-50"
                 )}
               >
@@ -18574,7 +18652,7 @@ function SheetMappingEditor({
           onClick={() => save.mutate("tab")}
           disabled={save.isPending || !allRequiredOk}
           title={!allRequiredOk ? "Map Source page URL (or set a fixed value) first" : undefined}
-          className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50 dark:text-slate-900"
+          className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
         >
           {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
           Save for this tab
@@ -19783,7 +19861,7 @@ function GmailAccountsCard({
               className="h-9 w-48 rounded-lg border border-line bg-panel px-2 text-sm" />
           </label>
           <button onClick={() => create.mutate()} disabled={create.isPending || !email.includes("@")}
-            className="flex h-9 items-center gap-1.5 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900">
+            className="flex h-9 items-center gap-1.5 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40">
             {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} Add
           </button>
         </div>
@@ -19849,7 +19927,7 @@ function GmailAccountsCard({
                     <button
                       onClick={() => assign.mutate(a.id)}
                       disabled={assign.isPending || (scope === "user" ? !targetUser : !targetProject)}
-                      className="h-8 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40 dark:text-slate-900"
+                      className="h-8 rounded-lg bg-ocean px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
                     >
                       Assign
                     </button>
@@ -20079,7 +20157,7 @@ function EmailUsersCard({
                   if (window.confirm(`Send this email to ${recipientSummary}?`)) send.mutate();
                 }}
                 disabled={send.isPending || !subject.trim() || !body.trim() || (!picked.size && !roleTarget && !projectTarget)}
-                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50 dark:text-slate-900"
+                className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-50"
               >
                 {send.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Send email
@@ -20249,28 +20327,28 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
       <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
         <button
           onClick={() => setTeamTab("members")}
-          className={clsx("px-2.5 py-1 transition", teamTab === "members" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+          className={clsx("px-2.5 py-1 transition", teamTab === "members" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
         >
           Members &amp; roles
         </button>
         <button
           onClick={() => setTeamTab("employees")}
           title="Sheet employees — codes, name variants and account mapping"
-          className={clsx("px-2.5 py-1 transition", teamTab === "employees" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+          className={clsx("px-2.5 py-1 transition", teamTab === "employees" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
         >
           Employees &amp; mapping
         </button>
         <button
           onClick={() => setTeamTab("gmail")}
           title="Company Gmail accounts — who/what each address is assigned to"
-          className={clsx("px-2.5 py-1 transition", teamTab === "gmail" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+          className={clsx("px-2.5 py-1 transition", teamTab === "gmail" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
         >
           Gmail accounts
         </button>
         <button
           onClick={() => setTeamTab("email")}
           title="Email your team members (needs SMTP configured on the server)"
-          className={clsx("px-2.5 py-1 transition", teamTab === "email" ? "bg-ocean text-white dark:text-slate-900" : "text-muted hover:bg-field")}
+          className={clsx("px-2.5 py-1 transition", teamTab === "email" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
         >
           Email users
         </button>
