@@ -96,6 +96,19 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.maintenance.apply_week_templates",
         "schedule": crontab(hour="18", minute="30"),
     },
+    # Office-hours auto sheet sync: the tick runs every 5 min; the per-workspace
+    # interval marker + office-hours/working-day gates decide if a sync is due
+    # (Setting KV "office_hours" — disabled unless an admin turns it on).
+    "sheets-auto-sync-tick": {
+        "task": "tasks.sheets.auto_sync_tick",
+        "schedule": 300.0,
+    },
+    # Time-based index tracking: re-check links whose age crossed a checkpoint
+    # (1/7/30 days by default; Setting KV "index_tracking", disabled by default).
+    "index-tracking-tick": {
+        "task": "tasks.index.tracking_tick",
+        "schedule": crontab(hour="6", minute="30"),
+    },
 }
 
 # Register tasks by importing the modules (their decorators bind to celery_app).

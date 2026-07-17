@@ -133,3 +133,109 @@ def writeback_project_sheet(self, sheet_source_id: str) -> dict:
         self, f"writeback:{sheet_source_id}",
         lambda: run_async(_writeback_async(uuid.UUID(sheet_source_id))),
     )
+
+
+# ── Office-hours auto-sync (owner rule): sync every sheet automatically every
+# N minutes, but ONLY inside the configured office hours AND on working days.
+# All knobs live in the Setting KV "office_hours" (admin-editable in Settings). ──
+
+OFFICE_DEFAULTS = {
+    "start": "09:00", "end": "18:00", "tz": "Asia/Karachi",
+    "auto_sync": False, "sync_interval_min": 30,
+}
+
+
+async def _office_cfg(db, workspace_id) -> dict:
+    from sqlalchemy import select
+
+    from app.models.settings import Setting
+
+    row = (
+        await db.execute(
+            select(Setting).where(
+                Setting.workspace_id == workspace_id, Setting.key == "office_hours"
+            )
+        )
+    ).scalar_one_or_none()
+    cfg = dict(OFFICE_DEFAULTS)
+    if row is not None and isinstance(row.value, dict):
+        cfg.update({k: v for k, v in row.value.items() if k in OFFICE_DEFAULTS})
+    return cfg
+
+
+async def _is_working_day(db, workspace_id, day) -> bool:
+    from sqlalchemy import select
+
+    from app.models.workforce import WorkingDay
+    from app.services.workforce_service import _default_working
+
+    override = (
+        await db.execute(
+            select(WorkingDay.is_working).where(
+                WorkingDay.workspace_id == workspace_id, WorkingDay.day == day
+            )
+        )
+    ).scalar_one_or_none()
+    return override if override is not None else _default_working(day)
+
+
+async def _auto_sync_tick_async() -> dict:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from app.models.sheets import SheetSource
+
+    out: dict[str, str] = {}
+    async with session_scope() as s:
+        ws_ids = (
+            await s.execute(select(SheetSource.workspace_id).distinct())
+        ).scalars().all()
+        for ws in ws_ids:
+            cfg = await _office_cfg(s, ws)
+            if not cfg.get("auto_sync"):
+                out[str(ws)] = "disabled"
+                continue
+            try:
+                tz = ZoneInfo(str(cfg.get("tz") or "UTC"))
+            except Exception:  # noqa: BLE001 — bad tz string → UTC
+                tz = ZoneInfo("UTC")
+            now = datetime.now(tz)
+            if not await _is_working_day(s, ws, now.date()):
+                out[str(ws)] = "non_working_day"
+                continue
+            hhmm = now.strftime("%H:%M")
+            if not (str(cfg["start"]) <= hhmm < str(cfg["end"])):
+                out[str(ws)] = f"outside_hours({hhmm})"
+                continue
+            interval = max(10, min(int(cfg.get("sync_interval_min") or 30), 240))
+            # One run per interval, cluster-wide: SET NX EX marks the slot.
+            try:
+                got = _lock_client().set(
+                    f"ls:sheets:autosync:{ws}", now.isoformat(), nx=True, ex=interval * 60 - 30
+                )
+            except Exception:  # noqa: BLE001 — Redis down → skip this tick
+                out[str(ws)] = "redis_unavailable"
+                continue
+            if not got:
+                out[str(ws)] = "recently_ran"
+                continue
+            sources = (
+                await s.execute(
+                    select(SheetSource.id).where(SheetSource.workspace_id == ws)
+                )
+            ).scalars().all()
+            for i, sid in enumerate(sources):
+                sync_project_sheet.apply_async(
+                    args=[str(sid)], queue="sheets.sync", countdown=i * 10
+                )
+            log.info("sheets_auto_sync_queued", workspace_id=str(ws), sheets=len(sources))
+            out[str(ws)] = f"queued:{len(sources)}"
+    return out
+
+
+@celery_app.task(name="tasks.sheets.auto_sync_tick", bind=True, acks_late=True, max_retries=0)
+def auto_sync_tick(self) -> dict:
+    """Beat-driven every 5 min; the interval marker decides if a sync is due."""
+    return run_async(_auto_sync_tick_async())

@@ -79,3 +79,72 @@ async def run_index_check(
     return IndexCheckResponse(
         message="Index check started — unique source URLs are being checked via the proxy."
     )
+
+
+# ── Time-based index tracking settings (Setting KV "index_tracking") ─────────
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+class IndexTrackingIn(BaseModel):
+    enabled: bool = False
+    # Days-after-creation checkpoints, e.g. [1, 7, 30] = re-check indexing one
+    # day, one week and one month after each link is built.
+    checkpoints: list[int] = Field(default_factory=lambda: [1, 7, 30], max_length=10)
+    daily_cap: int = Field(default=300, ge=10, le=2000)
+
+
+@router.get("/tracking")
+async def get_index_tracking(ctx: AuthCtx, db: ReadSession) -> dict:
+    """Current time-based tracking config (checkpoints in days + daily cap)."""
+    from sqlalchemy import select as _select
+
+    from app.models.settings import Setting
+    from app.workers.tasks.index import TRACKING_DEFAULTS
+
+    row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "index_tracking"
+            )
+        )
+    ).scalar_one_or_none()
+    cfg = dict(TRACKING_DEFAULTS)
+    if row is not None and isinstance(row.value, dict):
+        cfg.update({k: v for k, v in row.value.items() if k in TRACKING_DEFAULTS})
+    return cfg
+
+
+@router.put("/tracking")
+async def put_index_tracking(
+    payload: IndexTrackingIn, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
+) -> dict:
+    """Save the tracking plan (admin, audited). The daily worker tick re-checks
+    every link whose age crosses a checkpoint — serper quota always respected."""
+    from sqlalchemy import select as _select
+
+    from app.models.settings import Setting
+
+    cps = sorted({int(c) for c in payload.checkpoints if 1 <= int(c) <= 365})
+    if payload.enabled and not cps:
+        raise ValidationAppError("Add at least one checkpoint (days), e.g. 1, 7, 30.")
+    value = {"enabled": payload.enabled, "checkpoints": cps, "daily_cap": payload.daily_cap}
+    row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "index_tracking"
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(workspace_id=ctx.workspace_id, key="index_tracking", value=value))
+    else:
+        row.value = value
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="index_tracking", entity_id=ctx.workspace_id,
+        summary=f"Index tracking {'ON' if payload.enabled else 'off'} · checkpoints {cps} · cap {payload.daily_cap}/day",
+        after=value,
+    )
+    await db.commit()
+    return value

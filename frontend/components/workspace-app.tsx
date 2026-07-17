@@ -109,7 +109,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mytoday" | "myweek" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -456,6 +456,12 @@ export function WorkspaceApp() {
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
+          {/* Focused single-section pages — the same data, one section per tab,
+              full lists (no caps), reachable straight from the sidebar. */}
+          {tab === "mytoday" ? <MyWorkDesk token={token} onNotice={setNotice} focus="today" /> : null}
+          {tab === "myweek" ? <MyWorkDesk token={token} onNotice={setNotice} focus="week" /> : null}
+          {tab === "mycal" ? <MyWorkDesk token={token} onNotice={setNotice} focus="calendar" /> : null}
+          {tab === "mylinks" ? <MyWorkDesk token={token} onNotice={setNotice} focus="links" /> : null}
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} section={dashSection} onSectionChange={setDashSection} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
           {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
@@ -781,8 +787,15 @@ const MY_NAV: NavGroup[] = [
     label: "My Work",
     items: [
       ["mywork", "My Work", CalendarDays],
-      ["mydash", "My Dashboard", Gauge]
+      ["mytoday", "Today", CheckCircle2],
+      ["myweek", "This week", History],
+      ["mycal", "My calendar", CalendarDays],
+      ["mylinks", "My recent links", Link2]
     ]
+  },
+  {
+    label: "My Dashboard",
+    items: [["mydash", "My Dashboard", Gauge]]
   },
   {
     label: "Grow",
@@ -828,7 +841,7 @@ const navTabs = (inProject: boolean, role: string | null): Tab[] =>
 const ALL_TAB_IDS = new Set<string>([
   ...navTabs(false, "admin"),
   ...navTabs(true, "admin"),
-  "mywork"
+  ...navTabs(false, "viewer")
 ]);
 const isTab = (v: string | null): v is Tab => Boolean(v) && ALL_TAB_IDS.has(v as string);
 
@@ -938,6 +951,32 @@ function Sidebar({
   onDashSection: (s: DashSection) => void;
   dashSubFor: Tab | null;
 }) {
+  // Live counts for the viewer's Today / This week tabs — the nav itself
+  // carries data ("Today · 8 tasks"), like a real product sidebar.
+  const myWeek = useQuery({
+    queryKey: ["my-week-counts", token],
+    enabled: Boolean(token) && role === "viewer",
+    refetchInterval: 120000,
+    queryFn: async () => {
+      const now = new Date();
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      return api<{ rows: Array<{ day: string }> }>(`/workforce/me?date_from=${iso(monday)}&date_to=${iso(sunday)}`, { token });
+    }
+  });
+  const _todayIso = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+  const todayCount = (myWeek.data?.rows || []).filter((r) => r.day === _todayIso).length;
+  const weekMore = (myWeek.data?.rows || []).filter((r) => r.day !== _todayIso).length;
+  const navLabel = (id: Tab, label: string) =>
+    id === "mytoday" && myWeek.data ? `Today · ${todayCount} task${todayCount === 1 ? "" : "s"}`
+      : id === "myweek" && myWeek.data ? `This week · ${weekMore} more`
+        : label;
   return (
     <div className="space-y-4">
       {role !== "viewer" ? (
@@ -987,11 +1026,11 @@ function Sidebar({
                       <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-gradient-to-b from-ocean to-plum shadow-glow" />
                     ) : null}
                     <Icon className={clsx("h-4 w-4 shrink-0", active && "drop-shadow-[0_0_6px_rgb(var(--ocean)/0.6)]")} />
-                    {label}
+                    {navLabel(id, label)}
                   </button>
                   {/* The open person-dashboard expands into its PAGES right here in
                       the main nav — a large dashboard area, not an inner widget. */}
-                  {active && dashSubFor === id ? (
+                  {(id === "mydash" && role === "viewer") || (active && dashSubFor === id) ? (
                     <div className="ml-3.5 mt-1 space-y-0.5 border-l-2 border-ocean/25 pl-2 pb-1">
                       {DASH_SECTIONS.map(([sid, slabel, SIcon, sdesc]) => {
                         const son = dashSection === sid;
@@ -4876,6 +4915,8 @@ function TaskDomainSuggestions({
       queryClient.invalidateQueries({ queryKey: ["task-domain-suggestions"] });
     }
   });
+  // Row-copy feedback: which row just copied its domain.
+  const [copiedRow, setCopiedRow] = useState<string | null>(null);
   // Skip workflow: a skip always carries a REASON (predefined list, editable in
   // Settings); link-type reasons also record which link type, "Other" requires
   // a typed explanation.
@@ -4930,11 +4971,27 @@ function TaskDomainSuggestions({
             const shown = usage.slice(0, 6);
             const moreCount = usage.length - shown.length;
             return (
-              <div key={s.domain_key} className={clsx(
-                "rounded-lg border px-3 py-2",
-                i === 0 ? "border-ocean/40 bg-ocean/5" : "border-line bg-panel"
-              )}>
+              <div
+                key={s.domain_key}
+                onClick={async (e) => {
+                  // The WHOLE row copies the domain — buttons inside keep their
+                  // own actions (the closest("button") guard skips them).
+                  if ((e.target as HTMLElement).closest("button")) return;
+                  if (await copyToClipboard(s.domain_key)) {
+                    setCopiedRow(s.domain_key);
+                    setTimeout(() => setCopiedRow((c) => (c === s.domain_key ? null : c)), 1500);
+                  }
+                }}
+                title="Click anywhere on this row to copy the domain"
+                className={clsx(
+                  "cursor-copy rounded-lg border px-3 py-2 transition hover:border-ocean/50",
+                  i === 0 ? "border-ocean/40 bg-ocean/5" : "border-line bg-panel"
+                )}
+              >
                 <div className="flex flex-wrap items-center gap-2">
+                  {copiedRow === s.domain_key ? (
+                    <span className="rounded bg-ocean px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">Copied!</span>
+                  ) : null}
                   {i < 3 ? (
                     <span className={clsx(
                       "rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
@@ -5418,7 +5475,12 @@ function MyRecommendationsPanel({ token, userLabel }: { token: string | null; us
   );
 }
 
-function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+function MyWorkDesk({ token, onNotice, focus }: {
+  token: string | null; onNotice: (text: string) => void;
+  // Single-section pages: the sidebar's Today / This week / My calendar /
+  // My recent links tabs render ONLY that section, uncapped.
+  focus?: "today" | "week" | "calendar" | "links";
+}) {
   const queryClient = useQueryClient();
   const fmtIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -5485,6 +5547,12 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
   // Compact lists: a handful of rows first (urgent on top), "View all" expands.
   const [showAllToday, setShowAllToday] = useState(false);
   const [showAllWeek, setShowAllWeek] = useState(false);
+  // Section gates for the focused single-tab pages.
+  const showToday = !focus || focus === "today";
+  const showWeek = !focus || focus === "week";
+  const showCal = !focus || focus === "calendar";
+  const showLinks = !focus || focus === "links";
+  const uncap = Boolean(focus); // focused pages list EVERYTHING
   const prioRank = (p?: string | null) => (p === "high" ? 0 : p === "medium" ? 1 : p === "low" ? 3 : 2);
   const sortByPriority = <T extends { priority?: string | null; day?: string }>(list: T[]): T[] =>
     [...list].sort((a, b) => prioRank(a.priority) - prioRank(b.priority) || String(a.day || "").localeCompare(String(b.day || "")));
@@ -5577,6 +5645,7 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
         </div>
       </div>
 
+      {(!focus || focus === "today" || focus === "week") ? (
       <div className="grid gap-3 md:grid-cols-3">
         <Metric label="Today's tasks" value={todayRows.length} icon={CalendarDays} tone="ink"
           sub={todayRows.length ? `${todayRows.reduce((a, r) => a + r.hours, 0)}h planned` : "Nothing planned today"} />
@@ -5586,11 +5655,13 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
           tone={weekPct != null && weekPct >= 100 ? "ocean" : "ember"}
           sub="Excused days (leave / days off) don't count against you" />
       </div>
+      ) : null}
 
       {/* Today + This week side by side on wide screens, stacked on phones;
           both capped with "View all" so the page never drowns in rows. The
           highest-priority tasks always sort first. */}
-      <div className="grid items-start gap-4 xl:grid-cols-2">
+      <div className={clsx("grid items-start gap-4", !focus && "xl:grid-cols-2")}>
+        {showToday ? (
         <section className="rounded-xl border border-line bg-panel shadow-card">
           <div className="flex items-center justify-between pr-3">
             <SectionTitle title={`Today · ${todayRows.length} task${todayRows.length === 1 ? "" : "s"}`} />
@@ -5601,11 +5672,13 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
             ) : null}
           </div>
           <div className="space-y-2 p-3">
-            {sortByPriority(todayRows).slice(0, showAllToday ? undefined : 4).map(taskCard)}
+            {sortByPriority(todayRows).slice(0, uncap || showAllToday ? undefined : 4).map(taskCard)}
             {!todayRows.length ? <p className="p-2 text-sm text-muted">No tasks planned for today.</p> : null}
           </div>
         </section>
+        ) : null}
 
+        {showWeek ? (
         <section className="rounded-xl border border-line bg-panel shadow-card">
           <div className="flex items-center justify-between pr-3">
             <SectionTitle title={`This week · ${rows.filter((r) => r.day !== today).length} more`} />
@@ -5616,7 +5689,7 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
             ) : null}
           </div>
           <div className="space-y-2 p-3">
-            {sortByPriority(rows.filter((r) => r.day !== today)).slice(0, showAllWeek ? undefined : 5).map((r) => (
+            {sortByPriority(rows.filter((r) => r.day !== today)).slice(0, uncap || showAllWeek ? undefined : 5).map((r) => (
               <div key={r.id} className="flex items-start gap-3">
                 <span className="mt-3 w-20 shrink-0 whitespace-nowrap text-xs font-semibold text-muted">{formatDay(r.day)}</span>
                 <div className="min-w-0 flex-1">{taskCard(r)}</div>
@@ -5628,32 +5701,34 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
             {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
           </div>
         </section>
+        ) : null}
       </div>
 
       {/* The person's own QA picture: links, quality split, avg score. */}
-      {me.data?.labels.length ? (
+      {!focus && me.data?.labels.length ? (
         <MyQaSummary token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
       {/* Visual performance: 90-day trend + project/link-type breakdowns. */}
-      {me.data?.labels.length ? (
+      {!focus && me.data?.labels.length ? (
         <MyPerformancePanel token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
       {/* Domains a manager hand-picked (or the engine queued) for this person. */}
-      {me.data?.labels.length ? (
+      {!focus && me.data?.labels.length ? (
         <MyRecommendationsPanel token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
       {/* Full task calendar: past, current and upcoming months (day/week/month). */}
-      <MyTaskCalendar token={token} />
+      {showCal ? <MyTaskCalendar token={token} /> : null}
 
       {/* Latest links with live QA verdicts — what happened to what I built. */}
-      {me.data?.labels.length ? (
+      {showLinks && me.data?.labels.length ? (
         <MyRecentLinks token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
       {/* Week at a glance + the company working-days calendar */}
+      {showCal ? (
       <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
         <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
           {me.data?.labels.length ? (
@@ -5664,6 +5739,7 @@ function MyWorkDesk({ token, onNotice }: { token: string | null; onNotice: (text
           <MiniWorkCalendar token={token} />
         </div>
       </section>
+      ) : null}
 
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="My leave" />
@@ -5769,6 +5845,16 @@ function TasksDesk({
       ),
     [report.data, filterUser, filterProject]
   );
+  // The list view shows a page at a time — long ranges stay scannable.
+  const [listShown, setListShown] = useState(25);
+  useEffect(() => setListShown(25), [filterUser, filterProject, view]);
+  // Live office-hours status (config lives in Settings → Office hours).
+  const officeHours = useQuery({
+    queryKey: ["office-hours", token],
+    enabled: Boolean(token),
+    refetchInterval: 60000,
+    queryFn: () => api<{ start: string; end: string; tz: string; now: string; in_hours: boolean; working_day: boolean; auto_sync: boolean; sync_interval_min: number }>("/workforce/office-hours", { token })
+  });
   // Everyone plannable (employee catalog + past assignments), TeamLead-scoped.
   const knownLabels = useQuery({
     queryKey: ["workforce-labels", token],
@@ -6147,6 +6233,21 @@ function TasksDesk({
         </div>
       ) : null}
 
+      {/* Office hours — live status chip (config in Settings → Office hours). */}
+      {officeHours.data ? (
+        <div className={clsx(
+          "flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium",
+          officeHours.data.in_hours ? "border-ocean/40 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted"
+        )}>
+          <span className={clsx("h-2 w-2 rounded-full", officeHours.data.in_hours ? "animate-pulse bg-ocean" : "bg-line")} />
+          Office hours {officeHours.data.start}–{officeHours.data.end} ({officeHours.data.tz}) ·
+          now {officeHours.data.now} — {officeHours.data.working_day ? (officeHours.data.in_hours ? "OPEN" : "closed") : "non-working day"}
+          {officeHours.data.auto_sync
+            ? ` · sheets auto-sync every ${officeHours.data.sync_interval_min} min while open`
+            : " · sheet auto-sync off (enable in Settings)"}
+        </div>
+      ) : null}
+
       {/* Plan vs done — weekly planner (day-wise, like the old sheet), project view, list */}
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
@@ -6439,8 +6540,12 @@ function TasksDesk({
                   </table>
                 );
               }
+              // ACTIVE people only (knownLabels excludes laid-off). A laid-off
+              // person's leftover rows this week are hidden here too — their
+              // history stays in day reports, never in the ACTIVE planner.
+              const activeSet = new Set(knownLabels.data || []);
               const gridUsers = Array.from(
-                new Set([...(knownLabels.data || []), ...rows.map((r) => r.user_label)])
+                new Set([...(knownLabels.data || []), ...rows.map((r) => r.user_label).filter((l) => activeSet.has(l))])
               ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
               if (!gridUsers.length)
                 return (
@@ -6498,7 +6603,7 @@ function TasksDesk({
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {visibleRows.map((r) => (
+              {visibleRows.slice(0, listShown).map((r) => (
                 <tr key={r.id} className="cursor-pointer hover:bg-field/60" onClick={() => prefillForm({ row: r })}>
                   <Td><span className="whitespace-nowrap">{r.day}</span></Td>
                   <Td><span className="font-medium text-ink">{r.user_label}</span></Td>
@@ -6572,6 +6677,26 @@ function TasksDesk({
           ) : null}
           {!report.isLoading && !visibleRows.length ? (
             <Empty label="No assignments match this period/filters — add one above." />
+          ) : null}
+          {visibleRows.length > listShown ? (
+            <div className="flex items-center justify-center gap-3 border-t border-line p-3">
+              <span className="text-xs text-muted">
+                Showing <span className="font-semibold text-ink">{listShown}</span> of{" "}
+                <span className="font-semibold text-ink">{visibleRows.length}</span> assignments
+              </span>
+              <button
+                onClick={() => setListShown((n) => n + 50)}
+                className="h-8 rounded-lg border border-line px-3 text-xs font-semibold text-ink hover:bg-field"
+              >
+                Load 50 more
+              </button>
+              <button
+                onClick={() => setListShown(visibleRows.length)}
+                className="h-8 rounded-lg border border-line px-3 text-xs font-medium text-muted hover:bg-field"
+              >
+                Show all
+              </button>
+            </div>
           ) : null}
         </div>
         )}
@@ -14950,13 +15075,25 @@ function LinkTypesCard({
               </div>
               <p className="text-xs text-muted">Review each group and choose the final master name before merging.</p>
             </div>
-            <button
-              onClick={() => scan.mutate()}
-              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
-            >
-              {scan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
-              Scan for duplicates
-            </button>
+            <div className="flex items-center gap-2">
+              <ExportButton
+                disabled={!(types.data || []).length}
+                onClick={() =>
+                  downloadCsv(
+                    "link-types-final.csv",
+                    ["Link type (final name)", "Links", "Merged spellings that redirect here"],
+                    (types.data || []).map((t) => [t.name, t.backlink_count, (t.aliases || []).join(" | ")])
+                  )
+                }
+              />
+              <button
+                onClick={() => scan.mutate()}
+                className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-semibold text-ink transition hover:bg-field"
+              >
+                {scan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
+                Scan for duplicates
+              </button>
+            </div>
           </div>
           {proposal && proposal.length ? (
             <div className="mt-3 space-y-3">
@@ -15117,6 +15254,157 @@ function LinkTypeTargetsCard({ token, onNotice }: { token: string | null; onNoti
           >
             {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save default targets
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Office hours + automatic sheet sync: the company's daily timing (shown live
+// on the Tasks desk) and the every-N-minutes auto sync that ONLY runs inside
+// those hours on working days.
+function OfficeHoursCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  type OH = { start: string; end: string; tz: string; auto_sync: boolean; sync_interval_min: number; now?: string; in_hours?: boolean; working_day?: boolean };
+  const q = useQuery({
+    queryKey: ["office-hours", token],
+    enabled: Boolean(token),
+    queryFn: () => api<OH>("/workforce/office-hours", { token })
+  });
+  const [draft, setDraft] = useState<Partial<OH>>({});
+  const v = { ...(q.data || { start: "09:00", end: "18:00", tz: "Asia/Karachi", auto_sync: false, sync_interval_min: 30 }), ...draft };
+  const save = useMutation({
+    mutationFn: () =>
+      api("/workforce/office-hours", {
+        token, method: "PUT",
+        body: JSON.stringify({ start: v.start, end: v.end, tz: v.tz, auto_sync: v.auto_sync, sync_interval_min: Number(v.sync_interval_min) || 30 })
+      }),
+    onSuccess: () => {
+      onNotice("Office hours saved — the auto-sync follows them from the next tick.");
+      setDraft({});
+      queryClient.invalidateQueries({ queryKey: ["office-hours"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="Office hours & automatic sheet sync" />
+      <div className="space-y-3 p-4">
+        <p className="text-xs text-muted">
+          Set the team&apos;s daily office timing. With auto-sync ON, every connected Google Sheet
+          syncs automatically at the chosen interval — <span className="font-medium text-ink">only inside
+          office hours and only on working days</span> (the working-days calendar applies). Outside
+          those hours nothing runs, so quotas and evenings stay untouched.
+        </p>
+        {q.data ? (
+          <p className={clsx("rounded-lg border px-3 py-2 text-xs font-medium",
+            q.data.in_hours ? "border-ocean/40 bg-ocean/10 text-ocean" : "border-line bg-field text-muted")}>
+            Right now: {q.data.now} ({q.data.tz}) — {q.data.working_day ? (q.data.in_hours ? "inside office hours" : "outside office hours") : "non-working day"}
+            {v.auto_sync ? ` · auto-sync every ${v.sync_interval_min} min when open` : " · auto-sync is OFF"}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1.5 text-sm text-muted">
+            Start
+            <input type="time" value={v.start} onChange={(e) => setDraft((d) => ({ ...d, start: e.target.value }))}
+              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-muted">
+            End
+            <input type="time" value={v.end} onChange={(e) => setDraft((d) => ({ ...d, end: e.target.value }))}
+              className="h-9 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-muted">
+            Timezone
+            <input value={v.tz} onChange={(e) => setDraft((d) => ({ ...d, tz: e.target.value }))}
+              placeholder="Asia/Karachi" className="h-9 w-44 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={Boolean(v.auto_sync)} onChange={(e) => setDraft((d) => ({ ...d, auto_sync: e.target.checked }))}
+              className="h-4 w-4 accent-[rgb(var(--ocean))]" />
+            Auto-sync sheets
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-muted">
+            every
+            <input type="number" min={10} max={240} value={v.sync_interval_min}
+              onChange={(e) => setDraft((d) => ({ ...d, sync_interval_min: Number(e.target.value) }))}
+              className="h-9 w-20 rounded-lg border border-line bg-panel px-2 text-right text-sm text-ink" />
+            min
+          </label>
+          <button onClick={() => save.mutate()} disabled={save.isPending}
+            className="ml-auto flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60">
+            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save office hours
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Time-based index tracking: re-check links 1 / 7 / 30 days (configurable)
+// after they were built, so indexing speed is measurable per cohort.
+function IndexTrackingCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  type IT = { enabled: boolean; checkpoints: number[]; daily_cap: number };
+  const q = useQuery({
+    queryKey: ["index-tracking", token],
+    enabled: Boolean(token),
+    queryFn: () => api<IT>("/index/tracking", { token })
+  });
+  const [draft, setDraft] = useState<{ enabled?: boolean; checkpoints?: string; daily_cap?: number }>({});
+  const enabled = draft.enabled ?? q.data?.enabled ?? false;
+  const checkpoints = draft.checkpoints ?? (q.data?.checkpoints || [1, 7, 30]).join(", ");
+  const cap = draft.daily_cap ?? q.data?.daily_cap ?? 300;
+  const save = useMutation({
+    mutationFn: () =>
+      api("/index/tracking", {
+        token, method: "PUT",
+        body: JSON.stringify({
+          enabled,
+          checkpoints: checkpoints.split(",").map((c) => Number(c.trim())).filter((n) => Number.isFinite(n) && n >= 1),
+          daily_cap: Number(cap) || 300
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Index tracking saved — the daily tick follows the new plan.");
+      setDraft({});
+      queryClient.invalidateQueries({ queryKey: ["index-tracking"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="Index tracking over time" />
+      <div className="space-y-3 p-4">
+        <p className="text-xs text-muted">
+          Track how fast new links get indexed: with tracking ON, every link is automatically
+          re-checked when its age crosses each checkpoint (e.g. 1 day, 1 week, 1 month after it was
+          built). Runs once daily, capped, and always respects the serper.dev quota — when the API
+          limit is reached the run simply waits for the next day.
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={enabled} onChange={(e) => setDraft((d) => ({ ...d, enabled: e.target.checked }))}
+              className="h-4 w-4 accent-[rgb(var(--ocean))]" />
+            Enable time-based tracking
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-muted">
+            Checkpoints (days)
+            <input value={checkpoints} onChange={(e) => setDraft((d) => ({ ...d, checkpoints: e.target.value }))}
+              placeholder="1, 7, 30" className="h-9 w-36 rounded-lg border border-line bg-panel px-2 text-sm text-ink" />
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-muted">
+            Daily cap
+            <input type="number" min={10} max={2000} value={cap}
+              onChange={(e) => setDraft((d) => ({ ...d, daily_cap: Number(e.target.value) }))}
+              className="h-9 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm text-ink" />
+          </label>
+          <button onClick={() => save.mutate()} disabled={save.isPending}
+            className="ml-auto flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white disabled:opacity-60">
+            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save tracking plan
           </button>
         </div>
       </div>
@@ -16098,6 +16386,8 @@ function SettingsDesk({
       <LinkTypesCard token={token} onNotice={onNotice} />
       <LinkTypeTargetsCard token={token} onNotice={onNotice} />
       <SkipReasonsCard token={token} onNotice={onNotice} />
+      <OfficeHoursCard token={token} onNotice={onNotice} />
+      <IndexTrackingCard token={token} onNotice={onNotice} />
       <ProductivityCard token={token} onNotice={onNotice} />
       <QaSettingsCard token={token} onNotice={onNotice} />
       {!projectId ? (
@@ -17991,6 +18281,12 @@ function SheetsDesk({
   });
 
   // Sync ALL sheets — one click, queued sequentially (manual trigger only).
+  // Real catalog names for the sample-sheet template download.
+  const sampleLinkTypes = useQuery({
+    queryKey: ["link-types", token],
+    enabled: Boolean(token),
+    queryFn: () => api<LinkType[]>("/link-types", { token })
+  });
   const syncEverySheet = useMutation({
     mutationFn: () => api<{ message: string }>("/sheets/sync-all", { method: "POST", token }),
     onSuccess: (r) => {
@@ -18058,6 +18354,29 @@ function SheetsDesk({
             >
               {syncEverySheet.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Sync all sheets ({visibleSheets.length})
+            </button>
+            <button
+              onClick={() => {
+                // Fully-compatible project-sheet template: canonical headers the
+                // mapper auto-detects + example rows using REAL catalog link types.
+                const lts = (sampleLinkTypes.data || []).filter((t) => t.is_active).map((t) => t.name);
+                const lt = (i: number) => lts[i % Math.max(1, lts.length)] || "Guest Post";
+                downloadCsv(
+                  "sample-project-sheet.csv",
+                  ["Sr", "Created Date", "User", "Employee Code", "Link Type", "Source URL", "Target URL", "Anchor Text", "Notes"],
+                  [
+                    [1, isoDay(0), "Alex", "EMP-01", lt(0), "https://exampleblog.com/great-article", "https://your-project.com/", "your brand", "example row — replace with real data"],
+                    [2, isoDay(0), "Tony", "EMP-02", lt(1), "https://another-site.org/resources", "https://your-project.com/services", "best services", ""],
+                    [3, isoDay(-1), "Alex", "EMP-01", lt(2), "https://web20site.com/profile/yourbrand", "https://your-project.com/", "brand name", ""]
+                  ]
+                );
+                onNotice("Sample sheet downloaded — headers auto-map on sync; Link Type uses your real catalog names.");
+              }}
+              title="Download a ready-to-use CSV template: the exact headers the sheet mapper auto-detects, with example rows using your current link-type names"
+              className="flex items-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:bg-field"
+            >
+              <Download className="h-4 w-4" />
+              Sample sheet (CSV)
             </button>
           </div>
         </div>

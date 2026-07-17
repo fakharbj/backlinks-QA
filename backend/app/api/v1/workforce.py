@@ -352,3 +352,83 @@ async def decide_leave(
         id=row.id, user_label=row.user_label, start_date=row.start_date,
         end_date=row.end_date, reason=row.reason, status=row.status,
     )
+
+
+# ── Office hours (owner rule): the company's daily timing, shown on the Tasks
+# desk and driving the automatic sheet sync (worker gate). Setting KV. ──
+
+
+class OfficeHoursIn(BaseModel):
+    start: str = Field(pattern=r"^\d{2}:\d{2}$")
+    end: str = Field(pattern=r"^\d{2}:\d{2}$")
+    tz: str = Field(min_length=1, max_length=60)
+    auto_sync: bool = False
+    sync_interval_min: int = Field(default=30, ge=10, le=240)
+
+
+@router.get("/office-hours")
+async def get_office_hours(ctx: AuthCtx, db: ReadSession) -> dict:
+    """Current office-hours config + whether we are inside them RIGHT NOW
+    (working-day calendar respected) — the Tasks desk shows this live."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.workers.tasks.sheets import _is_working_day, _office_cfg
+
+    cfg = await _office_cfg(db, ctx.workspace_id)
+    try:
+        tz = ZoneInfo(str(cfg.get("tz") or "UTC"))
+    except Exception:  # noqa: BLE001
+        tz = ZoneInfo("UTC")
+    now = datetime.now(tz)
+    working = await _is_working_day(db, ctx.workspace_id, now.date())
+    hhmm = now.strftime("%H:%M")
+    return {
+        **cfg,
+        "now": hhmm,
+        "working_day": working,
+        "in_hours": working and str(cfg["start"]) <= hhmm < str(cfg["end"]),
+    }
+
+
+@router.put("/office-hours")
+async def put_office_hours(
+    payload: OfficeHoursIn, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
+) -> dict:
+    """Save office hours + auto-sync knobs (admin, audited). The worker's
+    5-minute tick reads this — no restart needed."""
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select as _select
+
+    from app.core.errors import ValidationAppError
+    from app.models.settings import Setting
+
+    if payload.end <= payload.start:
+        raise ValidationAppError("End time must be after start time.")
+    try:
+        ZoneInfo(payload.tz)
+    except Exception as exc:  # noqa: BLE001
+        raise ValidationAppError(f"Unknown timezone '{payload.tz}' — use e.g. Asia/Karachi.") from exc
+    value = payload.model_dump()
+    row = (
+        await db.execute(
+            _select(Setting).where(
+                Setting.workspace_id == ctx.workspace_id, Setting.key == "office_hours"
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(workspace_id=ctx.workspace_id, key="office_hours", value=value))
+    else:
+        row.value = value
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="office_hours", entity_id=ctx.workspace_id,
+        summary=f"Office hours set to {payload.start}–{payload.end} {payload.tz}"
+                f" · auto-sync {'ON every ' + str(payload.sync_interval_min) + 'm' if payload.auto_sync else 'off'}",
+        after=value,
+    )
+    await db.commit()
+    return value
