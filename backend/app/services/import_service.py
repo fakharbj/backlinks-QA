@@ -8,6 +8,7 @@ upserts ``backlink_records`` — returning the ids of newly created links to cra
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date, datetime, timezone
 
@@ -37,6 +38,24 @@ from app.models.enums import (
 )
 from app.models.imports import Import, ImportRow
 from app.services.import_parse import apply_mapping
+
+# A cell like "open.substack.com/pub/x" or "www.foo.com" is obviously a URL
+# that lost its scheme (Sheets strips it on some pastes) — repair, don't error.
+_DOMAINISH = re.compile(r"^(www\.)?[a-zA-Z0-9][a-zA-Z0-9-]{0,62}(\.[a-zA-Z0-9-]{1,63})+([/?#].*)?$")
+
+
+def coerce_url_scheme(url: str) -> str:
+    """Prepend https:// to scheme-less domain-like values so real links from
+    sheets never fail with "unsupported_scheme". Anything with an explicit
+    scheme (http, mailto, tel, …) or that doesn't look like a domain is
+    returned unchanged (still validated downstream)."""
+    u = (url or "").strip()
+    if not u or ":" in u.split("/", 1)[0]:
+        return u  # has a scheme (or a port-ish colon) — leave it alone
+    if _DOMAINISH.match(u):
+        return f"https://{u}"
+    return u
+
 
 _REL_ALIASES = {
     "follow": RelType.DOFOLLOW, "dofollow": RelType.DOFOLLOW, "do-follow": RelType.DOFOLLOW,
@@ -219,14 +238,18 @@ async def _process_row(
     label_aliases: dict[str, str],
 ) -> uuid.UUID | None:
     data = row.mapped or {}
-    source = (data.get("source_page_url") or "").strip()
+    source = coerce_url_scheme((data.get("source_page_url") or "").strip())
     # The project's main domain is the target for all its links (Phase 8). The sheet
     # 'target' column is only a fallback for projects with no main domain configured.
-    target = f"https://{project_domain}/" if project_domain else (data.get("target_url") or "").strip()
+    target = f"https://{project_domain}/" if project_domain else coerce_url_scheme(
+        (data.get("target_url") or "").strip()
+    )
     if not source:
-        row.status = ImportRowStatus.ERROR
-        row.error = "Skipped row: source URL/domain is missing"
-        imp.error_rows += 1
+        # A spacer/heading row without a URL is NORMAL sheet formatting (owner
+        # rule): ignore it quietly — green, never an error, never "partly failed".
+        row.status = ImportRowStatus.SKIPPED
+        row.error = None
+        imp.skipped_rows = (imp.skipped_rows or 0) + 1
         return None
     if not target:
         row.status = ImportRowStatus.ERROR
@@ -443,10 +466,12 @@ def _apply_input_fields(
 
     # Sheet-sourced fields. Roll a spelling variant up to its canonical person so a
     # re-sync of the still-misspelled sheet stores the canonical label (no re-split).
+    # Labels are stored LOWERCASE (owner rule): "Junius" and "junius" are the same
+    # person — case can never create duplicate identities again.
     raw_label = (data.get("assigned_user_label") or "").strip()
     if raw_label:
         label = label_aliases.get(raw_label.lower(), raw_label)
-        bl.assigned_user_label = label
+        bl.assigned_user_label = label.strip().lower()[:200]
         resolved = user_map.get(label.lower()) or user_map.get(raw_label.lower())
         if resolved is not None:
             bl.assigned_user_id = resolved

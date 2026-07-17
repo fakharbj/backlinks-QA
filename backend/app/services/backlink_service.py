@@ -622,7 +622,7 @@ async def update_backlink(
     if "assigned_user_label" in data:
         # Store a trimmed label (or NULL) so a whitespace-only value never becomes
         # its own "user" — keeps it in the "(unassigned)" bucket, matching imports.
-        cleaned = (data["assigned_user_label"] or "").strip()
+        cleaned = (data["assigned_user_label"] or "").strip().lower()  # lowercase (owner rule)
         if cleaned:
             # Roll a spelling variant up to its canonical person (KEVIN/Keven → Kevin).
             from app.services import employee_service

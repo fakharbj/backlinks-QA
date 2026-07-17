@@ -130,6 +130,55 @@ def auto_map_report(headers: list[str]) -> dict:
     }
 
 
+# ── Content-based user-column inference ──────────────────────────────────────
+# Real sheets often carry the person in a column whose HEADER cell is broken —
+# "#REF!" (a dead formula) or blank (→ "column_1" after de-duplication) — so
+# name-based mapping can't see it and every link in the tab lands without a
+# user. When no column maps to assigned_user_label, sniff the DATA: the
+# leftmost unmapped column whose values look like a small set of person names
+# IS the user column. Pure + deterministic; guarded hard against
+# status/remark/date columns.
+import re as _re
+
+_NAMEISH = _re.compile(r"^[A-Za-z][A-Za-z .'\-]{1,29}$")
+# Headers that must never be inferred as the user column even if their values
+# look name-like ("Indexed"/"Pending" would otherwise qualify).
+_INFER_STOPWORDS = ("index", "status", "remark", "note", "da", "ss", "%", "type",
+                    "anchor", "keyword", "month", "target", "url", "link", "date")
+
+
+def infer_user_column(
+    mapping: dict[str, str], headers: list[str], rows: list[dict[str, str]],
+    sample: int = 200,
+) -> tuple[dict[str, str], str | None]:
+    """Return (mapping, inferred_header|None) — mapping gains
+    ``{header: "assigned_user_label"}`` when a user column is confidently
+    detected from the data. No-op when one is already mapped."""
+    m = dict(mapping or {})
+    if "assigned_user_label" in m.values() or not rows:
+        return m, None
+    for header in headers:
+        if m.get(header):
+            continue  # already mapped to another field
+        low = (header or "").strip().lower()
+        if any(w in low for w in _INFER_STOPWORDS):
+            continue
+        vals = [str(r.get(header) or "").strip() for r in rows[:sample]]
+        vals = [v for v in vals if v]
+        if len(vals) < 3:
+            continue
+        namey = sum(
+            1 for v in vals
+            if _NAMEISH.match(v) and not v.lower().startswith(("http", "www."))
+        )
+        distinct = {v.lower() for v in vals}
+        # ≥80% name-like AND a small roster (people repeat; free text doesn't).
+        if namey / len(vals) >= 0.8 and 1 <= len(distinct) <= max(3, len(vals) // 3):
+            m[header] = "assigned_user_label"
+            return m, header
+    return m, None
+
+
 def _decode(data: bytes) -> str:
     best = from_bytes(data).best()
     return str(best) if best is not None else data.decode("utf-8", errors="replace")

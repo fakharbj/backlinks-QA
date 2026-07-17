@@ -20,6 +20,7 @@ const config: Config = {
         plum: tok("--plum"),
         ember: tok("--ember"),
         danger: tok("--danger"),
+        success: tok("--success"),
         accent: tok("--accent")
       },
       borderRadius: {

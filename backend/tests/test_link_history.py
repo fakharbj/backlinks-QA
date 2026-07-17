@@ -89,13 +89,13 @@ def test_edit_emits_per_field_events_and_aligns_assignment(live_stack):
         assert patched.status_code == 200, patched.text
         # Single-PATCH reassignment stamps assigned_at (parity with bulk_edit).
         assert patched.json()["assigned_at"] is not None
-        assert patched.json()["assigned_user_label"] == "Kevin"
+        assert patched.json()["assigned_user_label"] == "kevin"  # stored lowercase (owner rule)
 
         page = _timeline(client, h, bl["id"])
         edited = [e for e in page["items"] if e["event_type"] == "edited"]
         by_field = {e["field"]: e for e in edited}
         assert "notes" in by_field and by_field["notes"]["new_value"] == "checked by hand"
-        assert by_field["assigned_user_label"]["new_value"] == "Kevin"
+        assert by_field["assigned_user_label"]["new_value"] == "kevin"
 
         # ... and ALSO writes AssignmentHistory (the audit gap bulk_edit never had).
         assigns = client.get(
@@ -103,13 +103,13 @@ def test_edit_emits_per_field_events_and_aligns_assignment(live_stack):
         )
         assert assigns.status_code == 200, assigns.text
         assert len(assigns.json()) == 1
-        assert assigns.json()[0]["new_user_label"] == "Kevin"
+        assert assigns.json()[0]["new_user_label"] == "kevin"
 
         # Merged view dedupes the dual-write: exactly ONE timeline entry for the
         # label change (the richer history event wins; the assignment twin drops).
         label_entries = [
             e for e in page["items"]
-            if e["field"] == "assigned_user_label" and e["new_value"] == "Kevin"
+            if e["field"] == "assigned_user_label" and e["new_value"] == "kevin"
         ]
         assert len(label_entries) == 1
 

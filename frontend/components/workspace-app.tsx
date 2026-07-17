@@ -109,7 +109,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mytoday" | "myweek" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -126,16 +126,20 @@ export function WorkspaceApp() {
   // Users desk reports which person is open so admin nav shows the sections too.
   const [dashSection, setDashSection] = useState<DashSection>("overview");
   const [dashPerson, setDashPerson] = useState<string | null>(null);
-  // Toast stack: every onNotice(text) becomes a stacked, auto-dismissing toast.
-  const [toasts, setToasts] = useState<Array<{ id: number; text: string; kind: "info" | "error" }>>([]);
+  // Toast stack: EVERY onNotice(text) becomes its OWN stacked popup with a
+  // timestamp — two rapid notifications are two visibly separate panels, never
+  // one panel whose text morphs. Up to 6 stack; each auto-dismisses on its own
+  // clock (errors linger longer so they're never missed).
+  const [toasts, setToasts] = useState<Array<{ id: number; text: string; kind: "info" | "error"; at: string }>>([]);
   const setNotice = (text: string) => {
     if (!text) return;
     const id = Date.now() + Math.random();
     const kind = /fail|error|could not|couldn't|denied|invalid|not found/i.test(text)
       ? ("error" as const)
       : ("info" as const);
-    setToasts((t) => [...t.slice(-3), { id, text, kind }]);
-    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 6500);
+    const at = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setToasts((t) => [...t.slice(-5), { id, text, kind, at }]);
+    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 10000 : 6500);
   };
 
   // ── Context persistence ───────────────────────────────────────────────
@@ -381,7 +385,7 @@ export function WorkspaceApp() {
               <div
                 key={t.id}
                 className={clsx(
-                  "pointer-events-auto flex items-start gap-2.5 rounded-xl border bg-panel/95 p-3 text-sm shadow-pop backdrop-blur",
+                  "toast-enter pointer-events-auto flex items-start gap-2.5 rounded-xl border bg-panel/95 p-3 text-sm shadow-pop backdrop-blur",
                   t.kind === "error" ? "border-danger/40" : "border-ocean/40"
                 )}
               >
@@ -391,7 +395,10 @@ export function WorkspaceApp() {
                     t.kind === "error" ? "bg-danger" : "bg-ocean"
                   )}
                 />
-                <span className="flex-1 break-words text-ink">{t.text}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words text-ink">{t.text}</span>
+                  <span className="mt-0.5 block text-[10px] tabular-nums text-muted">{t.at}</span>
+                </span>
                 <button
                   onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))}
                   className="shrink-0 text-muted hover:text-ink"
@@ -457,12 +464,8 @@ export function WorkspaceApp() {
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
-          {/* Focused single-section pages — the same data, one section per tab,
-              full lists (no caps), reachable straight from the sidebar. */}
-          {tab === "mytoday" ? <MyWorkDesk token={token} onNotice={setNotice} focus="today" /> : null}
-          {tab === "myweek" ? <MyWorkDesk token={token} onNotice={setNotice} focus="week" /> : null}
+          {/* Focused calendar page — full month view, straight from the sidebar. */}
           {tab === "mycal" ? <MyWorkDesk token={token} onNotice={setNotice} focus="calendar" /> : null}
-          {tab === "mylinks" ? <MyWorkDesk token={token} onNotice={setNotice} focus="links" /> : null}
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} section={dashSection} onSectionChange={setDashSection} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
           {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
@@ -792,13 +795,12 @@ const MY_NAV: NavGroup[] = [
     items: [["mydash", "My Dashboard", Gauge]]
   },
   {
+    // Owner rule: keep the viewer nav MINIMAL — My Work (today + this week live
+    // inside it) and the calendar. No separate Today/This week/Recent-links tabs.
     label: "My Work",
     items: [
       ["mywork", "My Work", CalendarDays],
-      ["mytoday", "Today", CheckCircle2],
-      ["myweek", "This week", History],
-      ["mycal", "My calendar", CalendarDays],
-      ["mylinks", "My recent links", Link2]
+      ["mycal", "My calendar", CalendarDays]
     ]
   },
   {
@@ -955,32 +957,6 @@ function Sidebar({
   onDashSection: (s: DashSection) => void;
   dashSubFor: Tab | null;
 }) {
-  // Live counts for the viewer's Today / This week tabs — the nav itself
-  // carries data ("Today · 8 tasks"), like a real product sidebar.
-  const myWeek = useQuery({
-    queryKey: ["my-week-counts", token],
-    enabled: Boolean(token) && role === "viewer",
-    refetchInterval: 120000,
-    queryFn: async () => {
-      const now = new Date();
-      const monday = new Date(now);
-      monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
-      const sunday = new Date(monday);
-      sunday.setDate(monday.getDate() + 6);
-      const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      return api<{ rows: Array<{ day: string }> }>(`/workforce/me?date_from=${iso(monday)}&date_to=${iso(sunday)}`, { token });
-    }
-  });
-  const _todayIso = (() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  })();
-  const todayCount = (myWeek.data?.rows || []).filter((r) => r.day === _todayIso).length;
-  const weekMore = (myWeek.data?.rows || []).filter((r) => r.day !== _todayIso).length;
-  const navLabel = (id: Tab, label: string) =>
-    id === "mytoday" && myWeek.data ? `Today · ${todayCount} task${todayCount === 1 ? "" : "s"}`
-      : id === "myweek" && myWeek.data ? `This week · ${weekMore} more`
-        : label;
   return (
     <div className="space-y-4">
       {role !== "viewer" ? (
@@ -1030,7 +1006,7 @@ function Sidebar({
                       <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-gradient-to-b from-ocean to-plum shadow-glow" />
                     ) : null}
                     <Icon className={clsx("h-4 w-4 shrink-0", active && "drop-shadow-[0_0_6px_rgb(var(--ocean)/0.6)]")} />
-                    {navLabel(id, label)}
+                    {label}
                   </button>
                   {/* The open person-dashboard expands into its PAGES right here in
                       the main nav — a large dashboard area, not an inner widget. */}
@@ -5727,18 +5703,12 @@ function MyWorkDesk({ token, onNotice, focus }: {
         <MyRecentLinks token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
-      {/* Week at a glance + the company working-days calendar */}
-      {showCal ? (
-      <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
-        <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
-          {me.data?.labels.length ? (
-            <UserWeekStrip token={token} userLabel={me.data.labels[0]} />
-          ) : (
-            <div />
-          )}
-          <MiniWorkCalendar token={token} />
-        </div>
-      </section>
+      {/* Week at a glance (owner rule: the company working-days calendar is
+          EXCLUDED from the viewer dashboard — it lives on the admin Tasks desk). */}
+      {showCal && me.data?.labels.length ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <UserWeekStrip token={token} userLabel={me.data.labels[0]} />
+        </section>
       ) : null}
 
       {showLanding ? (
@@ -10689,7 +10659,7 @@ function BatchDetails({
         <div className="max-h-[420px] space-y-1 overflow-y-auto p-3">
           {(logs.data || []).filter((l) => logLevel === "all" || l.level === logLevel).map((l, i) => (
             <div key={i} className="flex items-start gap-2 text-xs">
-              <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-ocean")} />
+              <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-success")} />
               <span className="whitespace-nowrap text-muted">{formatDate(l.created_at)}</span>
               <span className="flex-1 text-ink">{l.message}</span>
               {l.data && (l.data as Record<string, unknown>).import_id ? (

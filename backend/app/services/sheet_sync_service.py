@@ -451,6 +451,32 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
             or (dict(source.column_mapping) if source.column_mapping else None)
             or import_parse.auto_map(headers)
         )
+        # Tabs with no link/URL column at all (guidelines, keyword lists, stray
+        # sheets) are AUTO-IGNORED — quietly, in green, and permanently (the
+        # mapping UI can re-enable). They must never error a sync (owner rule).
+        if not any(v == "source_page_url" for v in (mapping or {}).values()):
+            tab.import_enabled = False
+            await batch_service.add_log(
+                batch_id,
+                f"Tab “{ws['title']}” auto-ignored — it has no link/URL column "
+                f"(looks like a notes/keywords tab). Re-enable it in the sheet "
+                f"mapping if that's wrong.",
+                level="info", row_ref=ws["title"],
+            )
+            done_tabs += 1
+            await batch_service.update(batch_id, totals={"done_tabs": done_tabs})
+            continue
+        # Broken header cells ("#REF!", blanks) hide the USER column from
+        # name-based mapping — every link then lands unassigned. Detect the
+        # user column from the DATA instead (leftmost small-roster name column).
+        mapping, inferred_user_col = import_parse.infer_user_column(mapping, headers, rows)
+        if inferred_user_col:
+            await batch_service.add_log(
+                batch_id,
+                f"Tab “{ws['title']}”: user column detected from its data "
+                f"(header cell is “{inferred_user_col}”) — assignees will be filled.",
+                level="info", row_ref=ws["title"],
+            )
         imp = Import(
             workspace_id=source.workspace_id,
             project_id=source.project_id,
@@ -479,7 +505,10 @@ async def sync_project(db: AsyncSession, sheet_source_id: uuid.UUID) -> dict:
         total_rows += len(rows)
         total_imported += tab_imported
         total_failed += refreshed.error_rows if refreshed else 0
-        total_skipped += refreshed.duplicate_rows if refreshed else 0
+        # Skips are BENIGN (spacer rows / duplicates) — surfaced, never failures.
+        total_skipped += (
+            (refreshed.duplicate_rows or 0) + (refreshed.skipped_rows or 0)
+        ) if refreshed else 0
         tab.row_count = len(rows)
         tab.last_synced_at = _now()
         source.last_sync_import_id = imp.id

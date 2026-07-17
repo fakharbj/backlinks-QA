@@ -49,6 +49,8 @@ class Import(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     imported_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     duplicate_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Spacer/heading rows with no source URL — ignored, never errors (0050).
+    skipped_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Honest accounting (0026): imported_rows = new_rows + updated_rows. NULL on
     # imports that ran before the split existed.
     new_rows: Mapped[int | None] = mapped_column(Integer)

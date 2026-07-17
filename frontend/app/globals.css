@@ -18,6 +18,7 @@
   --plum: 192 38 211;     /* fuchsia-600 — secondary */
   --ember: 217 119 6;     /* amber-600 */
   --danger: 225 29 72;    /* rose-600 */
+  --success: 5 150 105;   /* emerald-600 — completion / success / info */
   --accent: 139 92 246;   /* violet-500 */
   --shadow: 26 20 47;     /* violet-black shadow base */
   --app-bg: 244 244 250;
@@ -35,6 +36,7 @@
   --plum: 232 121 249;    /* fuchsia-400 */
   --ember: 251 191 36;    /* amber-300 */
   --danger: 251 113 133;  /* rose-400 */
+  --success: 52 211 153;  /* emerald-400 — completion / success / info */
   --accent: 167 139 250;  /* violet-400 */
   --shadow: 0 0 0;
   --app-bg: 10 10 15;     /* near-black canvas */
@@ -131,6 +133,22 @@ textarea {
 }
 *::-webkit-scrollbar-thumb:hover {
   background: rgb(var(--muted) / 0.55);
+}
+
+/* Each toast slides in as its OWN popup — rapid notifications never read as
+   one panel whose text morphs. */
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-enter {
+  animation: toastIn 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 
 /* Gentle desk transition when switching tabs/context */

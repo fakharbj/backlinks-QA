@@ -106,11 +106,12 @@ def test_templates_overrides_layoff_and_competitor_parent(live_stack):
             },
             headers=h,
         ).json()
-        assert any(r["user_label"] == "KEVIN" for r in rep)
+        # Labels are stored lowercase (owner rule): "KEVIN" was saved as "kevin".
+        assert any(r["user_label"] == "kevin" for r in rep)
 
         # Laid-off: flag the mapping inactive → label leaves the pickers.
         labels_before = client.get("/api/v1/workforce/labels", headers=h).json()
-        assert "KEVIN" in labels_before
+        assert "kevin" in labels_before
         # Create a catalog mapping for KEVIN, then lay them off.
         sync = client.post("/api/v1/employees/sync", headers=h)
         assert sync.status_code == 200

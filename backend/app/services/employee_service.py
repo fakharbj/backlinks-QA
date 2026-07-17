@@ -356,6 +356,10 @@ async def _canonicalize_label_column(
     canonical row on the rest of the key (``key_cols``), then UPDATE the rest."""
     if not alias_lowers:
         return
+    # CASE-SAFE: a case-only merge ("Mark" → "mark") means lower(alias) equals
+    # lower(canonical), so every clause must ALSO exclude rows already spelled
+    # exactly canonical — otherwise the collision-delete self-joins a canonical
+    # row against itself and destroys it.
     params = {"ws": workspace_id, "canon": canonical, "aliases": alias_lowers}
     if key_cols:
         keyjoin = " AND ".join([f"t.{k} IS NOT DISTINCT FROM c.{k}" for k in key_cols])
@@ -363,14 +367,16 @@ async def _canonicalize_label_column(
             text(
                 f"DELETE FROM {table} t USING {table} c "
                 f"WHERE t.workspace_id = :ws AND lower(t.{col}) IN :aliases "
-                f"AND c.workspace_id = :ws AND lower(c.{col}) = lower(:canon) AND {keyjoin}"
+                f"AND t.{col} <> :canon "                # t is a true alias spelling
+                f"AND c.workspace_id = :ws AND c.{col} = :canon "  # c already canonical
+                f"AND t.ctid <> c.ctid AND {keyjoin}"
             ).bindparams(bindparam("aliases", expanding=True)),
             params,
         )
     await db.execute(
         text(
             f"UPDATE {table} SET {col} = :canon "
-            f"WHERE workspace_id = :ws AND lower({col}) IN :aliases"
+            f"WHERE workspace_id = :ws AND lower({col}) IN :aliases AND {col} <> :canon"
         ).bindparams(bindparam("aliases", expanding=True)),
         params,
     )
@@ -391,7 +397,9 @@ async def merge_labels(
     aliases: list[str] = []
     for a in alias_labels or []:
         s = (a or "").strip()
-        if s and s.lower() != canonical.lower() and s.lower() not in seen:
+        # Case-only variants ("Mark" → "mark") ARE valid merges (owner rule:
+        # labels are stored lowercase) — only the EXACT same string is a no-op.
+        if s and s != canonical and s.lower() not in seen:
             seen.add(s.lower())
             aliases.append(s)
     if not aliases:

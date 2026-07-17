@@ -78,6 +78,9 @@ class ImportRowStatus(str, enum.Enum):
     IMPORTED = "imported"
     DUPLICATE = "duplicate"
     ERROR = "error"
+    # Row deliberately ignored (no source URL — a spacer/heading row): shown
+    # green, never counted as an error (owner rule).
+    SKIPPED = "skipped"
 
 
 class ReportType(str, enum.Enum):

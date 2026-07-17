@@ -212,7 +212,7 @@ async def upsert_assignment(
     ctx.assert_project(project_id)
     if hours < 0 or hours > 24:
         raise ValidationAppError("Hours must be between 0 and 24.")
-    label = user_label.strip()[:200]
+    label = user_label.strip().lower()[:200]  # labels are stored lowercase (owner rule)
     if not label:
         raise ValidationAppError("User is required.")
     if priority and priority not in _PRIORITIES:
@@ -767,7 +767,7 @@ async def upsert_template_entry(
         raise ValidationAppError("Weekday must be between 0 (Monday) and 6 (Sunday).")
     if hours < 0 or hours > 24:
         raise ValidationAppError("Hours must be between 0 and 24.")
-    label = user_label.strip()[:200]
+    label = user_label.strip().lower()[:200]  # labels are stored lowercase (owner rule)
     if not label:
         raise ValidationAppError("User is required.")
     if priority and priority not in _PRIORITIES:
@@ -826,7 +826,7 @@ async def delete_template_entry(
     ctx.assert_project(project_id)
     if weekday < 0 or weekday > 6:
         raise ValidationAppError("Weekday must be between 0 (Monday) and 6 (Sunday).")
-    label = user_label.strip()[:200]
+    label = user_label.strip().lower()[:200]  # labels are stored lowercase (owner rule)
     result = await db.execute(
         sa_delete(TaskWeekTemplate).where(
             TaskWeekTemplate.workspace_id == ctx.workspace_id,
@@ -987,7 +987,7 @@ async def request_leave(
         raise ValidationAppError("End date is before the start date.")
     if (end_date - start_date).days > 60:
         raise ValidationAppError("A single request can cover at most 60 days.")
-    label = user_label.strip()[:200]
+    label = user_label.strip().lower()[:200]  # labels are stored lowercase (owner rule)
     # Standard users can only request leave for THEMSELVES — no filing under
     # someone else's name. Admins/TeamLeads may file for anyone they manage.
     from app.core.rbac import Permission, has_permission
