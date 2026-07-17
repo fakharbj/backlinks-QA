@@ -10044,6 +10044,14 @@ function BatchDetails({
   const isReview = b?.kind === "link_review" || b?.kind === "domain_import" || b?.kind === "competitor_import";
   const isLinks = b?.kind === "link_review";
   const isDomains = b?.kind === "domain_import" || b?.kind === "competitor_import";
+  // Bulk parent only: the child sheet_sync batches, so the CURRENTLY-syncing
+  // project shows its live row-progress ratio inside the per-project panel.
+  const bulkChildren = useQuery({
+    queryKey: ["bulk-children", token, batchId],
+    enabled: Boolean(token) && b?.kind === "sheet_sync_all",
+    refetchInterval: b?.status === "running" || b?.status === "pending" ? 2500 : false,
+    queryFn: () => api<Batch[]>("/batches?kind=sheet_sync&limit=50", { token })
+  });
   // Threshold query params shared by the item list + export (only set ones sent).
   const thrParams = (p: URLSearchParams) => {
     if (daMin.trim()) p.set("da_min", daMin.trim());
@@ -10561,10 +10569,26 @@ function BatchDetails({
             <div className="mt-3 divide-y divide-line rounded-lg border border-line">
               {projs.map((pr) => {
                 const m = rowCls(pr.status);
+                // Currently-syncing project: pull its child batch for the live
+                // row-progress ratio ("312/2077 rows · Tab X").
+                const child =
+                  pr.status === "running"
+                    ? (bulkChildren.data || []).find(
+                        (c) =>
+                          (c.status === "running" || c.status === "pending") &&
+                          String((c.meta as Record<string, unknown>)?.sheet_source_id || "") === pr.id
+                      )
+                    : undefined;
                 return (
                   <div key={pr.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
                     <span className="font-medium text-ink">{pr.name || pr.id}</span>
                     <span className={clsx("rounded-full border px-2 py-0.5 text-[11px] font-semibold", m.chip)}>{m.label}</span>
+                    {child ? (
+                      <span className="flex items-center gap-2 text-xs text-ocean">
+                        <BatchProgress totals={child.totals || {}} />
+                        {child.meta?.current_step ? <span>{String(child.meta.current_step)}</span> : null}
+                      </span>
+                    ) : null}
                     {pr.note ? <span className="text-xs text-muted">{pr.note}</span> : null}
                   </div>
                 );
