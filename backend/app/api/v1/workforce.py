@@ -78,6 +78,22 @@ async def upsert_assignment(
     payload: AssignmentUpsert, db: DbSession,
     ctx: AuthContext = Depends(require(Permission.ASSIGN_MEMBERS)),
 ) -> dict:
+    # New plan or an edit? (Decides task_assigned vs task_changed below —
+    # checked BEFORE the upsert since on_conflict_do_update hides the answer.)
+    from sqlalchemy import select as _select
+
+    from app.models.workforce import TaskAssignment as _TA
+
+    was_new = (
+        await db.execute(
+            _select(_TA.id).where(
+                _TA.workspace_id == ctx.workspace_id,
+                _TA.project_id == payload.project_id,
+                _TA.user_label == payload.user_label.strip().lower()[:200],
+                _TA.day == payload.day,
+            )
+        )
+    ).scalar_one_or_none() is None
     row, warnings = await workforce_service.upsert_assignment(
         db, ctx, project_id=payload.project_id, user_label=payload.user_label,
         day=payload.day, hours=payload.hours, link_type_names=payload.link_type_names,
@@ -90,6 +106,20 @@ async def upsert_assignment(
         summary=f"Assigned {payload.user_label} · {payload.day} · {payload.hours}h",
     )
     await db.commit()
+    # Tell the person (their linked login) — preference-aware, fail-open.
+    from app.services import notification_service as ns
+
+    target = await ns.user_id_for_label(db, ctx.workspace_id, payload.user_label)
+    if target:
+        await ns.notify(
+            ctx.workspace_id,
+            "task_assigned" if was_new else "task_changed",
+            (f"New task: {payload.day} · {payload.hours}h"
+             if was_new else f"Task updated: {payload.day} · {payload.hours}h"),
+            body=f"Target: {row.expected_links} links.",
+            user_ids=[target], exclude_user_id=ctx.user.id,
+            project_id=payload.project_id, ref={"tab": "mywork"},
+        )
     return {
         "id": str(row.id),
         "expected_links": row.expected_links,
@@ -316,6 +346,16 @@ async def request_leave(payload: LeaveCreate, ctx: AuthCtx, db: DbSession) -> Le
         end_date=payload.end_date, reason=payload.reason,
     )
     await db.commit()
+    # Approvers get a heads-up (admins + managers, never the requester).
+    from app.services import notification_service as ns
+
+    await ns.notify(
+        ctx.workspace_id, "leave_request",
+        f"Leave request: {row.user_label} · {row.start_date} → {row.end_date}",
+        body=row.reason or None,
+        to_admins=True, include_managers=True, exclude_user_id=ctx.user.id,
+        ref={"tab": "tasks"},
+    )
     return LeaveOut(
         id=row.id, user_label=row.user_label, start_date=row.start_date,
         end_date=row.end_date, reason=row.reason, status=row.status,
@@ -348,6 +388,16 @@ async def decide_leave(
         summary=f"Leave {row.user_label} {row.start_date}→{row.end_date}: {row.status}",
     )
     await db.commit()
+    # Tell the requester (their linked login) the decision.
+    from app.services import notification_service as ns
+
+    target = await ns.user_id_for_label(db, ctx.workspace_id, row.user_label)
+    if target:
+        await ns.notify(
+            ctx.workspace_id, "leave_decision",
+            f"Your leave {row.start_date} → {row.end_date} was {row.status}",
+            user_ids=[target], exclude_user_id=ctx.user.id, ref={"tab": "mywork"},
+        )
     return LeaveOut(
         id=row.id, user_label=row.user_label, start_date=row.start_date,
         end_date=row.end_date, reason=row.reason, status=row.status,

@@ -105,14 +105,25 @@ async def _get_rule(db: AsyncSession, ctx: AuthContext, rule_id: uuid.UUID) -> A
 
 # ── Notifications ─────────────────────────────────────────────────────────────────
 def _notif_scope(ctx: AuthContext):
-    """Base predicates: workspace + in-app + project access."""
-    preds = [
+    """Base predicates: workspace + in-app + visibility.
+
+    Two kinds of rows share the table: BROADCAST alerts (recipient NULL —
+    team-wide, project-access filtered) and PERSONAL notifications
+    (recipient set — visible ONLY to that user, regardless of project scope:
+    "your leave was approved" must reach you even on a scoped account)."""
+    from sqlalchemy import and_, or_
+
+    personal = Notification.recipient_user_id == ctx.user.id
+    broadcast = Notification.recipient_user_id.is_(None)
+    if ctx.allowed_project_ids is not None:
+        broadcast = and_(
+            broadcast, Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()})
+        )
+    return [
         Notification.workspace_id == ctx.workspace_id,
         Notification.channel == NotificationChannel.IN_APP,
+        or_(personal, broadcast),
     ]
-    if ctx.allowed_project_ids is not None:
-        preds.append(Notification.project_id.in_(ctx.allowed_project_ids or {uuid.uuid4()}))
-    return preds
 
 
 async def list_notifications(
@@ -126,8 +137,13 @@ async def list_notifications(
     since: datetime | None = None,
     limit: int = 100,
     offset: int = 0,
+    personal_only: bool = False,
 ) -> list[Notification]:
     stmt = select(Notification).where(*_notif_scope(ctx))
+    if personal_only:
+        # The TopBar bell: only rows addressed to ME (task/leave/check/security).
+        # Broadcast SEO alerts live in the Alerts desk with their own counters.
+        stmt = stmt.where(Notification.recipient_user_id == ctx.user.id)
     if unread_only:
         stmt = stmt.where(Notification.status != NotificationStatus.READ)
     if status:
@@ -149,10 +165,12 @@ async def list_notifications(
     return list((await db.execute(stmt)).scalars().all())
 
 
-async def unread_count(db: AsyncSession, ctx: AuthContext) -> int:
+async def unread_count(db: AsyncSession, ctx: AuthContext, *, personal_only: bool = False) -> int:
     stmt = select(func.count(Notification.id)).where(
         *_notif_scope(ctx), Notification.status != NotificationStatus.READ
     )
+    if personal_only:
+        stmt = stmt.where(Notification.recipient_user_id == ctx.user.id)
     return int((await db.execute(stmt)).scalar_one())
 
 
@@ -173,12 +191,16 @@ async def notification_stats(db: AsyncSession, ctx: AuthContext) -> dict:
     return {"total": total, "unread": unread, "by_severity": by_severity}
 
 
-async def mark_all_read(db: AsyncSession, ctx: AuthContext) -> int:
+async def mark_all_read(db: AsyncSession, ctx: AuthContext, *, personal_only: bool = False) -> int:
     stmt = (
         update(Notification)
         .where(*_notif_scope(ctx), Notification.status != NotificationStatus.READ)
         .values(status=NotificationStatus.READ, read_at=datetime.now(timezone.utc))
     )
+    if personal_only:
+        # The bell's "Mark all read" must not silently clear the whole team's
+        # SEO-alert backlog — only the caller's own notifications.
+        stmt = stmt.where(Notification.recipient_user_id == ctx.user.id)
     result = await db.execute(stmt)
     await db.flush()
     return int(result.rowcount or 0)
@@ -188,7 +210,11 @@ async def mark_read(db: AsyncSession, ctx: AuthContext, notification_id: uuid.UU
     notif = await db.get(Notification, notification_id)
     if notif is None or notif.workspace_id != ctx.workspace_id:
         raise NotFoundError("Notification not found")
-    if notif.project_id is not None:
+    if notif.recipient_user_id is not None:
+        # Personal notification: only its recipient may touch it.
+        if notif.recipient_user_id != ctx.user.id:
+            raise NotFoundError("Notification not found")
+    elif notif.project_id is not None:
         ctx.assert_project(notif.project_id)
     elif ctx.allowed_project_ids is not None:
         raise NotFoundError("Notification not found")

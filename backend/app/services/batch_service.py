@@ -132,6 +132,7 @@ async def finish(
     partial when both ok and failed counts exist, else completed."""
     if batch_id is None:
         return
+    info = None
     try:
         async with session_scope() as s:
             row = await s.get(Batch, batch_id)
@@ -150,8 +151,41 @@ async def finish(
             row.status = status
             row.error = (error or "")[:2000] or None
             row.finished_at = datetime.now(timezone.utc)
+            info = {
+                "kind": row.kind, "status": status, "seq": row.seq,
+                "label": row.label, "workspace_id": row.workspace_id,
+                "project_id": row.project_id, "started_by": row.started_by,
+            }
     except Exception as exc:  # noqa: BLE001
         log.warning("batch_finish_failed", batch_id=str(batch_id), error=repr(exc))
+    # ── User notifications (fail-open, own session): the ONE place every
+    # long-running run ends, so "check finished / report ready / sync failed"
+    # all hang off it. Preference-aware per recipient. ──
+    if info is None:
+        return
+    try:
+        from app.services import notification_service as ns
+
+        kind, st = info["kind"], info["status"]
+        name = info["label"] or f"#B-{info['seq']}"
+        ref = {"tab": "batches", "batch_id": str(batch_id)}
+        common = dict(project_id=info["project_id"], ref=ref)
+        if kind in ("recheck", "crawl", "index_check") and info["started_by"]:
+            word = "finished" if st == "completed" else f"finished — {st}"
+            await ns.notify(info["workspace_id"], "qa_check_done",
+                            f"Check {word}: {name}", user_ids=[info["started_by"]], **common)
+        elif kind == "report" and info["started_by"]:
+            await ns.notify(info["workspace_id"], "report_ready",
+                            f"Report ready: {name}" if st == "completed" else f"Report {st}: {name}",
+                            user_ids=[info["started_by"]], **common)
+        elif kind in ("sheet_sync", "sheet_sync_all") and st in ("failed", "partial"):
+            await ns.notify(info["workspace_id"], "sync_failed",
+                            f"Sheet sync finished with problems: {name}",
+                            body="Open the batch to see which rows or projects failed.",
+                            user_ids=[info["started_by"]] if info["started_by"] else None,
+                            to_admins=not info["started_by"], **common)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("batch_finish_notify_failed", batch_id=str(batch_id), error=repr(exc))
 
 
 async def list_batches(

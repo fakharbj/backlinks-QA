@@ -59,5 +59,8 @@ class NotificationOut(ORMModel):
     severity: str | None
     title: str
     body: str | None
+    # {"category": "...", "ref": {"tab": "...", "batch_id": "..."}} for the
+    # personal notifications; alert-engine rows carry their own payloads.
+    payload: dict = {}
     created_at: datetime
     read_at: datetime | None

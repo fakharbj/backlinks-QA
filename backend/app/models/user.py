@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +37,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Per-user notification preferences (0052): {category: {enabled, channel,
+    # cadence}}. Absent keys = the category defaults; security is mandatory.
+    notification_prefs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb"), default=dict
+    )
 
     memberships: Mapped[list["WorkspaceMember"]] = relationship(
         back_populates="user",

@@ -382,6 +382,11 @@ export function WorkspaceApp() {
           projectsLoading: projects.isLoading
         }}
         identity={me.data ? { name: me.data.user.full_name, email: me.data.user.email, role: me.data.role } : null}
+        token={token}
+        onOpenRef={(ref) => {
+          if (ref.batch_id) openBatch(ref.batch_id);
+          else if (ref.tab && isTab(ref.tab)) setTab(ref.tab);
+        }}
       />
       <CommandPalette
         open={paletteOpen}
@@ -1152,22 +1157,95 @@ function CommandPalette({
   );
 }
 
-// Bell + dropdown: retains every notice of this session (toasts are ephemeral;
-// this is where a missed one lives). Unread badge clears when opened; items
-// dismiss individually; errors keep their red dot.
+// Short labels for the personal-notification categories (chips in the inbox).
+const NOTIF_CATEGORY_CHIP: Record<string, string> = {
+  task_assigned: "Task",
+  task_changed: "Task",
+  leave_request: "Approval",
+  leave_decision: "Leave",
+  qa_check_done: "Check",
+  sync_failed: "Sync",
+  report_ready: "Report",
+  seo_alert: "SEO alert",
+  security: "Security"
+};
+
+// Bell + dropdown: session toasts PLUS the persistent server feed (task
+// assigned, leave decisions, checks finished, sync failures, security) with a
+// per-category Preferences panel. Unread badge = server unread + session.
 function NotificationCenter({
   log,
   onMarkRead,
   onDismiss,
-  onClear
+  onClear,
+  token,
+  onOpenRef
 }: {
   log: Array<{ id: number; text: string; kind: "info" | "error"; at: string; read: boolean }>;
   onMarkRead: () => void;
   onDismiss: (id: number) => void;
   onClear: () => void;
+  token: string | null;
+  onOpenRef?: (ref: { tab?: string; batch_id?: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const unread = log.filter((n) => !n.read).length;
+  const [pane, setPane] = useState<"inbox" | "prefs">("inbox");
+  const queryClient = useQueryClient();
+  type ServerNotif = {
+    id: string; title: string; body: string | null; severity: string | null;
+    status: string; created_at: string; read_at: string | null;
+    payload: { category?: string; ref?: { tab?: string; batch_id?: string } };
+  };
+  // PERSONAL rows only — broadcast SEO alerts stay in the Alerts desk (its
+  // engine has years of history; the bell is for "addressed to ME").
+  const unreadQ = useQuery({
+    queryKey: ["notif-unread", token],
+    enabled: Boolean(token),
+    retry: false,
+    refetchInterval: 60000,
+    queryFn: () => api<{ count: number }>("/notifications/unread-count?personal=true", { token })
+  });
+  const feed = useQuery({
+    queryKey: ["notif-feed", token],
+    enabled: Boolean(token) && open && pane === "inbox",
+    retry: false,
+    refetchInterval: open ? 60000 : false,
+    queryFn: () => api<ServerNotif[]>("/notifications?limit=30&personal=true", { token })
+  });
+  const markServerRead = useMutation({
+    mutationFn: (id: string) => api(`/notifications/${id}/read`, { token, method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notif-feed"] });
+      queryClient.invalidateQueries({ queryKey: ["notif-unread"] });
+    }
+  });
+  const markAllServer = useMutation({
+    mutationFn: () => api("/notifications/read-all?personal=true", { token, method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notif-feed"] });
+      queryClient.invalidateQueries({ queryKey: ["notif-unread"] });
+    }
+  });
+  // Preferences — per-category enabled/channel/cadence, saved per change.
+  type PrefRow = { enabled: boolean; channel: string; cadence: string };
+  type PrefsOut = {
+    prefs: Record<string, PrefRow>;
+    categories: Array<{ key: string; label: string; description: string; mandatory: boolean; mandatory_why: string | null; managed_by: string | null; managed_why: string | null }>;
+    email_available: boolean;
+    email_managed_why: string | null;
+  };
+  const prefsQ = useQuery({
+    queryKey: ["notif-prefs", token],
+    enabled: Boolean(token) && open && pane === "prefs",
+    retry: false,
+    queryFn: () => api<PrefsOut>("/notifications/prefs", { token })
+  });
+  const savePref = useMutation({
+    mutationFn: (patch: Record<string, Partial<PrefRow>>) =>
+      api<{ message: string }>("/notifications/prefs", { token, method: "PUT", body: JSON.stringify(patch) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notif-prefs"] })
+  });
+  const unread = log.filter((n) => !n.read).length + (unreadQ.data?.count || 0);
   return (
     <div className="relative">
       <button
@@ -1187,15 +1265,32 @@ function NotificationCenter({
         ) : null}
       </button>
       {open ? (
-        <div className="absolute right-0 top-10 z-40 w-96 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+        <div className="absolute right-0 top-10 z-40 w-[26rem] max-w-[92vw] overflow-hidden rounded-xl border border-line bg-panel shadow-card">
           <div className="flex items-center justify-between border-b border-line px-3 py-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted">
-              Notifications ({log.length})
+            <span className="flex overflow-hidden rounded-lg border border-line text-xs font-medium">
+              <button
+                onClick={() => setPane("inbox")}
+                className={clsx("px-2.5 py-1 transition", pane === "inbox" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
+              >
+                Inbox
+              </button>
+              <button
+                onClick={() => setPane("prefs")}
+                title="Choose which notifications you receive and how"
+                className={clsx("px-2.5 py-1 transition", pane === "prefs" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
+              >
+                Preferences
+              </button>
             </span>
             <span className="flex items-center gap-2">
-              {log.length ? (
+              {pane === "inbox" && (unreadQ.data?.count || 0) > 0 ? (
+                <button onClick={() => markAllServer.mutate()} className="text-xs font-medium text-ocean hover:underline">
+                  Mark all read
+                </button>
+              ) : null}
+              {pane === "inbox" && log.length ? (
                 <button onClick={onClear} className="text-xs font-medium text-muted hover:text-ink hover:underline">
-                  Clear all
+                  Clear session
                 </button>
               ) : null}
               <button onClick={() => setOpen(false)} aria-label="Close" className="text-muted hover:text-ink">
@@ -1203,9 +1298,13 @@ function NotificationCenter({
               </button>
             </span>
           </div>
-          <div className="max-h-96 overflow-y-auto">
+          {pane === "inbox" ? (
+          <div className="max-h-[26rem] overflow-y-auto">
+            {log.length ? (
+              <div className="border-b border-line bg-field/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted">This session</div>
+            ) : null}
             {log.map((n) => (
-              <div key={n.id} className="flex items-start gap-2 border-b border-line px-3 py-2 last:border-b-0">
+              <div key={n.id} className="flex items-start gap-2 border-b border-line px-3 py-2">
                 <span className={clsx("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", n.kind === "error" ? "bg-danger" : "bg-success")} />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs leading-snug text-ink">{n.text}</p>
@@ -1216,10 +1315,135 @@ function NotificationCenter({
                 </button>
               </div>
             ))}
-            {!log.length ? (
-              <p className="px-3 py-6 text-center text-xs text-muted">Nothing yet — sync results, task updates and errors collect here.</p>
+            {(feed.data || []).length || feed.isLoading ? (
+              <div className="border-b border-line bg-field/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted">Notifications</div>
+            ) : null}
+            {feed.isLoading ? (
+              <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+            ) : null}
+            {(feed.data || []).map((n) => {
+              const cat = n.payload?.category;
+              const isUnread = n.status !== "read";
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => {
+                    if (isUnread) markServerRead.mutate(n.id);
+                    const ref = n.payload?.ref;
+                    if (ref && onOpenRef) {
+                      onOpenRef(ref);
+                      setOpen(false);
+                    }
+                  }}
+                  className={clsx(
+                    "flex w-full items-start gap-2 border-b border-line px-3 py-2 text-left transition last:border-b-0 hover:bg-field/60",
+                    isUnread && "bg-ocean/5"
+                  )}
+                >
+                  <span className={clsx("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", isUnread ? "bg-ocean" : "bg-line")} aria-label={isUnread ? "Unread" : "Read"} />
+                  <div className="min-w-0 flex-1">
+                    <p className={clsx("text-xs leading-snug", isUnread ? "font-semibold text-ink" : "text-ink")}>{n.title}</p>
+                    {n.body ? <p className="truncate text-[11px] text-muted" title={n.body}>{n.body}</p> : null}
+                    <span className="mt-0.5 flex items-center gap-1.5">
+                      {cat ? (
+                        <span className="rounded-full border border-line bg-field px-1.5 text-[9px] font-semibold uppercase text-muted">
+                          {NOTIF_CATEGORY_CHIP[cat] || cat}
+                        </span>
+                      ) : null}
+                      <span className="text-[10px] tabular-nums text-muted">{formatDate(n.created_at)}</span>
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+            {!log.length && !feed.isLoading && !(feed.data || []).length ? (
+              <p className="px-3 py-6 text-center text-xs text-muted">Nothing yet — task updates, approvals, check results and alerts collect here.</p>
             ) : null}
           </div>
+          ) : (
+          /* ── Preferences: per-category enabled/channel/cadence. Mandatory and
+             managed rows explain WHO controls them and WHY — never a dead toggle. ── */
+          <div className="max-h-[26rem] overflow-y-auto">
+            {prefsQ.isLoading ? (
+              <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+            ) : prefsQ.data ? (
+              <>
+                {!prefsQ.data.email_available ? (
+                  <p className="border-b border-line bg-field/50 px-3 py-2 text-[11px] leading-snug text-muted">
+                    <span className="font-semibold text-ink">Email &amp; digests are managed by the workspace.</span>{" "}
+                    {prefsQ.data.email_managed_why}
+                  </p>
+                ) : null}
+                {prefsQ.data.categories.map((c) => {
+                  const p = prefsQ.data!.prefs[c.key];
+                  const locked = c.mandatory || Boolean(c.managed_by);
+                  return (
+                    <div key={c.key} className="border-b border-line px-3 py-2 last:border-b-0">
+                      <div className="flex items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-ink">{c.label}</p>
+                          <p className="text-[11px] leading-snug text-muted">{c.description}</p>
+                          {c.mandatory ? (
+                            <p className="mt-0.5 text-[10px] font-semibold text-ember">
+                              Mandatory — can&apos;t be turned off. {c.mandatory_why}
+                            </p>
+                          ) : null}
+                          {c.managed_by ? (
+                            <p className="mt-0.5 text-[10px] text-muted">
+                              <span className="font-semibold text-ink">Managed by {c.managed_by}.</span> {c.managed_why}
+                            </p>
+                          ) : null}
+                        </div>
+                        <label className="flex shrink-0 items-center gap-1.5 pt-0.5" title={locked ? (c.mandatory ? "Mandatory — always on" : `Managed by ${c.managed_by}`) : "Turn this notification on/off"}>
+                          <input
+                            type="checkbox"
+                            checked={p.enabled}
+                            disabled={locked || savePref.isPending}
+                            onChange={(e) => savePref.mutate({ [c.key]: { enabled: e.target.checked } })}
+                            className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+                            aria-label={`${c.label} enabled`}
+                          />
+                        </label>
+                      </div>
+                      {!c.managed_by ? (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                          <select
+                            value={p.channel}
+                            disabled={savePref.isPending || !p.enabled}
+                            onChange={(e) => savePref.mutate({ [c.key]: { channel: e.target.value } })}
+                            className="h-7 rounded-md border border-line bg-panel px-1.5 text-[11px]"
+                            aria-label={`${c.label} channel`}
+                          >
+                            <option value="in_app">In-app only</option>
+                            <option value="in_app_email" disabled={!prefsQ.data!.email_available}>
+                              In-app + Email{!prefsQ.data!.email_available ? " (needs SMTP)" : ""}
+                            </option>
+                          </select>
+                          <select
+                            value={p.cadence}
+                            disabled={savePref.isPending || !p.enabled}
+                            onChange={(e) => savePref.mutate({ [c.key]: { cadence: e.target.value } })}
+                            className="h-7 rounded-md border border-line bg-panel px-1.5 text-[11px]"
+                            aria-label={`${c.label} delivery timing`}
+                            title={!prefsQ.data!.email_available ? "Digests are delivered by email — they start working once the workspace owner configures SMTP. In-app stays immediate." : undefined}
+                          >
+                            <option value="immediate">Immediate</option>
+                            <option value="daily" disabled={!prefsQ.data!.email_available}>Daily digest{!prefsQ.data!.email_available ? " (needs SMTP)" : ""}</option>
+                            <option value="weekly" disabled={!prefsQ.data!.email_available}>Weekly digest{!prefsQ.data!.email_available ? " (needs SMTP)" : ""}</option>
+                          </select>
+                          {savePref.isPending ? <Loader2 className="h-3 w-3 animate-spin text-muted" /> : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                <p className="px-3 py-2 text-[10px] text-muted">Changes save instantly.</p>
+              </>
+            ) : (
+              <p className="px-3 py-6 text-center text-xs text-muted">Could not load preferences.</p>
+            )}
+          </div>
+          )}
         </div>
       ) : null}
     </div>
@@ -1236,7 +1460,9 @@ function TopBar({
   onSearch,
   onHelp,
   crumb,
-  identity
+  identity,
+  token,
+  onOpenRef
 }: {
   onLogout: () => void;
   onRefresh: () => void;
@@ -1248,6 +1474,8 @@ function TopBar({
   onHelp: () => void;
   crumb: { project: Project | null; inProject: boolean; section: string; projectsLoading: boolean };
   identity: { name: string; email: string; role: string } | null;
+  token: string | null;
+  onOpenRef: (ref: { tab?: string; batch_id?: string }) => void;
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
@@ -1347,6 +1575,8 @@ function TopBar({
             onMarkRead={onNoticeRead}
             onDismiss={onNoticeDismiss}
             onClear={onNoticeClear}
+            token={token}
+            onOpenRef={onOpenRef}
           />
           <IconButton label="Help — what every status means" onClick={onHelp} icon={Info} />
           <ThemeToggle />

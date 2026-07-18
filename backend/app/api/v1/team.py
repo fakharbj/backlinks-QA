@@ -302,6 +302,15 @@ async def reset_member_password(
         entity_type="user", entity_id=user_id, summary="Password reset by admin",
     )
     await db.commit()
+    # Security notification (mandatory category — cannot be muted).
+    from app.services import notification_service as ns
+
+    await ns.notify(
+        ctx.workspace_id, "security",
+        "Your password was reset by an administrator",
+        body="If you didn't expect this, contact your admin immediately.",
+        user_ids=[user_id],
+    )
     return {"temp_password": temp}
 
 
@@ -362,6 +371,15 @@ async def update_member_account(
         summary=f"Account updated: {'; '.join(changed)}",
     )
     await db.commit()
+    # Security notification (mandatory category — cannot be muted).
+    from app.services import notification_service as ns
+
+    await ns.notify(
+        ctx.workspace_id, "security",
+        "Your login details were changed by an administrator",
+        body="; ".join(changed) + ". If you didn't expect this, contact your admin.",
+        user_ids=[user_id],
+    )
     return Message(message="Account updated — " + "; ".join(changed))
 
 
