@@ -33,6 +33,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search as SearchIcon,
   Settings,
   Sheet,
   ShieldAlert,
@@ -210,6 +211,7 @@ export function WorkspaceApp() {
     setActiveProjectIdState(next);
     setTabState(nextTab);
     syncUrl(next, nextTab, true);
+    if (next) rememberRecentProject(next);
   };
 
   useEffect(() => {
@@ -267,6 +269,20 @@ export function WorkspaceApp() {
     };
   }, [queryClient]);
 
+  // Ctrl/Cmd+K quick switcher — the only global shortcut; ignores the browser
+  // default (address-bar search) while the app is focused.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const authed = Boolean(token);
   // Who am I → role-safe navigation (viewer = My Work only; manager/qa lose
   // the admin desks they'd only 403 on).
@@ -282,6 +298,9 @@ export function WorkspaceApp() {
   const role = me.data?.role ?? null;
   useEffect(() => {
     if (!role) return;
+    // The Status Guide is the app's HELP page — reachable by every role via
+    // the TopBar "?" even though it only sits in the viewer nav.
+    if (tab === "statusguide") return;
     if (!navTabs(Boolean(activeProjectId), role).includes(tab)) {
       const fallback: Tab = role === "viewer" ? "mywork" : "overview";
       setTabState(fallback);
@@ -354,6 +373,25 @@ export function WorkspaceApp() {
         onNoticeRead={() => setNoticeLog((l) => l.map((n) => ({ ...n, read: true })))}
         onNoticeDismiss={(id) => setNoticeLog((l) => l.filter((n) => n.id !== id))}
         onNoticeClear={() => setNoticeLog([])}
+        onSearch={() => setPaletteOpen(true)}
+        onHelp={() => setTab("statusguide")}
+        crumb={{
+          project: (projects.data || []).find((p) => p.id === activeProjectId) || null,
+          inProject: Boolean(activeProjectId),
+          section: TAB_LABELS[tab] || tab,
+          projectsLoading: projects.isLoading
+        }}
+        identity={me.data ? { name: me.data.user.full_name, email: me.data.user.email, role: me.data.role } : null}
+      />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        projects={projects.data || []}
+        activeProjectId={activeProjectId}
+        role={role}
+        inProject={Boolean(activeProjectId)}
+        onProject={setActiveProjectId}
+        onSection={setTab}
       />
       <section className="mx-auto flex w-full gap-5 px-5 py-4">
         <aside className="hidden w-[248px] shrink-0 lg:block">
@@ -836,6 +874,43 @@ const DASH_SECTIONS: Array<[DashSection, string, NavIcon, string]> = [
   ["rates", "Rates & leave", Activity, "Productivity & time off"]
 ];
 
+// Every tab's human label (breadcrumb + palette) — derived from the nav
+// definitions so it can never drift from the sidebar.
+const TAB_LABELS: Record<string, string> = Object.fromEntries(
+  [...WORKSPACE_NAV, ...PROJECT_NAV, ...MY_NAV].flatMap((g) =>
+    g.items.map(([id, label]) => [id, label])
+  )
+);
+
+// ── Recent + pinned projects (shell UX): plain localStorage, filtered against
+// the live project list on read so deleted projects never linger. ──
+const readIds = (key: string): string[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+const rememberRecentProject = (id: string) => {
+  try {
+    const cur = readIds("ls_recent_projects").filter((x) => x !== id);
+    localStorage.setItem("ls_recent_projects", JSON.stringify([id, ...cur].slice(0, 8)));
+  } catch {
+    /* storage unavailable — recents just don't persist */
+  }
+};
+const togglePinnedProject = (id: string): string[] => {
+  const cur = readIds("ls_pinned_projects");
+  const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id].slice(0, 12);
+  try {
+    localStorage.setItem("ls_pinned_projects", JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+  return next;
+};
+
 // Role-safe navigation: hide what a role cannot use so nobody clicks into 403s.
 const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
   if (!role || role === "admin") return groups;
@@ -886,6 +961,194 @@ function ThemeToggle() {
     >
       {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
+  );
+}
+
+// ── Ctrl/Cmd+K command palette: pinned → recent → all projects + sections. ──
+// Pure shell control — it only drives the existing setActiveProjectId/setTab,
+// so URL/state behavior is identical to clicking the sidebar.
+function CommandPalette({
+  open,
+  onClose,
+  projects,
+  activeProjectId,
+  role,
+  inProject,
+  onProject,
+  onSection
+}: {
+  open: boolean;
+  onClose: () => void;
+  projects: Project[];
+  activeProjectId: string;
+  role: string | null;
+  inProject: boolean;
+  onProject: (id: string) => void;
+  onSection: (t: Tab) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const [pins, setPins] = useState<string[]>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open) {
+      setQ("");
+      setCursor(0);
+      setPins(readIds("ls_pinned_projects"));
+      // Focus after the dialog paints.
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+
+  type Item =
+    | { kind: "project"; id: string; label: string; sub: string; badge?: string; group: string }
+    | { kind: "section"; tab: Tab; label: string; group: string }
+    | { kind: "scope"; label: string; group: string };
+  const items = useMemo<Item[]>(() => {
+    const needle = q.trim().toLowerCase();
+    const match = (s: string) => !needle || s.toLowerCase().includes(needle);
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const sub = (p: Project) => p.client_name || p.target_domain || "";
+    const projItem = (p: Project, group: string): Item => ({
+      kind: "project", id: p.id, label: p.name, sub: sub(p),
+      badge: (p.status || "active") !== "active" ? "Inactive" : undefined, group
+    });
+    const out: Item[] = [];
+    // Portfolio scope first — always one keystroke away from "everything".
+    if (match("dashboard all projects portfolio company")) {
+      out.push({ kind: "scope", label: "Dashboard — all projects", group: "Scope" });
+    }
+    if (role !== "viewer") {
+      const pinned = pins.map((id) => byId.get(id)).filter((p): p is Project => Boolean(p));
+      const recents = readIds("ls_recent_projects")
+        .map((id) => byId.get(id))
+        .filter((p): p is Project => Boolean(p) && !pins.includes(p!.id));
+      const seen = new Set<string>();
+      for (const p of pinned) {
+        if (match(`${p.name} ${sub(p)}`)) { out.push(projItem(p, "Pinned")); seen.add(p.id); }
+      }
+      for (const p of recents.slice(0, 5)) {
+        if (match(`${p.name} ${sub(p)}`)) { out.push(projItem(p, "Recent")); seen.add(p.id); }
+      }
+      for (const p of [...projects].sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!seen.has(p.id) && match(`${p.name} ${sub(p)}`)) out.push(projItem(p, "Projects"));
+      }
+    }
+    for (const g of navGroups(inProject, role)) {
+      for (const [id, label] of g.items) {
+        if (match(label)) out.push({ kind: "section", tab: id, label, group: "Sections" });
+      }
+    }
+    return out.slice(0, 40);
+  }, [q, projects, pins, role, inProject]);
+
+  useEffect(() => setCursor(0), [q]);
+  const pick = (it: Item) => {
+    if (it.kind === "project") onProject(it.id);
+    else if (it.kind === "scope") onProject("");
+    else onSection(it.tab);
+    onClose();
+  };
+
+  if (!open) return null;
+  let lastGroup = "";
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-start justify-center bg-black/40 p-4 pt-[12vh]"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Quick switcher"
+        className="w-full max-w-lg overflow-hidden rounded-xl border border-line bg-panel shadow-card"
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.preventDefault(); onClose(); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, items.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }
+          else if (e.key === "Enter" && items[cursor]) { e.preventDefault(); pick(items[cursor]); }
+        }}
+      >
+        <div className="flex items-center gap-2 border-b border-line px-3">
+          <SearchIcon className="h-4 w-4 shrink-0 text-muted" />
+          <input
+            ref={inputRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={role === "viewer" ? "Jump to a page…" : "Switch project or jump to a page…"}
+            aria-label="Search projects and pages"
+            className="h-11 w-full bg-transparent text-sm text-ink outline-none placeholder:text-muted"
+          />
+          <kbd className="rounded border border-line bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted">Esc</kbd>
+        </div>
+        <div ref={listRef} className="max-h-[46vh] overflow-y-auto p-1.5" role="listbox" aria-label="Results">
+          {items.map((it, i) => {
+            const header = it.group !== lastGroup ? it.group : null;
+            lastGroup = it.group;
+            const on = i === cursor;
+            return (
+              <Fragment key={it.kind === "project" ? `p:${it.id}` : it.kind === "section" ? `s:${it.tab}` : "scope"}>
+                {header ? (
+                  <div className="px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted">{header}</div>
+                ) : null}
+                <div
+                  role="option"
+                  aria-selected={on}
+                  onMouseEnter={() => setCursor(i)}
+                  onClick={() => pick(it)}
+                  ref={on ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                  className={clsx(
+                    "flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2",
+                    on ? "bg-ocean/10" : "hover:bg-field"
+                  )}
+                >
+                  {it.kind === "section" ? (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
+                  ) : (
+                    <Globe className={clsx("h-3.5 w-3.5 shrink-0", it.kind === "project" && it.id === activeProjectId ? "text-plum" : "text-muted")} />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className={clsx("truncate text-sm", on ? "font-semibold text-ink" : "text-ink")} title={it.label}>
+                        {it.label}
+                      </span>
+                      {it.kind === "project" && it.badge ? (
+                        <span className="rounded-full border border-line bg-field px-1.5 text-[9px] font-semibold uppercase text-muted">{it.badge}</span>
+                      ) : null}
+                      {it.kind === "project" && it.id === activeProjectId ? (
+                        <span className="rounded-full border border-plum/40 bg-plum/10 px-1.5 text-[9px] font-semibold uppercase text-plum">Current</span>
+                      ) : null}
+                    </span>
+                    {it.kind === "project" && it.sub ? (
+                      <span className="block truncate text-[11px] text-muted" title={it.sub}>{it.sub}</span>
+                    ) : null}
+                  </span>
+                  {it.kind === "project" ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setPins(togglePinnedProject(it.id)); }}
+                      title={pins.includes(it.id) ? "Unpin project" : "Pin project to the top"}
+                      aria-label={pins.includes(it.id) ? `Unpin ${it.label}` : `Pin ${it.label}`}
+                      className="shrink-0 text-muted hover:text-ember"
+                    >
+                      <Star className={clsx("h-3.5 w-3.5", pins.includes(it.id) && "fill-current text-ember")} />
+                    </button>
+                  ) : null}
+                </div>
+              </Fragment>
+            );
+          })}
+          {!items.length ? (
+            <p className="px-3 py-6 text-center text-sm text-muted">Nothing matches &ldquo;{q}&rdquo;.</p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-[10px] text-muted">
+          <span><kbd className="rounded border border-line bg-field px-1">↑↓</kbd> navigate</span>
+          <span><kbd className="rounded border border-line bg-field px-1">Enter</kbd> open</span>
+          {role !== "viewer" ? <span><Star className="inline h-3 w-3" /> pin</span> : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -969,7 +1232,11 @@ function TopBar({
   noticeLog,
   onNoticeRead,
   onNoticeDismiss,
-  onNoticeClear
+  onNoticeClear,
+  onSearch,
+  onHelp,
+  crumb,
+  identity
 }: {
   onLogout: () => void;
   onRefresh: () => void;
@@ -977,7 +1244,20 @@ function TopBar({
   onNoticeRead: () => void;
   onNoticeDismiss: (id: number) => void;
   onNoticeClear: () => void;
+  onSearch: () => void;
+  onHelp: () => void;
+  crumb: { project: Project | null; inProject: boolean; section: string; projectsLoading: boolean };
+  identity: { name: string; email: string; role: string } | null;
 }) {
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
   // Public branding (company name + logo) — set by an admin in Settings.
   const branding = useQuery({
     queryKey: ["branding"],
@@ -1018,17 +1298,88 @@ function TopBar({
               by Techsa · {branding.data?.company_name || "SEO operations"}
             </span>
           </div>
+          {/* ── Context breadcrumb: workspace / scope / section — you ALWAYS know
+              where you are and where writes land. The scope crumb opens the
+              quick switcher. Hidden on small screens (MobileNav carries context). */}
+          <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-1.5 md:flex">
+            <span className="text-line">/</span>
+            {crumb.projectsLoading && crumb.inProject ? (
+              <span className="flex items-center gap-1.5 text-xs text-muted">
+                <Loader2 className="h-3 w-3 animate-spin" /> loading project…
+              </span>
+            ) : (
+              <button
+                onClick={onSearch}
+                title={crumb.inProject
+                  ? `Working INSIDE ${crumb.project?.name || "this project"} — everything you see and change is scoped to it. Click to switch (Ctrl+K).`
+                  : "Portfolio view — all projects combined. Click to switch into one project (Ctrl+K)."}
+                className={clsx(
+                  "flex max-w-[220px] items-center gap-1.5 truncate rounded-full border px-2.5 py-0.5 text-xs font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
+                  crumb.inProject
+                    ? "border-plum/40 bg-plum/10 text-plum hover:bg-plum/20"
+                    : "border-ocean/30 bg-ocean/5 text-ocean hover:bg-ocean/10"
+                )}
+              >
+                <Globe className="h-3 w-3 shrink-0" />
+                <span className="truncate">{crumb.inProject ? crumb.project?.name || "Project" : "All projects"}</span>
+                {crumb.inProject && crumb.project && (crumb.project.status || "active") !== "active" ? (
+                  <span className="shrink-0 rounded-full border border-line bg-field px-1 text-[9px] uppercase text-muted">Inactive</span>
+                ) : null}
+                <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+              </button>
+            )}
+            <span className="text-line">/</span>
+            <span className="truncate text-xs font-medium text-muted" aria-current="page">{crumb.section}</span>
+          </nav>
         </div>
         <div className="flex gap-1.5">
+          <button
+            onClick={onSearch}
+            title="Quick switch — projects & pages (Ctrl+K)"
+            aria-label="Open quick switcher"
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-panel px-2.5 text-muted shadow-card transition hover:bg-field hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
+          >
+            <SearchIcon className="h-4 w-4" />
+            <kbd className="hidden rounded border border-line bg-field px-1 text-[9px] font-semibold sm:inline">Ctrl K</kbd>
+          </button>
           <NotificationCenter
             log={noticeLog}
             onMarkRead={onNoticeRead}
             onDismiss={onNoticeDismiss}
             onClear={onNoticeClear}
           />
+          <IconButton label="Help — what every status means" onClick={onHelp} icon={Info} />
           <ThemeToggle />
           <IconButton label="Refresh" onClick={onRefresh} icon={RefreshCw} />
-          <IconButton label="Log out" onClick={onLogout} icon={LogOut} />
+          {/* Identity: who am I, my role, and the sign-out — no more anonymous session. */}
+          <div ref={profileRef} className="relative">
+            <button
+              onClick={() => setProfileOpen((o) => !o)}
+              title={identity ? `${identity.name} · ${identity.email}` : "Account"}
+              aria-label="Account menu"
+              aria-expanded={profileOpen}
+              className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-ocean to-plum text-[11px] font-bold text-white shadow-card transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
+            >
+              {(identity?.name || "?").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?"}
+            </button>
+            {profileOpen ? (
+              <div className="absolute right-0 top-10 z-40 w-64 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+                <div className="border-b border-line px-3 py-2.5">
+                  <p className="truncate text-sm font-semibold text-ink" title={identity?.name}>{identity?.name || "—"}</p>
+                  <p className="truncate text-xs text-muted" title={identity?.email}>{identity?.email || ""}</p>
+                  <span className="mt-1.5 inline-flex rounded-full border border-ocean/30 bg-ocean/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-ocean">
+                    {identity ? ROLE_LABEL[identity.role as Role] || identity.role : ""}
+                  </span>
+                </div>
+                <button
+                  onClick={onLogout}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium text-danger hover:bg-danger/10"
+                >
+                  <LogOut className="h-4 w-4" /> Log out
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     </header>
@@ -1086,7 +1437,7 @@ function Sidebar({
           </button>
         </div>
       ) : null}
-      <nav className="ring-gradient rounded-xl p-2 shadow-card">
+      <nav aria-label="Primary" className="ring-gradient rounded-xl p-2 shadow-card">
         {navGroups(Boolean(activeProjectId), role).map((group) => (
           <div key={group.label} className="mb-1 last:mb-0">
             <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
@@ -1100,8 +1451,9 @@ function Sidebar({
                   <Fragment key={id}>
                   <button
                     onClick={() => onTab(id)}
+                    aria-current={active ? "page" : undefined}
                     className={clsx(
-                      "group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition",
+                      "group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
                       active
                         ? "bg-gradient-to-r from-ocean/15 to-plum/10 font-semibold text-ocean shadow-[inset_0_0_0_1px_rgb(var(--ocean)/0.25)]"
                         : "font-medium text-muted hover:bg-field hover:text-ink"
@@ -1169,14 +1521,15 @@ function MobileNav({
   dashSubFor: Tab | null;
 }) {
   return (
-    <nav className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel p-1 shadow-card scrollbar-thin lg:hidden">
+    <nav aria-label="Primary (mobile)" className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel p-1 shadow-card scrollbar-thin lg:hidden">
       {navGroups(inProject, role).flatMap((g) => g.items).map(([id, label, Icon]) => (
         <Fragment key={id}>
         <button
           onClick={() => onTab(id)}
           title={label}
+          aria-current={activeTab === id ? "page" : undefined}
           className={clsx(
-            "flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium transition",
+            "flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
             activeTab === id ? "bg-ocean/10 font-semibold text-ocean" : "text-muted hover:bg-field hover:text-ink"
           )}
         >
@@ -1336,15 +1689,17 @@ function ProjectPanel({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search projects…"
+            onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
+            placeholder="Search projects… (Ctrl+K anywhere)"
             autoFocus
+            aria-label="Search projects"
             className="mb-1.5 h-9 w-full rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
           />
           <div className="max-h-72 overflow-y-auto">
             <button
               onClick={() => pick("")}
               className={clsx(
-                "flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-field",
+                "flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-field focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
                 !activeProjectId && "bg-ocean/10"
               )}
             >
@@ -1353,38 +1708,55 @@ function ProjectPanel({
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium text-ink">Dashboard</span>
-                <span className="block text-[11px] text-muted">Company dashboard & totals</span>
+                <span className="block text-[11px] text-muted">Company dashboard & totals — all projects</span>
               </span>
               {!activeProjectId ? <CheckCircle2 className="h-4 w-4 shrink-0 text-ocean" /> : null}
             </button>
-            {shown.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => pick(p.id)}
-                className={clsx(
-                  "flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-field",
-                  activeProjectId === p.id && "bg-plum/10"
-                )}
-              >
-                {projectLogos[p.id] ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={projectLogos[p.id]}
-                    alt=""
-                    className="h-8 w-8 shrink-0 rounded-lg object-cover"
-                  />
-                ) : (
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white">
-                    {initials(p.name)}
+            {(() => {
+              // Pinned first, then recents, then the rest — the same ordering
+              // as the Ctrl+K switcher, so muscle memory transfers.
+              const pinsNow = readIds("ls_pinned_projects");
+              const recNow = readIds("ls_recent_projects");
+              const rank = (p: Project) =>
+                pinsNow.includes(p.id) ? 0 : recNow.includes(p.id) ? 1 : 2;
+              const ordered = [...shown].sort(
+                (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)
+              );
+              return ordered.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => pick(p.id)}
+                  className={clsx(
+                    "flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-field focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
+                    activeProjectId === p.id && "bg-plum/10"
+                  )}
+                >
+                  {projectLogos[p.id] ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={projectLogos[p.id]}
+                      alt=""
+                      className="h-8 w-8 shrink-0 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white">
+                      {initials(p.name)}
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-sm font-medium text-ink" title={p.name}>{p.name}</span>
+                      {pinsNow.includes(p.id) ? <Star className="h-3 w-3 shrink-0 fill-current text-ember" /> : null}
+                      {(p.status || "active") !== "active" ? (
+                        <span className="shrink-0 rounded-full border border-line bg-field px-1.5 text-[9px] font-semibold uppercase text-muted">Inactive</span>
+                      ) : null}
+                    </span>
+                    <span className="block truncate text-[11px] text-muted">{projectSubtitle(p)}</span>
                   </span>
-                )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-ink">{p.name}</span>
-                  <span className="block truncate text-[11px] text-muted">{projectSubtitle(p)}</span>
-                </span>
-                {activeProjectId === p.id ? <CheckCircle2 className="h-4 w-4 shrink-0 text-plum" /> : null}
-              </button>
-            ))}
+                  {activeProjectId === p.id ? <CheckCircle2 className="h-4 w-4 shrink-0 text-plum" /> : null}
+                </button>
+              ));
+            })()}
             {!shown.length ? (
               <div className="p-3 text-center text-xs text-muted">No projects match “{q}”.</div>
             ) : null}
