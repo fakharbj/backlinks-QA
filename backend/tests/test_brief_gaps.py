@@ -179,3 +179,75 @@ def test_account_email_change_is_case_insensitive_conflict(live_stack):
         assert res.status_code == 200, res.text
         after = client.get("/api/v1/team/members", headers=h).json()[0]["email"]
         assert after == my_email  # stored lowercase, unchanged
+
+
+def test_case_merge_never_creates_ghosts_and_tasks_stay_visible(live_stack):
+    """Owner rule: 'Usman' and 'usman' are ONE person. A case merge must
+    (a) keep the person's tasks findable under the lowercase label,
+    (b) leave NO capitalized ghost in the planner picker or the People grid,
+    (c) never surface the deactivated alias row as a laid-off person."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        h = _register(client)
+        mk = client.post(
+            "/api/v1/projects",
+            json={"name": "Ghost Proj", "target_domain": "ghost.test"},
+            headers=h,
+        )
+        pid = mk.json()["id"]
+        day = date.today() + timedelta(days=1)
+        # The API lowercases on write even when the admin types 'USMAN'.
+        asg = client.post(
+            "/api/v1/workforce/assignments",
+            json={"project_id": pid, "user_label": "USMAN", "day": day.isoformat(), "hours": 4},
+            headers=h,
+        )
+        assert asg.status_code in (200, 201), asg.text
+
+        # Merge a capitalized alias into the person — canonical folds lowercase.
+        mg = client.post(
+            "/api/v1/employees/merge",
+            json={"canonical_label": "Usman", "alias_labels": ["USMAN", "Usman"]},
+            headers=h,
+        )
+        assert mg.status_code == 200, mg.text
+        assert mg.json()["canonical_label"] == "usman"
+
+        labels = client.get("/api/v1/workforce/labels", headers=h).json()
+        assert "usman" in labels
+        assert not any(l != l.lower() for l in labels), labels  # no capitalized ghosts
+
+        people = client.get("/api/v1/workforce/people", headers=h).json()
+        by_label = {p["user_label"]: p["active"] for p in people}
+        assert by_label.get("usman") is True                  # the real person, active
+        assert "Usman" not in by_label and "USMAN" not in by_label  # no ghost rows
+
+        # The task is still there, under the lowercase person.
+        rep = client.get(
+            f"/api/v1/workforce/day-report?date_from={day.isoformat()}&date_to={day.isoformat()}",
+            headers=h,
+        ).json()
+        assert any(r["user_label"] == "usman" and r["hours"] == 4 for r in rep)
+
+
+def test_teamlead_labels_stored_lowercase(live_stack):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        h = _register(client)
+        members = client.get("/api/v1/team/members", headers=h).json()
+        me = members[0]["user_id"]
+        put = client.put(
+            "/api/v1/team/leads",
+            json={"manager_user_id": me, "labels": ["ALEX", "Tony "]},
+            headers=h,
+        )
+        assert put.status_code == 200, put.text
+        rows = client.get("/api/v1/team/leads", headers=h).json()
+        mine = next(r for r in rows if r["manager_user_id"] == me)
+        assert sorted(mine["labels"]) == ["alex", "tony"]

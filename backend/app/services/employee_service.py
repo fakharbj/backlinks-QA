@@ -159,7 +159,7 @@ async def sync_from_data(db: AsyncSession, ctx: AuthContext) -> dict:
     ).all()
     new_maps = 0
     for label, any_user in label_rows:
-        lbl = (label or "").strip()
+        lbl = (label or "").strip().lower()  # labels are stored lowercase (owner rule)
         if lbl and lbl not in existing_labels:
             uid = uuid.UUID(any_user) if any_user else None
             db.add(
@@ -315,14 +315,15 @@ async def alias_map(db: AsyncSession, workspace_id: uuid.UUID) -> dict[str, str]
 
 
 def normalize_label(label: str | None, amap: dict[str, str]) -> str | None:
-    """Roll a raw label up to its canonical spelling (case-insensitive); unknown
-    labels pass through unchanged."""
+    """Roll a raw label up to its canonical spelling; case-insensitive on BOTH
+    sides — the result is always lowercase, so "Usman" and "usman" can never
+    become two people (owner rule)."""
     if label is None:
         return None
     cleaned = label.strip()
     if not cleaned:
         return cleaned
-    return amap.get(cleaned.lower(), cleaned)
+    return amap.get(cleaned.lower(), cleaned).lower()
 
 
 async def _upsert_mapping(
@@ -390,7 +391,9 @@ async def merge_labels(
     label. Rewrites existing backlink rows + every parallel workforce label column,
     normalizes future imports (via alias_map), deactivates the alias catalog rows so
     pickers stop offering them, and links them to one app user. Idempotent."""
-    canonical = (canonical_label or "").strip()
+    # The surviving name is ALWAYS lowercase (owner rule) — merging "usman"
+    # into "Usman" must produce "usman", never resurrect a capitalized label.
+    canonical = (canonical_label or "").strip().lower()
     if not canonical:
         raise ValidationAppError("A canonical name is required to merge into.")
     seen: set[str] = set()

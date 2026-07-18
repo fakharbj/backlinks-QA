@@ -179,7 +179,8 @@ async def set_teamlead_assignments(
             TeamLeadAssignment.manager_user_id == payload.manager_user_id,
         )
     )
-    labels = sorted({l.strip()[:200] for l in payload.labels if l.strip()})
+    # Labels are stored lowercase everywhere (owner rule) — scoping must match.
+    labels = sorted({l.strip().lower()[:200] for l in payload.labels if l.strip()})
     for label in labels[:100]:
         db.add(
             TeamLeadAssignment(

@@ -204,7 +204,8 @@ def test_bulk_edit_emits_reassigned_once_per_row(live_stack):
         reassigned = [e for e in page["items"] if e["event_type"] == "reassigned"]
         # One coalesced entry (history event + AssignmentHistory dual-write dedupes).
         assert len(reassigned) == 1
-        assert reassigned[0]["new_value"] == "Maya"
+        # Labels fold to lowercase on every write (owner rule): "Maya" → "maya".
+        assert reassigned[0]["new_value"] == "maya"
         assert reassigned[0]["source"] == "ui"
 
 

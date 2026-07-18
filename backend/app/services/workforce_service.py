@@ -119,7 +119,8 @@ async def set_productivity(
         stmt = (
             pg_insert(UserProductivityOverride)
             .values(
-                workspace_id=ctx.workspace_id, user_label=user_label.strip()[:200],
+                workspace_id=ctx.workspace_id,
+                user_label=user_label.strip().lower()[:200],  # labels are stored lowercase (owner rule)
                 link_type_name=name, links_per_hour=links_per_hour,
             )
             .on_conflict_do_update(
@@ -467,31 +468,40 @@ async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
     (their history stays; they just leave the pickers). TeamLead scoping applied."""
     from app.models.employee import UserEmployeeMapping
 
-    labels = set(
-        (
+    # Case-insensitive by construction: every label is folded to lowercase so
+    # "Usman" and "usman" are ONE person everywhere (sheets store lowercase;
+    # this guards any legacy row that slipped through).
+    labels = {
+        lbl.strip().lower()
+        for lbl in (
             await db.execute(
                 select(UserEmployeeMapping.sheet_user_label).where(
                     UserEmployeeMapping.workspace_id == ctx.workspace_id,
                     UserEmployeeMapping.is_active.is_(True),
+                    # Alias rows (merge memory, canonical_label set) aren't people.
+                    UserEmployeeMapping.canonical_label.is_(None),
                 )
             )
         ).scalars().all()
-    )
-    labels |= set(
-        (
+        if lbl and lbl.strip()
+    }
+    labels |= {
+        lbl.strip().lower()
+        for lbl in (
             await db.execute(
                 select(TaskAssignment.user_label)
                 .where(TaskAssignment.workspace_id == ctx.workspace_id)
                 .distinct()
             )
         ).scalars().all()
-    )
+        if lbl and lbl.strip()
+    }
     # Anyone who has ever been credited a backlink is a real person to show/plan
     # for — even without an employee-catalog row (e.g. a sheet-only name).
     from app.models.backlink import BacklinkRecord
 
     labels |= {
-        lbl
+        lbl.strip().lower()
         for lbl in (
             await db.execute(
                 select(BacklinkRecord.assigned_user_label)
@@ -502,20 +512,25 @@ async def known_labels(db: AsyncSession, ctx: AuthContext) -> list[str]:
         if lbl and lbl.strip()
     }
     # Laid-off labels leave the pickers even if they have past assignments.
-    inactive = set(
-        (
+    # Only CATALOG rows count — a deactivated alias spelling must never hide
+    # the real (lowercase) person it was merged into.
+    inactive = {
+        lbl.strip().lower()
+        for lbl in (
             await db.execute(
                 select(UserEmployeeMapping.sheet_user_label).where(
                     UserEmployeeMapping.workspace_id == ctx.workspace_id,
                     UserEmployeeMapping.is_active.is_(False),
+                    UserEmployeeMapping.canonical_label.is_(None),
                 )
             )
         ).scalars().all()
-    )
+        if lbl and lbl.strip()
+    }
     labels -= inactive
     scope = await visible_labels(db, ctx)
     if scope is not None:
-        labels &= scope
+        labels &= {s.strip().lower() for s in scope}
     return sorted(labels, key=str.lower)
 
 
@@ -535,13 +550,18 @@ async def all_people(
     from app.models.employee import UserEmployeeMapping
     from app.models.project import ProjectMember
 
+    # Laid-off = inactive CATALOG rows only. Alias rows (canonical_label set —
+    # the merge memory for old spellings like "Tony"→tony) are NOT people and
+    # must never appear as ghost "laid off" duplicates. Case-insensitive: one
+    # person, whatever the capitalization anywhere in the data.
     inactive = {
-        (lbl or "").strip()
+        (lbl or "").strip().lower()
         for lbl in (
             await db.execute(
                 select(UserEmployeeMapping.sheet_user_label).where(
                     UserEmployeeMapping.workspace_id == ctx.workspace_id,
                     UserEmployeeMapping.is_active.is_(False),
+                    UserEmployeeMapping.canonical_label.is_(None),
                 )
             )
         ).scalars().all()
@@ -565,13 +585,15 @@ async def all_people(
             .join(ProjectMember, ProjectMember.user_id == UserEmployeeMapping.user_id)
             .where(
                 UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                UserEmployeeMapping.canonical_label.is_(None),
                 ProjectMember.project_id == project_id,
             ),
         ]
     else:
         stmts = [
             select(UserEmployeeMapping.sheet_user_label).where(
-                UserEmployeeMapping.workspace_id == ctx.workspace_id
+                UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                UserEmployeeMapping.canonical_label.is_(None),
             ),
             select(TaskAssignment.user_label).where(
                 TaskAssignment.workspace_id == ctx.workspace_id
@@ -581,11 +603,11 @@ async def all_people(
             ).distinct(),
         ]
     for stmt in stmts:
-        labels |= {lbl.strip() for lbl in (await db.execute(stmt)).scalars().all() if lbl and lbl.strip()}
+        labels |= {lbl.strip().lower() for lbl in (await db.execute(stmt)).scalars().all() if lbl and lbl.strip()}
 
     scope = await visible_labels(db, ctx)
     if scope is not None:
-        labels &= scope
+        labels &= {s.strip().lower() for s in scope}
     return [
         {"user_label": lbl, "active": lbl not in inactive}
         for lbl in sorted(labels, key=str.lower)

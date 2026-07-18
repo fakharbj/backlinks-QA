@@ -6811,9 +6811,16 @@ function TasksDesk({
               // person's leftover rows this week are hidden here too — their
               // history stays in day reports, never in the ACTIVE planner.
               const activeSet = new Set(knownLabels.data || []);
+              // People WITH plans this week come first — the row cap below must
+              // never hide someone whose tasks you just added.
+              const planned = new Set(rows.map((r) => r.user_label));
               const gridUsers = Array.from(
                 new Set([...(knownLabels.data || []), ...rows.map((r) => r.user_label).filter((l) => activeSet.has(l))])
-              ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+              ).sort(
+                (a, b) =>
+                  Number(planned.has(b)) - Number(planned.has(a)) ||
+                  a.toLowerCase().localeCompare(b.toLowerCase())
+              );
               if (!gridUsers.length)
                 return (
                   <Empty label="No people yet — sync a sheet (users are created automatically) or type a name in the form above." />
@@ -6827,7 +6834,9 @@ function TasksDesk({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
-                    {gridUsers.slice(0, gridShown).map((u) => (
+                    {/* Everyone WITH plans always renders (never capped); the cap
+                        only trims the unplanned tail of the roster. */}
+                    {gridUsers.slice(0, Math.max(gridShown, planned.size)).map((u) => (
                       <tr key={u} className="align-top">
                         <Td><span className="whitespace-nowrap font-medium text-ink">{u}</span></Td>
                         {weekDays.map((d) => {
@@ -6855,14 +6864,14 @@ function TasksDesk({
                         })}
                       </tr>
                     ))}
-                    {gridUsers.length > gridShown ? (
+                    {gridUsers.length > Math.max(gridShown, planned.size) ? (
                       <tr>
                         <td colSpan={weekDays.length + 1} className="p-3 text-center">
                           <button
                             onClick={() => setGridShown((n) => n + 20)}
                             className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-ink hover:bg-field"
                           >
-                            Load more people ({gridUsers.length - gridShown} hidden)
+                            Show {gridUsers.length - Math.max(gridShown, planned.size)} more people (none have plans this week)
                           </button>
                         </td>
                       </tr>
