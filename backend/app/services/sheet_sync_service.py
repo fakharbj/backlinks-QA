@@ -585,15 +585,19 @@ async def sync_project(
         )
         # Honest per-tab accounting: NEW links vs rows that already existed
         # (those are just refreshed) — plus which links are actually new.
+        # Ignored rows (headings / no URL) are GREEN info: acceptable outcomes.
+        tab_ignored = (refreshed.skipped_rows or 0) if refreshed else 0
+        tab_failed = (refreshed.error_rows or 0) if refreshed else 0
         await batch_service.add_log(
             batch_id,
             f"Tab “{ws['title']}”: {len(rows)} rows — "
             f"{tab_new} NEW link{'s' if tab_new != 1 else ''}, "
-            f"{tab_existing} already there (refreshed), "
-            f"{refreshed.error_rows if refreshed else 0} failed",
-            level="warn" if (refreshed and refreshed.error_rows) else "info",
+            f"{tab_existing} already there (refreshed)"
+            + (f", {tab_ignored} ignored (no URL — normal sheet formatting)" if tab_ignored else "")
+            + (f", {tab_failed} failed" if tab_failed else ""),
+            level="warn" if tab_failed else "info",
             row_ref=ws["title"],
-            data={"import_id": str(imp.id), "new_links": tab_new},
+            data={"import_id": str(imp.id), "new_links": tab_new, "ignored": tab_ignored},
         )
         if new_ids:
             from sqlalchemy import bindparam
@@ -662,6 +666,7 @@ async def sync_project(
         batch_id,
         f"Sync finished: {len(all_new)} NEW link{'s' if len(all_new) != 1 else ''} added, "
         f"{max(0, total_imported - len(all_new))} already existed (refreshed), "
+        f"{total_skipped} ignored (headings / no URL / repeats — all normal), "
         f"{total_failed} failed.",
     )
     if all_new and not settings.AUTO_QA_ON_IMPORT:

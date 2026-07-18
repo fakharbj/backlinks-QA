@@ -81,14 +81,18 @@ async def _process_async(import_id: uuid.UUID, parse_from_storage: bool) -> dict
                 totals={
                     "total": imp.total_rows, "done": imp.processed_rows,
                     "ok": imp.imported_rows, "failed": imp.error_rows,
-                    "skipped": imp.duplicate_rows,
+                    # Ignored (no-URL) rows count as skipped too — they are
+                    # acceptable outcomes, never failures.
+                    "skipped": (imp.duplicate_rows or 0) + (imp.skipped_rows or 0),
                 },
                 counters_inc={"new_links": new_n, "already_there": updated_n},
             )
             await batch_service.add_log(
                 batch_id,
                 f"Import finished: {new_n} NEW link{'s' if new_n != 1 else ''} added, "
-                f"{updated_n} already there (refreshed), {imp.error_rows} failed.",
+                f"{updated_n} already there (refreshed)"
+                + (f", {imp.skipped_rows} ignored (no URL)" if imp.skipped_rows else "")
+                + f", {imp.error_rows} failed.",
                 data={"import_id": str(imp.id), "new_links": new_n},
             )
             if imp.error_rows:

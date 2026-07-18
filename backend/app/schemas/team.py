@@ -24,6 +24,11 @@ class TeamMemberOut(BaseModel):
     is_active: bool
     last_login_at: datetime | None = None
     member_since: datetime
+    # Account-health surface (§ user settings): password presence (never the
+    # password itself), failed-login count and active lockout window.
+    password_set: bool = True
+    failed_login_attempts: int = 0
+    locked_until: datetime | None = None
 
 
 class TeamInvite(BaseModel):

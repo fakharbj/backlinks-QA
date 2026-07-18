@@ -131,6 +131,9 @@ export function WorkspaceApp() {
   // one panel whose text morphs. Up to 6 stack; each auto-dismisses on its own
   // clock (errors linger longer so they're never missed).
   const [toasts, setToasts] = useState<Array<{ id: number; text: string; kind: "info" | "error"; at: string }>>([]);
+  // Notification center: every notice is ALSO retained here (unread until the
+  // bell is opened) so a toast that timed out is never lost. Session-scoped.
+  const [noticeLog, setNoticeLog] = useState<Array<{ id: number; text: string; kind: "info" | "error"; at: string; read: boolean }>>([]);
   const setNotice = (text: string) => {
     if (!text) return;
     const id = Date.now() + Math.random();
@@ -139,6 +142,7 @@ export function WorkspaceApp() {
       : ("info" as const);
     const at = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     setToasts((t) => [...t.slice(-5), { id, text, kind, at }]);
+    setNoticeLog((l) => [{ id, text, kind, at, read: false }, ...l].slice(0, 100));
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 10000 : 6500);
   };
 
@@ -201,7 +205,7 @@ export function WorkspaceApp() {
     const nextTab = navTabs(Boolean(next), role).includes(tab)
       ? tab
       : role === "viewer"
-        ? "mydash"
+        ? "mywork"
         : "overview";
     setActiveProjectIdState(next);
     setTabState(nextTab);
@@ -279,7 +283,7 @@ export function WorkspaceApp() {
   useEffect(() => {
     if (!role) return;
     if (!navTabs(Boolean(activeProjectId), role).includes(tab)) {
-      const fallback: Tab = role === "viewer" ? "mydash" : "overview";
+      const fallback: Tab = role === "viewer" ? "mywork" : "overview";
       setTabState(fallback);
       syncUrl(activeProjectId, fallback, false);
     }
@@ -346,6 +350,10 @@ export function WorkspaceApp() {
           queryClient.invalidateQueries();
           setNotice("Refreshing workspace data");
         }}
+        noticeLog={noticeLog}
+        onNoticeRead={() => setNoticeLog((l) => l.map((n) => ({ ...n, read: true })))}
+        onNoticeDismiss={(id) => setNoticeLog((l) => l.filter((n) => n.id !== id))}
+        onNoticeClear={() => setNoticeLog([])}
       />
       <section className="mx-auto flex w-full gap-5 px-5 py-4">
         <aside className="hidden w-[248px] shrink-0 lg:block">
@@ -791,27 +799,13 @@ const PROJECT_NAV: NavGroup[] = [
 // completion and leave — never the team-wide/admin desks.
 const MY_NAV: NavGroup[] = [
   {
-    // Dashboard first — the richest at-a-glance overview; its section pages
-    // (Overview / Projects / Plans & calendar / Rates & leave) expand under it.
-    label: "My Dashboard",
-    items: [["mydash", "My Dashboard", Gauge]]
-  },
-  {
-    // Owner rule: keep the viewer nav MINIMAL — My Work (today + this week live
-    // inside it) and the calendar. No separate Today/This week/Recent-links tabs.
+    // Owner rule (brief §17): the viewer sidebar is ONLY My Work — today,
+    // this week, targets and completion all live inside it; the calendar is
+    // its month view. No dashboards, no Grow pages, no count chips.
     label: "My Work",
     items: [
       ["mywork", "My Work", CalendarDays],
       ["mycal", "My calendar", CalendarDays]
-    ]
-  },
-  {
-    label: "Grow",
-    items: [
-      ["myopps", "Opportunities", Globe],
-      ["guidance", "Guidance", Lightbulb],
-      ["myscoring", "Scoring", Gauge],
-      ["statusguide", "Status Guide", Info]
     ]
   }
 ];
@@ -880,7 +874,95 @@ function ThemeToggle() {
   );
 }
 
-function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () => void }) {
+// Bell + dropdown: retains every notice of this session (toasts are ephemeral;
+// this is where a missed one lives). Unread badge clears when opened; items
+// dismiss individually; errors keep their red dot.
+function NotificationCenter({
+  log,
+  onMarkRead,
+  onDismiss,
+  onClear
+}: {
+  log: Array<{ id: number; text: string; kind: "info" | "error"; at: string; read: boolean }>;
+  onMarkRead: () => void;
+  onDismiss: (id: number) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const unread = log.filter((n) => !n.read).length;
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          setOpen((o) => !o);
+          if (!open) onMarkRead();
+        }}
+        title="Notifications — every popup from this session is kept here"
+        aria-label="Notifications"
+        className="relative grid h-8 w-8 place-items-center rounded-lg border border-line bg-panel text-muted shadow-card transition hover:bg-field hover:text-ink"
+      >
+        <Bell className="h-4 w-4" />
+        {unread > 0 ? (
+          <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold text-white">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-10 z-40 w-96 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+          <div className="flex items-center justify-between border-b border-line px-3 py-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Notifications ({log.length})
+            </span>
+            <span className="flex items-center gap-2">
+              {log.length ? (
+                <button onClick={onClear} className="text-xs font-medium text-muted hover:text-ink hover:underline">
+                  Clear all
+                </button>
+              ) : null}
+              <button onClick={() => setOpen(false)} aria-label="Close" className="text-muted hover:text-ink">
+                <XCircle className="h-4 w-4" />
+              </button>
+            </span>
+          </div>
+          <div className="max-h-96 overflow-y-auto">
+            {log.map((n) => (
+              <div key={n.id} className="flex items-start gap-2 border-b border-line px-3 py-2 last:border-b-0">
+                <span className={clsx("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", n.kind === "error" ? "bg-danger" : "bg-success")} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs leading-snug text-ink">{n.text}</p>
+                  <span className="text-[10px] tabular-nums text-muted">{n.at}</span>
+                </div>
+                <button onClick={() => onDismiss(n.id)} aria-label="Dismiss" className="shrink-0 text-muted hover:text-ink">
+                  <XCircle className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            {!log.length ? (
+              <p className="px-3 py-6 text-center text-xs text-muted">Nothing yet — sync results, task updates and errors collect here.</p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TopBar({
+  onLogout,
+  onRefresh,
+  noticeLog,
+  onNoticeRead,
+  onNoticeDismiss,
+  onNoticeClear
+}: {
+  onLogout: () => void;
+  onRefresh: () => void;
+  noticeLog: Array<{ id: number; text: string; kind: "info" | "error"; at: string; read: boolean }>;
+  onNoticeRead: () => void;
+  onNoticeDismiss: (id: number) => void;
+  onNoticeClear: () => void;
+}) {
   // Public branding (company name + logo) — set by an admin in Settings.
   const branding = useQuery({
     queryKey: ["branding"],
@@ -923,6 +1005,12 @@ function TopBar({ onLogout, onRefresh }: { onLogout: () => void; onRefresh: () =
           </div>
         </div>
         <div className="flex gap-1.5">
+          <NotificationCenter
+            log={noticeLog}
+            onMarkRead={onNoticeRead}
+            onDismiss={onNoticeDismiss}
+            onClear={onNoticeClear}
+          />
           <ThemeToggle />
           <IconButton label="Refresh" onClick={onRefresh} icon={RefreshCw} />
           <IconButton label="Log out" onClick={onLogout} icon={LogOut} />
@@ -5844,19 +5932,27 @@ function TasksDesk({
   type CapacityCell = { day: string; assigned: number; capacity: number; free: number; working: boolean; over: boolean };
   type CapacityOut = {
     week_start: string; week_end: string; default_daily_hours: number;
-    people: Array<{ user_label: string; daily_hours: number; days: CapacityCell[]; week_assigned: number; week_capacity: number }>;
+    people: Array<{
+      user_label: string; daily_hours: number | null; day_hours: number[] | null;
+      days: CapacityCell[]; week_assigned: number; week_capacity: number;
+      week_free: number; week_over: number; utilization_pct: number | null;
+    }>;
     day_totals: Array<{ day: string; assigned: number; capacity: number; free: number; working: boolean }>;
   };
+  // Per-weekday hours editor: which person's row is expanded into 7 inputs.
+  const [capDaysFor, setCapDaysFor] = useState<string | null>(null);
+  const [capDayDraft, setCapDayDraft] = useState<number[]>([8, 8, 8, 8, 8, 8, 0]);
   const capacity = useQuery({
     queryKey: ["workforce-capacity", token, weekDays[0]],
     enabled: Boolean(token) && view === "capacity",
     queryFn: () => api<CapacityOut>(`/workforce/capacity?week_start=${weekDays[0]}`, { token })
   });
   const setDailyHours = useMutation({
-    mutationFn: (body: { user_label: string; hours: number }) =>
+    mutationFn: (body: { user_label: string; hours?: number; day_hours?: number[] }) =>
       api<{ message: string }>("/workforce/daily-hours", { method: "PUT", token, body: JSON.stringify(body) }),
     onSuccess: (r) => {
       onNotice(r.message || "Daily hours saved.");
+      setCapDaysFor(null);
       queryClient.invalidateQueries({ queryKey: ["workforce-capacity"] });
     },
     onError: (e: Error) => onNotice(e.message)
@@ -6491,9 +6587,10 @@ function TasksDesk({
                     <thead className="bg-field text-xs uppercase text-muted">
                       <tr>
                         <th className="px-3 py-2 font-semibold">Person</th>
-                        <th className="whitespace-nowrap px-3 py-2 font-semibold" title="Personal daily working hours — edit and save; 8h is the default">Daily hours</th>
+                        <th className="whitespace-nowrap px-3 py-2 font-semibold" title="Personal daily working hours — uniform, or a per-weekday schedule via Days…">Daily hours</th>
                         {weekDays.map((d, i) => dayHeader(d, i))}
                         <th className="whitespace-nowrap px-3 py-2 font-semibold" title="Assigned this week / weekly capacity">Week</th>
+                        <th className="whitespace-nowrap px-3 py-2 font-semibold" title="Assigned ÷ capacity — red above 100%">Util.</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-line">
@@ -6501,17 +6598,62 @@ function TasksDesk({
                         <tr key={p.user_label}>
                           <td className="px-3 py-2 font-medium capitalize text-ink">{p.user_label}</td>
                           <td className="px-3 py-2">
-                            <input
-                              type="number" min={0} max={24} step={0.5} defaultValue={p.daily_hours}
-                              key={`${p.user_label}:${p.daily_hours}`}
-                              onBlur={(e) => {
-                                const v = Number(e.target.value);
-                                if (Number.isFinite(v) && v !== p.daily_hours)
-                                  setDailyHours.mutate({ user_label: p.user_label, hours: v });
-                              }}
-                              title="This person's daily working hours (their capacity). Change + click away to save."
-                              className="h-8 w-16 rounded-lg border border-line bg-panel px-2 text-sm text-ink"
-                            />
+                            {capDaysFor === p.user_label ? (
+                              <span className="flex items-center gap-1">
+                                {["M", "T", "W", "T", "F", "S", "S"].map((w, i) => (
+                                  <span key={i} className="flex flex-col items-center">
+                                    <span className="text-[9px] uppercase text-muted">{w}</span>
+                                    <input
+                                      type="number" min={0} max={24} step={0.5}
+                                      value={capDayDraft[i]}
+                                      onChange={(e) =>
+                                        setCapDayDraft((d) => d.map((x, j) => (j === i ? Number(e.target.value) : x)))
+                                      }
+                                      className="h-7 w-11 rounded border border-line bg-panel px-1 text-xs text-ink"
+                                    />
+                                  </span>
+                                ))}
+                                <button
+                                  onClick={() => setDailyHours.mutate({ user_label: p.user_label, day_hours: capDayDraft })}
+                                  className="ml-1 h-7 rounded bg-ocean px-2 text-[11px] font-semibold text-white"
+                                >
+                                  Save
+                                </button>
+                                <button onClick={() => setCapDaysFor(null)} className="h-7 px-1 text-[11px] text-muted hover:text-ink">
+                                  ×
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1.5">
+                                {p.day_hours ? (
+                                  <span className="font-mono text-xs text-ink" title="Per-weekday schedule (Mon–Sun)">
+                                    {p.day_hours.map((h) => `${h % 1 ? h : h.toFixed(0)}`).join("/")}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="number" min={0} max={24} step={0.5} defaultValue={p.daily_hours ?? 8}
+                                    key={`${p.user_label}:${p.daily_hours}`}
+                                    onBlur={(e) => {
+                                      const v = Number(e.target.value);
+                                      if (Number.isFinite(v) && v !== p.daily_hours)
+                                        setDailyHours.mutate({ user_label: p.user_label, hours: v });
+                                    }}
+                                    title="This person's daily working hours (their capacity). Change + click away to save."
+                                    className="h-8 w-16 rounded-lg border border-line bg-panel px-2 text-sm text-ink"
+                                  />
+                                )}
+                                <button
+                                  onClick={() => {
+                                    setCapDaysFor(p.user_label);
+                                    setCapDayDraft(p.day_hours ?? Array(7).fill(p.daily_hours ?? 8).map((h, i) => (i === 6 ? 0 : h)));
+                                  }}
+                                  title="Set a different number of hours per weekday (part-time, personal days off)"
+                                  className="text-[11px] font-medium text-ocean hover:underline"
+                                >
+                                  Days…
+                                </button>
+                              </span>
+                            )}
                           </td>
                           {p.days.map((c) => (
                             <td key={c.day} className={clsx("px-3 py-2", c.day === todayIso && "bg-ocean/5", !c.working && "opacity-50")}>
@@ -6532,6 +6674,20 @@ function TasksDesk({
                           <td className="whitespace-nowrap px-3 py-2 text-xs">
                             <span className="font-semibold text-ink">{p.week_assigned}h</span>
                             <span className="text-muted"> / {p.week_capacity}h</span>
+                            {p.week_over > 0 ? (
+                              <span className="ml-1 font-semibold text-danger">+{p.week_over} over</span>
+                            ) : (
+                              <span className="ml-1 text-success">{p.week_free} free</span>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-xs">
+                            {p.utilization_pct === null ? (
+                              <span className="text-muted">—</span>
+                            ) : (
+                              <span className={clsx("font-semibold", p.utilization_pct > 100 ? "text-danger" : p.utilization_pct >= 80 ? "text-ember" : "text-success")}>
+                                {p.utilization_pct}%
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -6554,6 +6710,13 @@ function TasksDesk({
                         <td className="whitespace-nowrap px-3 py-2 text-xs text-ink">
                           {Math.round(cap.day_totals.reduce((s, t) => s + t.assigned, 0) * 10) / 10}h
                           <span className="text-muted"> / {Math.round(cap.day_totals.reduce((s, t) => s + t.capacity, 0) * 10) / 10}h</span>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-xs">
+                          {(() => {
+                            const a = cap.day_totals.reduce((s, t) => s + t.assigned, 0);
+                            const c = cap.day_totals.reduce((s, t) => s + t.capacity, 0);
+                            return c ? <span className="text-ink">{Math.round((100 * a) / c)}%</span> : <span className="text-muted">—</span>;
+                          })()}
                         </td>
                       </tr>
                     </tbody>
@@ -15480,6 +15643,67 @@ function LinkTypeTargetsCard({ token, onNotice }: { token: string | null; onNoti
 // All projects, quick-editable in one table: name, client, target domain and
 // ACTIVE/PAUSED status. Pausing a project removes its FUTURE planned tasks
 // (past days stay in history) and excludes it from bulk/auto sheet sync.
+// Reconciliation report (read-only): surfaces data inconsistencies the system
+// must never silently accept — unassigned links, tasks on inactive projects,
+// laid-off people still planned, capitalization duplicates, batch mismatches.
+function DataHealthCard({ token }: { token: string | null }) {
+  type Check = { key: string; label: string; count: number; ok: boolean; sample: string[]; help: string };
+  const health = useQuery({
+    queryKey: ["data-health", token],
+    enabled: Boolean(token),
+    queryFn: () => api<{ generated_at: string; checks: Check[]; ok: boolean }>("/team/data-health", { token })
+  });
+  const d = health.data;
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="Data health — reconciliation checks" />
+      <p className="border-b border-line px-4 py-2.5 text-xs text-muted">
+        Cross-checks the sheet data, links, tasks, users and batches against each other.
+        Green = consistent. Anything flagged links to what needs a human decision — nothing
+        here changes data by itself.
+      </p>
+      {health.isLoading ? (
+        <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+      ) : d ? (
+        <div className="divide-y divide-line">
+          {d.checks.map((c) => (
+            <div key={c.key} className="flex items-start gap-3 px-4 py-3">
+              <span className={clsx(
+                "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full",
+                c.ok ? "bg-success/10 text-success" : "bg-ember/10 text-ember"
+              )}>
+                {c.ok ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-ink">
+                  {c.label}
+                  <span className={clsx("ml-2 text-xs font-semibold", c.ok ? "text-success" : "text-ember")}>
+                    {c.ok ? "OK" : c.count}
+                  </span>
+                </p>
+                <p className="text-xs text-muted">{c.help}</p>
+                {!c.ok && c.sample.length ? (
+                  <p className="mt-1 truncate text-xs text-muted" title={c.sample.join(" · ")}>
+                    {c.sample.join(" · ")}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center justify-between px-4 py-2.5">
+            <span className="text-xs text-muted">Checked {d.generated_at}</span>
+            <button onClick={() => health.refetch()} className="flex items-center gap-1.5 text-xs font-medium text-ocean hover:underline">
+              <RefreshCw className="h-3.5 w-3.5" /> Re-run checks
+            </button>
+          </div>
+        </div>
+      ) : (
+        <Empty label="Could not load the checks (admin only)." />
+      )}
+    </section>
+  );
+}
+
 function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   const projects = useQuery({
@@ -15506,7 +15730,28 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
     },
     onError: (e: Error) => onNotice(e.message)
   });
-  const rows = [...(projects.data || [])].sort((a, b) => a.name.localeCompare(b.name));
+  // Sheet connection per project → last sync column + a row-level Sync action.
+  const sheetsQ = useQuery({
+    queryKey: ["sheets", token],
+    enabled: Boolean(token),
+    queryFn: () => api<SheetSource[]>("/sheets", { token })
+  });
+  const sheetByProject = new Map((sheetsQ.data || []).map((s) => [s.project_id, s]));
+  const syncOne = useMutation({
+    mutationFn: (id: string) => api<{ message: string }>(`/sheets/${id}/sync`, { method: "POST", token }),
+    onSuccess: (r) => onNotice(r.message || "Sync started — follow it in the Sheets desk."),
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const [q, setQ] = useState("");
+  const [statusF, setStatusF] = useState<"" | "active" | "inactive">("");
+  const rows = [...(projects.data || [])]
+    .filter((p) => !q.trim() || `${p.name} ${p.client_name || ""} ${p.target_domain || ""}`.toLowerCase().includes(q.trim().toLowerCase()))
+    .filter((p) => {
+      if (!statusF) return true;
+      const active = (p.status || "active") === "active";
+      return statusF === "active" ? active : !active;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
       <SectionTitle title={`All projects · quick edit (${rows.length})`} />
@@ -15516,10 +15761,30 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
         (past days stay in every user&apos;s history) and excludes it from bulk &amp; automatic sheet
         sync — its own row Sync stays manual-only until re-activated.
       </p>
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search projects…"
+          className="h-8 w-56 rounded-lg border border-line bg-panel px-2 text-sm"
+        />
+        {(["", "active", "inactive"] as const).map((f) => (
+          <button
+            key={f || "all"}
+            onClick={() => setStatusF(f)}
+            className={clsx(
+              "rounded-full border px-2.5 py-1 text-xs font-medium transition",
+              statusF === f ? "border-ocean/40 bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+            )}
+          >
+            {f === "" ? "All" : f === "active" ? "Active" : "Inactive"}
+          </button>
+        ))}
+      </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="bg-field text-xs uppercase text-muted">
-            <tr><Th>Project</Th><Th>Client</Th><Th>Target domain</Th><Th>Status</Th><Th>{" "}</Th></tr>
+            <tr><Th>Project</Th><Th>Client</Th><Th>Target domain</Th><Th>Status</Th><Th>Last synced</Th><Th>{" "}</Th></tr>
           </thead>
           <tbody className="divide-y divide-line">
             {rows.map((p) => {
@@ -15561,15 +15826,44 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
                     </button>
                   </Td>
                   <Td>
-                    {dirty ? (
-                      <button
-                        onClick={() => save.mutate({ id: p.id, body: { ...drafts[p.id] } })}
-                        disabled={save.isPending}
-                        className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-50"
-                      >
-                        Save
-                      </button>
-                    ) : null}
+                    {(() => {
+                      const sheet = sheetByProject.get(p.id);
+                      if (!sheet) return <span className="text-xs text-muted">no sheet</span>;
+                      return (
+                        <span className="whitespace-nowrap text-xs text-muted" title={sheet.last_sync_error || sheet.last_sync_status || ""}>
+                          {formatDate(sheet.last_synced_at)}
+                        </span>
+                      );
+                    })()}
+                  </Td>
+                  <Td>
+                    <div className="flex items-center gap-1.5">
+                      {dirty ? (
+                        <button
+                          onClick={() => save.mutate({ id: p.id, body: { ...drafts[p.id] } })}
+                          disabled={save.isPending}
+                          className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                      ) : null}
+                      {(() => {
+                        const sheet = sheetByProject.get(p.id);
+                        if (!sheet) return null;
+                        return (
+                          <button
+                            onClick={() => {
+                              if (!active && !window.confirm(`"${p.name}" is INACTIVE.\n\nManual sync will still import/update its sheet data, but its future tasks stay excluded from active task management, and it remains out of bulk & automatic sync.\n\nSync it anyway?`)) return;
+                              syncOne.mutate(sheet.id);
+                            }}
+                            title="Sync this project's sheet now (progress shows in the Sheets desk)"
+                            className="flex h-8 items-center gap-1 rounded-md border border-line px-2 text-xs font-medium text-ink hover:bg-field"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" /> Sync
+                          </button>
+                        );
+                      })()}
+                    </div>
                   </Td>
                 </tr>
               );
@@ -15577,6 +15871,7 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
           </tbody>
         </table>
         {projects.isLoading ? <div className="flex justify-center p-5"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div> : null}
+        {!projects.isLoading && !rows.length ? <Empty label="No projects match the search/filter." /> : null}
       </div>
     </section>
   );
@@ -17093,7 +17388,8 @@ function SettingsDesk({
           ["projects", "Projects"],
           ["linktypes", "Link types"],
           ["automation", "Automation & sync"],
-          ["qa", "QA & rates"]
+          ["qa", "QA & rates"],
+          ["datahealth", "Data health"]
         ] as Array<[string, string]>).map(([id, label]) => (
           <button
             key={id}
@@ -17128,6 +17424,7 @@ function SettingsDesk({
         <ProductivityCard token={token} onNotice={onNotice} />
         <QaSettingsCard token={token} onNotice={onNotice} />
       </>) : null}
+      {settingsTab === "datahealth" ? <DataHealthCard token={token} /> : null}
       {settingsTab !== "projects" ? null : !projectId ? (
         <div className="rounded-xl border border-line bg-panel shadow-card">
           <Empty label="Select a project (top‑left) to manage its main domains and QA policy." />
@@ -19044,10 +19341,15 @@ function SheetsDesk({
   });
   // Selectable sync: tick sheets → "Sync selected".
   const [selectedSheets, setSelectedSheets] = useState<Set<string>>(new Set());
+  // Progress panel controls: minimize collapses to the bar; close hides ONE
+  // batch id (a new run has a new id, so the panel reappears automatically).
+  const [bulkCardMin, setBulkCardMin] = useState(false);
+  const [bulkCardClosed, setBulkCardClosed] = useState<string | null>(null);
   // The bulk run's PARENT batch — the permanent progress card reads this. It
   // stays visible after completion (until the next run replaces it).
   type BulkBatch = {
     id: string; status: string; label: string | null; created_at?: string;
+    started_at?: string | null; finished_at?: string | null;
     totals?: Record<string, number>; counters?: Record<string, number>;
     meta?: Record<string, unknown>;
   };
@@ -19122,9 +19424,21 @@ function SheetsDesk({
             </button>
             {selectedSheets.size ? (
               <button
-                onClick={() => syncEverySheet.mutate(Array.from(selectedSheets))}
+                onClick={() => {
+                  const inactive = visibleSheets.filter(
+                    (x) => selectedSheets.has(x.id) && x.project_status && x.project_status !== "active"
+                  );
+                  if (inactive.length) {
+                    window.alert(
+                      `${inactive.length} of the selected sheets belong to INACTIVE projects (${inactive
+                        .map((x) => x.project_name)
+                        .join(", ")}) — bulk sync always skips them. Use each row's own Sync button to sync an inactive project deliberately.`
+                    );
+                  }
+                  syncEverySheet.mutate(Array.from(selectedSheets));
+                }}
                 disabled={!cfg?.enabled || syncEverySheet.isPending}
-                title="Sync exactly the ticked sheets (active projects only)"
+                title="Sync exactly the ticked sheets (active projects only — inactive ones are skipped)"
                 className="flex items-center gap-2 rounded-md bg-gradient-to-r from-ocean to-plum px-4 py-2 text-sm font-semibold text-white shadow-glow disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
@@ -19194,10 +19508,11 @@ function SheetsDesk({
       ) : null}
 
       {/* ── PERMANENT bulk-sync progress: the latest bulk/auto run, with one chip
-          per project. Stays visible after completion — it never hides. ── */}
+          per project. Never auto-hides — the user minimizes or closes it; a new
+          run brings it back automatically. ── */}
       {(() => {
         const b = bulkBatch.data?.[0];
-        if (!b) return null;
+        if (!b || bulkCardClosed === b.id) return null;
         const total = Number(b.totals?.total ?? 0);
         const done = Number(b.counters?.done ?? 0);
         const running = b.status === "running" || b.status === "pending";
@@ -19205,6 +19520,12 @@ function SheetsDesk({
           .filter(([k]) => k.startsWith("p:"))
           .map(([k, v]) => ({ id: k.slice(2), ...(v as { name?: string; status?: string; note?: string }) }))
           .sort((a, z) => (a.name || "").localeCompare(z.name || ""));
+        const nowSyncing = projs.filter((p) => p.status === "running").map((p) => p.name).join(", ");
+        // Elapsed clock: start → finish (or now while running).
+        const startMs = b.started_at ? new Date(b.started_at).getTime() : 0;
+        const endMs = b.finished_at ? new Date(b.finished_at).getTime() : Date.now();
+        const mins = startMs ? Math.max(0, Math.round((endMs - startMs) / 60000)) : null;
+        const elapsed = mins === null ? null : mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
         const chipCls = (st?: string) =>
           st === "completed" ? "border-success/40 bg-success/10 text-success"
             : st === "partial" ? "border-ember/40 bg-ember/10 text-ember"
@@ -19226,10 +19547,28 @@ function SheetsDesk({
                       : "border-ocean/40 bg-ocean/10 text-ocean")}>
                 {b.status === "partial" ? "Finished with problems" : b.status === "completed" ? "Completed" : b.status === "failed" ? "Failed" : "Running"}
               </span>
-              <span className="text-xs text-muted">{done}/{total} projects</span>
+              <span className="text-xs text-muted">{done}/{total} projects{elapsed ? ` · ${elapsed}` : ""}</span>
               <span className="ml-auto" />
               <button onClick={() => onOpenBatch?.(b.id)} className="text-xs font-medium text-ocean hover:underline">
                 Open batch details →
+              </button>
+              <button
+                onClick={() => setBulkCardMin((m) => !m)}
+                title={bulkCardMin ? "Expand the progress panel" : "Minimize to one line"}
+                className="text-xs font-medium text-muted hover:text-ink hover:underline"
+              >
+                {bulkCardMin ? "Expand" : "Minimize"}
+              </button>
+              <button
+                onClick={() => {
+                  if (running && !window.confirm("The sync is still running — hide the panel anyway? It stays available under Batches, and reappears for the next run.")) return;
+                  setBulkCardClosed(b.id);
+                }}
+                title="Close this panel (the batch stays in Batches history; a new run reopens it)"
+                aria-label="Close progress panel"
+                className="text-muted hover:text-ink"
+              >
+                <XCircle className="h-4 w-4" />
               </button>
             </div>
             <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-field">
@@ -19238,16 +19577,25 @@ function SheetsDesk({
                 style={{ width: `${total ? Math.round((100 * done) / total) : 0}%` }}
               />
             </div>
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              {projs.map((pr) => (
-                <span key={pr.id} title={pr.note || pr.status}
-                  className={clsx("rounded-full border px-2 py-0.5 text-[11px] font-medium", chipCls(pr.status))}>
-                  {pr.status === "running" ? "⟳ " : pr.status === "completed" ? "✓ " : pr.status === "failed" ? "✕ " : pr.status === "partial" ? "△ " : "· "}
-                  {pr.name}
-                  {pr.note ? <span className="opacity-80"> — {pr.note}</span> : null}
-                </span>
-              ))}
-            </div>
+            {!bulkCardMin ? (
+              <>
+                {running ? (
+                  <p className="mt-2 text-xs text-ocean">
+                    Now syncing: <span className="font-semibold">{nowSyncing || "queuing next project…"}</span>
+                  </p>
+                ) : null}
+                <div className="mt-2.5 flex flex-wrap gap-1.5">
+                  {projs.map((pr) => (
+                    <span key={pr.id} title={pr.note || pr.status}
+                      className={clsx("rounded-full border px-2 py-0.5 text-[11px] font-medium", chipCls(pr.status))}>
+                      {pr.status === "running" ? "⟳ " : pr.status === "completed" ? "✓ " : pr.status === "failed" ? "✕ " : pr.status === "partial" ? "△ " : "· "}
+                      {pr.name}
+                      {pr.note ? <span className="opacity-80"> — {pr.note}</span> : null}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </section>
         );
       })()}
@@ -19300,7 +19648,17 @@ function SheetsDesk({
                       />
                     </Td>
                     <Td>
-                      <div className="font-medium text-ink">{s.project_name}</div>
+                      <div className="flex items-center gap-1.5 font-medium text-ink">
+                        {s.project_name}
+                        {s.project_status && s.project_status !== "active" ? (
+                          <span
+                            className="rounded-full border border-line bg-field px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted"
+                            title="This project is deactivated — it is excluded from bulk & automatic sync. Its manual Sync still works (with confirmation)."
+                          >
+                            Inactive
+                          </span>
+                        ) : null}
+                      </div>
                       <div className="max-w-[280px] truncate text-xs text-muted" title={s.source_url || ""}>
                         {s.source_url}
                       </div>
@@ -19336,7 +19694,16 @@ function SheetsDesk({
                     <Td>
                       <div className="flex gap-1">
                         <button
-                          onClick={() => syncOne.mutate(s.id)}
+                          onClick={() => {
+                            if (
+                              s.project_status && s.project_status !== "active" &&
+                              !window.confirm(
+                                `"${s.project_name}" is INACTIVE.\n\nManual sync will still import/update its sheet data, but its future tasks stay excluded from active task management, and it remains out of bulk & automatic sync.\n\nSync it anyway?`
+                              )
+                            )
+                              return;
+                            syncOne.mutate(s.id);
+                          }}
                           disabled={Boolean(live)}
                           className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-50"
                         >

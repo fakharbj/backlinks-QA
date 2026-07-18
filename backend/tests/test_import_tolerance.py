@@ -28,6 +28,16 @@ def test_schemed_and_garbage_untouched():
     assert coerce_url_scheme("Pending") == "Pending"
 
 
+def test_linebreak_inside_url_is_repaired():
+    # A sheet cell that wrapped mid-URL pastes with an embedded newline —
+    # join it back together; titles keep their spaces and stay non-URLs.
+    assert coerce_url_scheme("https://example.com/very/long\n/path") == "https://example.com/very/long/path"
+    assert coerce_url_scheme("open.substack.com/pub/x\r\n/p/y") == "https://open.substack.com/pub/x/p/y"
+    assert coerce_url_scheme("  https://example.com/page  ") == "https://example.com/page"
+    assert coerce_url_scheme("A title that\nwraps lines") == "A title thatwraps lines"  # still not a URL
+    assert not looks_like_url(coerce_url_scheme("A title that\nwraps lines"))
+
+
 def test_plain_text_source_is_ignored_not_errored():
     # A title/note in the source column = normal sheet formatting → the row is
     # SKIPPED quietly (green), never "Invalid source URL (unsupported_scheme)".

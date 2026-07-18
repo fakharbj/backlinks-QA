@@ -31,6 +31,9 @@ def _out(member: WorkspaceMember, user: User) -> TeamMemberOut:
         is_active=user.is_active,
         last_login_at=user.last_login_at,
         member_since=member.created_at,
+        password_set=bool(user.password_hash),
+        failed_login_attempts=int(user.failed_login_attempts or 0),
+        locked_until=user.locked_until,
     )
 
 
@@ -359,3 +362,165 @@ async def update_member_account(
     )
     await db.commit()
     return Message(message="Account updated — " + "; ".join(changed))
+
+
+# ── Data health: reconciliation checks across sheets/links/tasks/users ───────
+# Detects the inconsistencies the platform must never silently accept (brief
+# §20): unassigned links, active tasks on inactive projects, laid-off people
+# still planned, capitalization duplicates, batch summary/detail mismatches.
+# Read-only — it REPORTS; fixing stays an explicit human action.
+@router.get("/data-health")
+async def data_health(
+    db: ReadSession, ctx: AuthContext = Depends(require(Permission.MANAGE_USERS)),
+) -> dict:
+    from datetime import date as _date
+
+    from sqlalchemy import Integer, func as _func, select as _select
+
+    from app.models.backlink import BacklinkRecord
+    from app.models.batch import Batch
+    from app.models.employee import UserEmployeeMapping
+    from app.models.enums import ProjectStatus
+    from app.models.project import Project
+    from app.models.workforce import TaskAssignment
+
+    ws = ctx.workspace_id
+    today = _date.today()
+    checks: list[dict] = []
+
+    def add(key: str, label: str, count: int, sample: list, help_text: str) -> None:
+        checks.append({
+            "key": key, "label": label, "count": int(count),
+            "ok": int(count) == 0, "sample": sample[:8], "help": help_text,
+        })
+
+    # 1) Links with no assigned user (the sheet showed one but nothing landed,
+    #    or the sheet truly has no user column).
+    unassigned = (
+        await db.execute(
+            _select(Project.name, _func.count())
+            .select_from(BacklinkRecord)
+            .join(Project, Project.id == BacklinkRecord.project_id)
+            .where(
+                BacklinkRecord.workspace_id == ws,
+                (BacklinkRecord.assigned_user_label.is_(None))
+                | (BacklinkRecord.assigned_user_label == ""),
+            )
+            .group_by(Project.name)
+            .order_by(_func.count().desc())
+        )
+    ).all()
+    add(
+        "unassigned_links", "Links without an assigned user",
+        sum(c for _, c in unassigned),
+        [f"{n}: {c}" for n, c in unassigned],
+        "If the sheet HAS a user column, re-sync the project — the column "
+        "detector will pick it up. Sheets genuinely without users are fine.",
+    )
+
+    # 2) Future planned tasks on inactive (paused/archived) projects.
+    rows = (
+        await db.execute(
+            _select(Project.name, _func.count())
+            .select_from(TaskAssignment)
+            .join(Project, Project.id == TaskAssignment.project_id)
+            .where(
+                TaskAssignment.workspace_id == ws,
+                TaskAssignment.day >= today,
+                Project.status != ProjectStatus.ACTIVE,
+            )
+            .group_by(Project.name)
+        )
+    ).all()
+    add(
+        "future_tasks_inactive_projects", "Future tasks on deactivated projects",
+        sum(c for _, c in rows), [f"{n}: {c}" for n, c in rows],
+        "Deactivating a project removes its future tasks automatically — any "
+        "listed here predate that rule or were re-added manually.",
+    )
+
+    # 3) Future planned tasks for laid-off people.
+    laid_off = (
+        await db.execute(
+            _select(UserEmployeeMapping.sheet_user_label).where(
+                UserEmployeeMapping.workspace_id == ws,
+                UserEmployeeMapping.is_active.is_(False),
+            )
+        )
+    ).scalars().all()
+    if laid_off:
+        rows = (
+            await db.execute(
+                _select(TaskAssignment.user_label, _func.count())
+                .where(
+                    TaskAssignment.workspace_id == ws,
+                    TaskAssignment.day >= today,
+                    TaskAssignment.user_label.in_(laid_off),
+                )
+                .group_by(TaskAssignment.user_label)
+            )
+        ).all()
+    else:
+        rows = []
+    add(
+        "future_tasks_laid_off", "Future tasks planned for laid-off people",
+        sum(c for _, c in rows), [f"{n}: {c}" for n, c in rows],
+        "Laying someone off removes them from planning — remove any listed "
+        "plans in the Tasks desk.",
+    )
+
+    # 4) Mixed-case user labels still in the links data.
+    rows = (
+        await db.execute(
+            _select(BacklinkRecord.assigned_user_label, _func.count())
+            .where(
+                BacklinkRecord.workspace_id == ws,
+                BacklinkRecord.assigned_user_label.isnot(None),
+                BacklinkRecord.assigned_user_label != "",
+                BacklinkRecord.assigned_user_label
+                != _func.lower(BacklinkRecord.assigned_user_label),
+            )
+            .group_by(BacklinkRecord.assigned_user_label)
+        )
+    ).all()
+    add(
+        "mixed_case_labels", "User names not yet lowercase",
+        sum(c for _, c in rows), [f"{n}: {c}" for n, c in rows],
+        "All sheet users are stored lowercase — merge these in Team → Employees "
+        "(the smart-merge suggestions handle them).",
+    )
+
+    # 5) Login emails whose lowercase form collides (case-only duplicates).
+    rows = (
+        await db.execute(
+            _select(_func.lower(User.email), _func.count())
+            .group_by(_func.lower(User.email))
+            .having(_func.count() > 1)
+        )
+    ).all()
+    add(
+        "duplicate_emails", "Case-duplicate login emails",
+        len(rows), [e for e, _ in rows],
+        "Two accounts whose emails differ only by capitalization — merge or "
+        "remove one; the database now blocks new ones.",
+    )
+
+    # 6) Batches whose summary and details disagree (says completed, has fails).
+    rows = (
+        await db.execute(
+            _select(Batch.seq, Batch.kind).where(
+                Batch.workspace_id == ws,
+                Batch.status == "completed",
+                _func.coalesce(Batch.totals["failed"].astext.cast(Integer), 0) > 0,
+            ).order_by(Batch.started_at.desc()).limit(20)
+        )
+    ).all()
+    add(
+        "batch_status_mismatch", "Batches marked Completed that contain failures",
+        len(rows), [f"#B-{s} ({k})" for s, k in rows],
+        "A completed batch must have zero real failures — these need a re-run "
+        "or investigation.",
+    )
+
+    return {"generated_at": today.isoformat(), "checks": checks,
+            "ok": all(c["ok"] for c in checks)}

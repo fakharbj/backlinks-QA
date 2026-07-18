@@ -654,6 +654,9 @@ export type SheetSource = {
   id: string;
   project_id: string;
   project_name: string;
+  // active | paused | archived — inactive projects are excluded from bulk/auto
+  // sync and marked in the sheet list (manual row-sync needs confirmation).
+  project_status?: string | null;
   spreadsheet_id: string;
   sheet_tab: string | null;
   source_url: string | null;

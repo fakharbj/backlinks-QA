@@ -14,6 +14,9 @@ class SheetSourceOut(ORMModel):
     id: uuid.UUID
     project_id: uuid.UUID
     project_name: str
+    # The linked project's lifecycle status (active/paused/archived) — inactive
+    # projects are excluded from bulk/auto sync and marked in the UI.
+    project_status: str | None = None
     spreadsheet_id: str
     sheet_tab: str | None
     source_url: str | None

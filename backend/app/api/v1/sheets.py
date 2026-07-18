@@ -109,14 +109,22 @@ async def get_config(
 
 @router.get("", response_model=list[SheetSourceOut])
 async def list_sheets(ctx: AuthCtx, db: ReadSession) -> list[SheetSourceOut]:
+    from app.models.project import Project
+
     rows = (
         await db.execute(
-            select(SheetSource)
+            select(SheetSource, Project.status)
+            .join(Project, Project.id == SheetSource.project_id, isouter=True)
             .where(SheetSource.workspace_id == ctx.workspace_id)
             .order_by(SheetSource.project_name.asc())
         )
-    ).scalars().all()
-    return [SheetSourceOut.model_validate(r) for r in rows]
+    ).all()
+    out = []
+    for src, status in rows:
+        item = SheetSourceOut.model_validate(src)
+        item.project_status = getattr(status, "value", str(status)) if status is not None else None
+        out.append(item)
+    return out
 
 
 @router.post("/sync", response_model=SheetSyncResponse, status_code=202)

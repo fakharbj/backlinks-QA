@@ -49,7 +49,10 @@ def coerce_url_scheme(url: str) -> str:
     sheets never fail with "unsupported_scheme". Anything with an explicit
     scheme (http, mailto, tel, …) or that doesn't look like a domain is
     returned unchanged (still validated downstream)."""
-    u = (url or "").strip()
+    # Accidental line breaks inside a pasted URL (a sheet cell wrapped mid-URL)
+    # would otherwise fail validation — join the pieces; real text keeps its
+    # spaces so titles/notes still read as non-URLs.
+    u = (url or "").strip().replace("\r", "").replace("\n", "")
     if not u or ":" in u.split("/", 1)[0]:
         return u  # has a scheme (or a port-ish colon) — leave it alone
     if _DOMAINISH.match(u):

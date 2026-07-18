@@ -435,13 +435,31 @@ async def put_office_hours(
 
 
 # ── Weekly capacity: daily hours assigned vs each person's capacity ──────────
-# Per-user daily working hours live in the Setting KV "user_daily_hours"
-# ({label: hours}); anyone without an entry uses the 8h default.
+# Per-user daily working hours live in the Setting KV "user_daily_hours":
+# {label: 8} for a uniform day, or {label: [8,8,8,8,6,0,0]} for a per-weekday
+# schedule (Mon..Sun — supports part-time / personal days off). Anyone without
+# an entry uses the 8h default.
+
+
+def _cap_for(cfg_value, weekday: int) -> float:
+    """Resolve one person's configured hours for a weekday (0=Mon..6=Sun)."""
+    if isinstance(cfg_value, (list, tuple)) and len(cfg_value) == 7:
+        try:
+            return max(0.0, min(24.0, float(cfg_value[weekday] or 0)))
+        except (TypeError, ValueError):
+            return 8.0
+    try:
+        return max(0.0, min(24.0, float(cfg_value)))
+    except (TypeError, ValueError):
+        return 8.0
 
 
 class DailyHoursIn(BaseModel):
     user_label: str = Field(min_length=1, max_length=200)
-    hours: float = Field(ge=0, le=24)
+    # Uniform daily hours… (0 = remove the override → back to the 8h default)
+    hours: float | None = Field(default=None, ge=0, le=24)
+    # …or a per-weekday schedule [Mon..Sun], e.g. [8,8,8,8,6,0,0] (part-time).
+    day_hours: list[float] | None = Field(default=None, min_length=7, max_length=7)
 
 
 @router.get("/capacity")
@@ -509,21 +527,31 @@ async def weekly_capacity(
 
     people = []
     for lbl in labels:
-        cap = float(hours_cfg.get(lbl, 8) or 8)
+        cfg_val = hours_cfg.get(lbl, 8)
+        per_day = isinstance(cfg_val, (list, tuple)) and len(cfg_val) == 7
         day_cells = []
         for d in days:
             iso = d.isoformat()
             a = round(assigned.get((lbl, iso), 0.0), 1)
-            c = cap if working[iso] else 0.0
+            # Company working-day calendar gates first; the person's own
+            # schedule (uniform or per-weekday) sets the day's capacity.
+            c = _cap_for(cfg_val, d.weekday()) if working[iso] else 0.0
             day_cells.append({
                 "day": iso, "assigned": a, "capacity": c,
-                "free": round(max(0.0, c - a), 1), "working": working[iso],
+                "free": round(max(0.0, c - a), 1), "working": working[iso] and c > 0,
                 "over": a > c and c > 0,
             })
+        wk_a = round(sum(x["assigned"] for x in day_cells), 1)
+        wk_c = round(sum(x["capacity"] for x in day_cells), 1)
         people.append({
-            "user_label": lbl, "daily_hours": cap, "days": day_cells,
-            "week_assigned": round(sum(x["assigned"] for x in day_cells), 1),
-            "week_capacity": round(sum(x["capacity"] for x in day_cells), 1),
+            "user_label": lbl,
+            "daily_hours": _cap_for(cfg_val, 0) if not per_day else None,
+            "day_hours": [_cap_for(cfg_val, i) for i in range(7)] if per_day else None,
+            "days": day_cells,
+            "week_assigned": wk_a, "week_capacity": wk_c,
+            "week_free": round(max(0.0, wk_c - wk_a), 1),
+            "week_over": round(max(0.0, wk_a - wk_c), 1),
+            "utilization_pct": round(100 * wk_a / wk_c) if wk_c else None,
         })
     # Per-day totals across everyone (the "how many hours are free each day" row).
     day_totals = []
@@ -560,10 +588,21 @@ async def set_daily_hours(
         )
     ).scalar_one_or_none()
     cfg = dict(row.value) if row is not None and isinstance(row.value, dict) else {}
-    if payload.hours and payload.hours > 0:
+    if payload.day_hours is not None:
+        # Per-weekday schedule [Mon..Sun] — part-time / personal days off.
+        clean = [max(0.0, min(24.0, float(h or 0))) for h in payload.day_hours]
+        if any(clean):
+            cfg[label] = clean
+            desc = "/".join(f"{h:g}" for h in clean)
+        else:
+            cfg.pop(label, None)
+            desc = "default (8)"
+    elif payload.hours and payload.hours > 0:
         cfg[label] = float(payload.hours)
+        desc = f"{payload.hours:g}"
     else:
         cfg.pop(label, None)
+        desc = "default (8)"
     if row is None:
         db.add(Setting(workspace_id=ctx.workspace_id, key="user_daily_hours", value=cfg))
     else:
@@ -571,7 +610,7 @@ async def set_daily_hours(
     await audit_service.record(
         db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
         entity_type="user_daily_hours", entity_id=ctx.workspace_id,
-        summary=f"Daily working hours for {label}: {payload.hours or 'default (8)'}h",
+        summary=f"Daily working hours for {label}: {desc}h",
     )
     await db.commit()
-    return Message(message=f"{label}: {payload.hours or 8}h/day saved")
+    return Message(message=f"{label}: {desc}h/day saved")
