@@ -16172,6 +16172,99 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
     onSuccess: () => { onNotice("Test deleted."); setOpenId(null); queryClient.invalidateQueries({ queryKey: ["qa-tests"] }); },
     onError: (e: Error) => onNotice(e.message)
   });
+  // ── Manual row management: fix a parse, add a missed link, drop junk. ──
+  const [editRow, setEditRow] = useState<string | null>(null);
+  const [rowDraft, setRowDraft] = useState<Record<string, string>>({});
+  const [showAddLink, setShowAddLink] = useState(false);
+  const editLink = useMutation({
+    mutationFn: (v: { linkId: string; body: Record<string, unknown> }) =>
+      api<TestDetail>(`/qa-tests/${openId}/links/${v.linkId}`, {
+        token, method: "PATCH", body: JSON.stringify(v.body)
+      }),
+    onSuccess: () => {
+      onNotice("Row saved — changed rows go back to pending; Re-run QA to verify them.");
+      setEditRow(null);
+      queryClient.invalidateQueries({ queryKey: ["qa-test"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const addLink = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<TestDetail>(`/qa-tests/${openId}/links`, { token, method: "POST", body: JSON.stringify(body) }),
+    onSuccess: () => {
+      onNotice("Link added (pending) — Re-run QA to check it.");
+      setShowAddLink(false);
+      setRowDraft({});
+      queryClient.invalidateQueries({ queryKey: ["qa-test"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const deleteLink = useMutation({
+    mutationFn: (linkId: string) =>
+      api<TestDetail>(`/qa-tests/${openId}/links/${linkId}`, { token, method: "DELETE" }),
+    onSuccess: () => { onNotice("Row removed."); queryClient.invalidateQueries({ queryKey: ["qa-test"] }); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const startEdit = (l: TestLink) => {
+    setEditRow(l.id);
+    setRowDraft({
+      source_url: l.source_url, target_url: l.target_url || "",
+      link_type: l.link_type || "", anchor_text: l.anchor_text || "",
+      claimed_da: l.claimed_da == null ? "" : String(l.claimed_da),
+      claimed_spam: l.claimed_spam == null ? "" : String(l.claimed_spam),
+      is_competitor: l.is_competitor ? "1" : ""
+    });
+  };
+  const draftBody = () => ({
+    source_url: (rowDraft.source_url || "").trim(),
+    target_url: (rowDraft.target_url || "").trim() || null,
+    link_type: (rowDraft.link_type || "").trim() || null,
+    anchor_text: (rowDraft.anchor_text || "").trim() || null,
+    claimed_da: rowDraft.claimed_da?.trim() ? Number(rowDraft.claimed_da) : null,
+    claimed_spam: rowDraft.claimed_spam?.trim() ? Number(rowDraft.claimed_spam) : null,
+    is_competitor: rowDraft.is_competitor === "1"
+  });
+  // Shared inline row editor (edit + add share the same fields).
+  const rowEditor = (onSave: () => void, onCancel: () => void, saving: boolean) => (
+    <div className="flex flex-wrap items-end gap-2 rounded-lg border border-ocean/40 bg-ocean/5 p-2.5">
+      {([
+        ["source_url", "Source URL *", "w-72"],
+        ["link_type", "Type", "w-32"],
+        ["target_url", "Target URL", "w-56"],
+        ["anchor_text", "Anchor", "w-36"],
+        ["claimed_da", "DA", "w-14"],
+        ["claimed_spam", "SS", "w-14"]
+      ] as Array<[string, string, string]>).map(([k, label, w]) => (
+        <label key={k} className="block">
+          <span className="mb-0.5 block text-[10px] font-semibold uppercase text-muted">{label}</span>
+          <input
+            value={rowDraft[k] || ""}
+            onChange={(e) => setRowDraft((r) => ({ ...r, [k]: e.target.value }))}
+            className={clsx("h-8 rounded-md border border-line bg-panel px-2 text-xs", w)}
+          />
+        </label>
+      ))}
+      <label className="flex h-8 items-center gap-1.5 text-xs text-ink">
+        <input
+          type="checkbox"
+          checked={rowDraft.is_competitor === "1"}
+          onChange={(e) => setRowDraft((r) => ({ ...r, is_competitor: e.target.checked ? "1" : "" }))}
+          className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
+        />
+        Competitor (reference only — not QA&apos;d)
+      </label>
+      <button
+        onClick={onSave}
+        disabled={saving || !(rowDraft.source_url || "").trim().startsWith("http")}
+        className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-50"
+      >
+        Save
+      </button>
+      <button onClick={onCancel} className="h-8 rounded-md border border-line px-3 text-xs font-medium text-ink hover:bg-field">
+        Cancel
+      </button>
+    </div>
+  );
 
   // ── Detail view ──
   if (openId && detail.data) {
@@ -16270,7 +16363,7 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
               <tr>
                 <Th>Source page</Th><Th>Type</Th><Th>Account</Th>
                 <Th><span title="DA / Spam Score the candidate claimed">Claimed DA/SS</span></Th>
-                <Th>Verdict</Th><Th>Our score</Th><Th>Found</Th><Th>HTTP</Th><Th>Rel</Th><Th>Indexable</Th><Th>Top issue</Th>
+                <Th>Verdict</Th><Th>Our score</Th><Th>Found</Th><Th>HTTP</Th><Th>Rel</Th><Th>Indexable</Th><Th>Top issue</Th><Th> </Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -16308,10 +16401,39 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                       <Td>{l.current_rel || "—"}</Td>
                       <Td>{l.indexability || "—"}</Td>
                       <Td><span className="text-xs text-muted">{l.top_issue ? l.top_issue.replaceAll("_", " ") : "—"}</span></Td>
+                      <Td>
+                        <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => startEdit(l)}
+                            title="Edit this row (URL, type, target, anchor, claims) — changed rows re-check on the next Run"
+                            className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-field"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => { if (window.confirm("Remove this row from the test?")) deleteLink.mutate(l.id); }}
+                            title="Remove this row"
+                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-danger hover:bg-danger/10"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      </Td>
                     </tr>
+                    {editRow === l.id ? (
+                      <tr className="bg-ocean/5">
+                        <td colSpan={12} className="px-4 py-2">
+                          {rowEditor(
+                            () => editLink.mutate({ linkId: l.id, body: draftBody() }),
+                            () => setEditRow(null),
+                            editLink.isPending
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
                     {exp ? (
                       <tr className="bg-field/30">
-                        <td colSpan={11} className="px-4 py-3">
+                        <td colSpan={12} className="px-4 py-3">
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1 text-xs">
                               <div><span className="text-muted">Target:</span> <span className="text-ink">{l.target_url || "—"}</span></div>
@@ -16346,6 +16468,23 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
               })}
             </tbody>
           </table>
+          {/* Manual add — for links the parser missed (any format is fixable by hand). */}
+          <div className="border-t border-line p-3">
+            {showAddLink ? (
+              rowEditor(
+                () => addLink.mutate(draftBody()),
+                () => { setShowAddLink(false); setRowDraft({}); },
+                addLink.isPending
+              )
+            ) : (
+              <button
+                onClick={() => { setEditRow(null); setRowDraft({}); setShowAddLink(true); }}
+                className="flex items-center gap-1.5 text-xs font-medium text-ocean hover:underline"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add a link by hand (anything the parser missed)
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Competitor references — recorded, not QA'd (they carry no backlink). */}
@@ -16358,6 +16497,21 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                   <Swords className="h-4 w-4 shrink-0 text-plum" />
                   <a href={c.source_url} target="_blank" rel="noreferrer" className="truncate text-ocean hover:underline">{c.source_url}</a>
                   <CopyButton text={c.source_url} title="Copy competitor URL" />
+                  <span className="ml-auto flex items-center gap-1.5">
+                    <button
+                      onClick={() => editLink.mutate({ linkId: c.id, body: { is_competitor: false } })}
+                      title="This is actually a backlink, not a competitor — move it to the QA table (pending)"
+                      className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-field"
+                    >
+                      Not a competitor
+                    </button>
+                    <button
+                      onClick={() => { if (window.confirm("Remove this competitor reference?")) deleteLink.mutate(c.id); }}
+                      className="rounded border border-line px-1.5 py-0.5 text-[11px] text-danger hover:bg-danger/10"
+                    >
+                      ×
+                    </button>
+                  </span>
                 </div>
               ))}
             </div>
@@ -16411,9 +16565,12 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
           </label>
           <label className="mt-3 block text-sm">
             <span className="mb-1 block text-xs font-semibold text-muted">
-              Links * — paste the candidate&apos;s sheet directly. Recognizes a header row like
-              <span className="font-mono text-ink"> Links · Type · Email · Password · DA · SS</span> (tab or comma),
-              skips the task text and blank rows, and treats <span className="font-mono text-ink">competitor</span> rows as references. One URL per line also works.
+              Links * — paste the candidate&apos;s sheet directly, <span className="font-semibold text-ink">whatever its layout</span>. Understands:
+              a header row (<span className="font-mono text-ink">URL · Link Type · DA · Status · Spam Score · Anchor · Target Page</span>),
+              section headings (<span className="font-mono text-ink">Article Submission / Web 2.0 / Qoura…</span> — URLs beneath inherit the type),
+              label-first rows (<span className="font-mono text-ink">business directories · url · 47 da · 1 spam score</span>),
+              a <span className="font-mono text-ink">Competitor</span> section with bare domains, and one-URL-per-line.
+              Task text is skipped automatically (and used to detect the target when none is set). Every parsed row stays editable afterwards.
             </span>
             <textarea value={cLinks} onChange={(e) => setCLinks(e.target.value)} rows={9}
               className="w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-xs"

@@ -87,3 +87,52 @@ async def delete_test(
     await qa_test_service.delete_batch(db, ctx, batch_id)
     await db.commit()
     return {"ok": True}
+
+
+# ── Manual row management: every parse is correctable by hand ────────────────
+class QATestLinkIn(BaseModel):
+    source_url: str | None = Field(default=None, max_length=2000)
+    target_url: str | None = Field(default=None, max_length=2000)
+    anchor_text: str | None = Field(default=None, max_length=500)
+    link_type: str | None = Field(default=None, max_length=80)
+    expected_rel: str | None = Field(default=None, max_length=20)
+    account_email: str | None = Field(default=None, max_length=255)
+    account_password: str | None = Field(default=None, max_length=255)
+    claimed_da: int | None = Field(default=None, ge=0, le=100)
+    claimed_spam: int | None = Field(default=None, ge=0, le=100)
+    is_competitor: bool | None = None
+
+
+@router.post("/{batch_id}/links", status_code=201)
+async def add_test_link(
+    batch_id: uuid.UUID, payload: QATestLinkIn, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+) -> dict:
+    """Add one row by hand (a link the parser missed, or an extra reference)."""
+    await qa_test_service.add_link(db, ctx, batch_id, payload.model_dump(exclude_unset=True))
+    await db.commit()
+    return await qa_test_service.get_batch(db, ctx, batch_id)
+
+
+@router.patch("/{batch_id}/links/{link_id}")
+async def edit_test_link(
+    batch_id: uuid.UUID, link_id: uuid.UUID, payload: QATestLinkIn, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+) -> dict:
+    """Correct a parsed row. Changing what we check (URL/target/anchor/type/
+    rel/competitor) resets that row to pending — re-run QA to verify it."""
+    await qa_test_service.update_link(
+        db, ctx, batch_id, link_id, payload.model_dump(exclude_unset=True)
+    )
+    await db.commit()
+    return await qa_test_service.get_batch(db, ctx, batch_id)
+
+
+@router.delete("/{batch_id}/links/{link_id}")
+async def delete_test_link(
+    batch_id: uuid.UUID, link_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+) -> dict:
+    await qa_test_service.delete_link(db, ctx, batch_id, link_id)
+    await db.commit()
+    return await qa_test_service.get_batch(db, ctx, batch_id)

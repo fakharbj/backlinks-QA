@@ -17,7 +17,19 @@ CAT = IssueCategory.RBT
 def source_disallowed(ctx: CheckContext) -> Iterable[Issue]:
     art = ctx.artifact
     blocked = art.robots.source_allowed is False or art.fetch_error is FetchError.BLOCKED_ROBOTS
-    if blocked:
+    if not blocked:
+        return
+    # Did we actually read the page anyway? (The QA lab crawls with
+    # respect_robots=False — one-off manual verifications.) With real page
+    # evidence in hand, robots.txt is an INDEXABILITY note, not an
+    # unanswerable question: the verdict comes from what we saw.
+    fetched = art.fetch_error in (None, FetchError.NONE) and art.http_status is not None
+    if fetched:
+        yield issue(code="RBT-05", label=IssueLabel.ROBOTS_BLOCKED, category=CAT,
+                    severity=Severity.MEDIUM,
+                    message="Page loads, but robots.txt disallows Googlebot — the link was checked; search engines may not crawl/index this page.",  # noqa: E501
+                    evidence={"matched_ua": art.robots.matched_user_agent})
+    else:
         yield issue(code="RBT-03", label=IssueLabel.ROBOTS_BLOCKED, category=CAT,
                     severity=Severity.CRITICAL,
                     message="Source page is disallowed in robots.txt for Googlebot; crawlers can't read the link.",  # noqa: E501

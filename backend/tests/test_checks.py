@@ -116,15 +116,31 @@ def test_x_robots_noindex_is_fail():
     assert "X_ROBOTS_NOINDEX" in labels(result)
 
 
-def test_robots_blocked_routes_to_review_unscored():
-    # Source disallowed in robots.txt = we (and crawlers) couldn't read the link,
-    # so it's "needs review", not a confident FAIL, and it is NOT scored down.
-    art, _ = clean()
+def test_robots_blocked_unread_routes_to_review_unscored():
+    # Source disallowed AND we honored it (never fetched) = we couldn't read
+    # the link → "needs review", not a confident FAIL, and NOT scored down.
+    req = CrawlRequest(source_url="https://pub.test/p", target_url="https://acme.test/seo")
+    art = CrawlArtifact(request=req)
+    art.fetch_error = FetchError.BLOCKED_ROBOTS
     art.robots.source_allowed = False
     result = evaluate(art)
     assert result.status is OverallStatus.NEEDS_MANUAL_REVIEW
     assert "ROBOTS_BLOCKED" in labels(result)
-    assert result.score >= 80  # unchecked ≠ bad: no penalty for a page we couldn't read
+    assert "RBT-03" in codes(result)
+
+
+def test_robots_blocked_but_page_read_gives_real_verdict():
+    # The QA lab fetches with respect_robots=False: when we DID read the page
+    # and found the link, robots.txt is an indexability NOTE (RBT-05), never
+    # a "needs review" blocker — the verdict comes from real evidence.
+    art, _ = clean()
+    art.robots.source_allowed = False
+    result = evaluate(art)
+    assert result.status is not OverallStatus.NEEDS_MANUAL_REVIEW
+    assert result.link_found is True
+    assert "RBT-05" in codes(result)
+    assert "RBT-03" not in codes(result)
+    assert "ROBOTS_BLOCKED" in labels(result)  # still visible as a note
 
 
 def test_soft_404_is_fail():

@@ -60,7 +60,12 @@ def _build_request(link: QATestLink) -> CrawlRequest:
         backlink_id=str(link.id),
         treat_sponsored_as_follow=settings.QA_TREAT_SPONSORED_AS_FOLLOW,
         trailing_slash_policy=settings.QA_TRAILING_SLASH_POLICY,
-        respect_robots=settings.CRAWL_RESPECT_ROBOTS,
+        # Owner rule: the lab ALWAYS reads the page. These are one-off manual
+        # verifications of work a candidate delivered to us — robots.txt must
+        # not leave rows stuck at "needs review / robots blocked". The robots
+        # fact still shows as an indexability note, it just never blocks the
+        # actual link check.
+        respect_robots=False,
         allow_render=True,
         **relaxed_kwargs,
     )

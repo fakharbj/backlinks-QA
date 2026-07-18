@@ -20,17 +20,50 @@ from app.models.qa_test import QATestBatch, QATestLink
 
 # Column-name → canonical field, matched against a detected header row.
 _COL_ALIASES = {
-    "source_url": ("links", "link", "url", "source url", "source_url", "source", "backlink", "backlinks", "page"),
+    "source_url": ("links", "link", "url", "source url", "source_url", "source",
+                   "backlink", "backlinks", "page", "live link", "live url"),
     "link_type": ("type", "link type", "link_type", "category"),
     "account_email": ("email", "e-mail", "mail", "account email", "login"),
-    "account_password": ("password", "pass", "pwd", "account password"),
+    "account_password": ("password", "pass", "pwd", "account password", "passwd"),
     "claimed_da": ("da", "domain authority", "da score"),
     "claimed_spam": ("ss", "spam", "spam score", "spam_score", "ss score"),
-    "target_url": ("target", "target url", "target_url", "destination"),
+    "target_url": ("target", "target url", "target_url", "destination", "target page"),
     "anchor_text": ("anchor", "anchor text", "anchor_text"),
 }
 _HEADER_HINTS = ("link", "url", "source", "backlink")
-_URL_RE = re.compile(r"https?://", re.I)
+_URL_RE = re.compile(r"https?://\S+", re.I)
+# A bare domain (competitor lists are usually pasted without a scheme).
+_DOMAIN_RE = re.compile(r"^(www\.)?[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{2,63})+/?$", re.I)
+
+# Candidate sheets name link types loosely ("web2.1", "Qoura", "business
+# directories") — fuzzy-map them onto one canonical vocabulary so the mix
+# chips and per-type stats read cleanly. Order matters: first hit wins.
+_TYPE_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Competitor", ("competitor", "competiotor", "compitor", "competitors", "competetor")),
+    ("Article", ("article submission", "article", "articles")),
+    ("Business Listing", ("business listing", "business listings", "business directories",
+                          "business directory", "directory", "directories", "listing", "listings",
+                          "citations", "citation")),
+    ("Web 2.0", ("web 2.0", "web2.0", "web 2.1", "web2.1", "web 20", "web2", "web 2")),
+    ("Forum", ("forum", "forums", "forum discussion", "profile + forums")),
+    ("Quora", ("quora", "qoura", "quora question", "quora questions", "quora answer",
+               "answer quora", "question", "questions", "q&a", "quora + pdf+video")),
+    ("Profile", ("profile", "profiles", "profile creation")),
+    ("Classified Ads", ("classified", "classifieds", "classified ads", "classified ads posting")),
+    ("Guest Post", ("guest post", "guest posting", "gp")),
+    ("Social Bookmarking", ("social bookmarking", "bookmarking", "social bookmark")),
+    ("PDF/Video", ("pdf", "video", "pdf+video", "pdf submission", "video submission")),
+)
+# Cells that are column headers, not data (seen inside section-header rows).
+_HEADERISH = {"da", "pa", "ss", "spam", "spam score", "status", "anchor", "anchor text",
+              "target", "target page", "url", "link", "links", "email", "password", "remarks"}
+# Claimed-status words — recorded nowhere (the lab computes the REAL status),
+# but recognizing them stops "Live"/"Pending" landing in the anchor field.
+_STATUS_WORDS = {"live", "pending", "signin req", "sign in req", "signin required",
+                 "removed", "indexed", "not indexed", "na", "n/a", "-"}
+
+_DA_RE = re.compile(r"\b(\d{1,3})\s*da\b|\bda\s*[:\-]?\s*(\d{1,3})\b", re.I)
+_SPAM_RE = re.compile(r"\b(\d{1,3})\s*(?:%|percent|spam)", re.I)
 
 
 def _split_row(line: str) -> list[str]:
@@ -48,6 +81,30 @@ def _int_or_none(v: str | None) -> int | None:
     return int(m.group()) if m else None
 
 
+def _norm_type_key(v: str) -> str:
+    return re.sub(r"[^a-z0-9+& ]+", " ", (v or "").strip().lower()).strip()
+
+
+def _match_type(cell: str) -> str | None:
+    """Fuzzy-map a free-text cell onto the canonical link-type vocabulary.
+    Exact/contains first, then difflib for misspellings ("Qoura")."""
+    import difflib
+
+    key = _norm_type_key(cell)
+    if not key or len(key) > 40:
+        return None
+    for canonical, aliases in _TYPE_VOCAB:
+        if key in aliases:
+            return canonical
+    for canonical, aliases in _TYPE_VOCAB:
+        for a in aliases:
+            if (a in key or key in a) and min(len(a), len(key)) >= 4:
+                return canonical
+            if difflib.SequenceMatcher(None, key, a).ratio() >= 0.84:
+                return canonical
+    return None
+
+
 def _map_header(cells: list[str]) -> dict[int, str] | None:
     """If these cells look like a header row, return {col index → canonical
     field}. A header must place a URL/link column somewhere."""
@@ -63,68 +120,213 @@ def _map_header(cells: list[str]) -> dict[int, str] | None:
     return None
 
 
-def parse_test_links(text: str) -> list[dict]:
-    """Parse a candidate's submission — tolerant of the real trial-task sheet.
+def _embedded_urls(cells: list[str]) -> list[str]:
+    """URLs living INSIDE sentence text ("… for Service Page: https://x/…").
+    Those are the brief's targets, never submitted links."""
+    found: list[str] = []
+    for c in cells:
+        for m in _URL_RE.finditer(c):
+            before = c[: m.start()].strip()
+            if len(before) >= 8:  # real words precede the URL → it's mentioned, not submitted
+                found.append(m.group().rstrip(".,;)"))
+    return found
 
-    Handles: a free-text task brief above the table (ignored), a header row
-    like ``Links  Type  Email  Password  DA  SS`` (TAB or comma separated),
-    grouped rows with blank separators, ``competitor`` rows (no creds), and
-    the simple fallbacks (one URL per line, or a plain CSV). Every row must
-    contain a URL to count."""
+
+def _host(url: str) -> str:
+    m = re.match(r"https?://([^/\s:?#]+)", (url or "").strip(), re.I)
+    return (m.group(1).lower().removeprefix("www.") if m else "")
+
+
+def parse_test_submission(text: str, default_target: str | None = None) -> dict:
+    """Parse a candidate's trial-task sheet — tolerant of EVERY layout we've
+    seen in the wild:
+
+    * a proper header row (``URL · Link Type · DA · Status · Spam Score ·
+      Anchor Text · Target Page``) below free-text brief lines;
+    * label-first rows (``business directories <TAB> url <TAB> 47 da <TAB>
+      1 spam score``) with unlabeled continuation rows;
+    * section-header layout (a row saying ``Article Submission | DA | PA | SS``
+      then bare URL rows inheriting the section as their link type);
+    * a ``Competitor`` section (bare domains below it become references);
+    * plain one-URL-per-line pastes.
+
+    Rules: brief sentences that merely MENTION a URL are ignored (and used to
+    infer the target when none is set); URL cells pointing at the target's own
+    domain are targets, not backlinks; claimed DA/Spam are read from headered
+    columns, "95 da"-style text, %-values, or positionally when a section
+    header declared the column order. Returns {links, meta}."""
     text = (text or "").strip()
     if not text:
-        return []
-    rows = [ln for ln in text.splitlines() if ln.strip()]
-    # 1) Find a header row anywhere in the paste (skips the task-brief lines).
+        return {"links": [], "meta": {"ignored_lines": 0, "inferred_target": None}}
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+
+    # ── Pass 1: collect brief-embedded URLs → infer the target if not given ──
+    embedded: list[str] = []
+    for ln in lines:
+        embedded += _embedded_urls(_split_row(ln))
+    inferred_target: str | None = None
+    if not (default_target or "").strip() and embedded:
+        from collections import Counter
+
+        top_host = Counter(_host(u) for u in embedded if _host(u)).most_common(1)
+        if top_host:
+            # The most specific (longest) mentioned URL of the dominant host.
+            candidates = [u for u in embedded if _host(u) == top_host[0][0]]
+            inferred_target = max(candidates, key=len)
+    target_host = _host(default_target or inferred_target or "")
+
+    # ── Pass 2: find an explicit header row anywhere in the paste ────────────
     header: dict[int, str] | None = None
-    body_start = 0
-    for i, line in enumerate(rows):
+    header_at = -1
+    for i, line in enumerate(lines):
         low = line.lower()
         if any(h in low for h in _HEADER_HINTS) and ("\t" in line or "," in line):
             mapped = _map_header(_split_row(line))
             if mapped:
-                header, body_start = mapped, i + 1
+                header, header_at = mapped, i
                 break
 
     out: list[dict] = []
-    if header is not None:
-        src_idx = next(i for i, f in header.items() if f == "source_url")
-        for line in rows[body_start:]:
-            cells = _split_row(line)
-            if len(cells) <= src_idx:
-                continue
-            src = cells[src_idx].strip()
-            if not _URL_RE.search(src):
-                continue  # separator / stray line
-            rec: dict = {"source_url": src}
-            for i, field in header.items():
-                if i == src_idx or i >= len(cells):
-                    continue
-                val = cells[i].strip()
-                if not val:
-                    continue
-                if field in ("claimed_da", "claimed_spam"):
-                    rec[field] = _int_or_none(val)
-                else:
-                    rec[field] = val
-            lt = (rec.get("link_type") or "").strip().lower()
-            rec["is_competitor"] = "competitor" in lt or "compitor" in lt
-            out.append(rec)
-        return out[:500]
+    ignored = 0
+    section_type: str | None = None      # current section's link type
+    metric_order: list[str] = []         # positional metric columns (da/pa/ss) once declared
 
-    # 2) Fallbacks: bare URL per line, or "url, target, anchor, type".
-    for line in rows:
-        if not _URL_RE.search(line):
+    def _metrics_from_cells(rec: dict, cells: list[str]) -> None:
+        """Fill claimed_da / claimed_spam from free-text metric cells."""
+        texts = [c for c in cells if c and not _URL_RE.search(c)]
+        # "47 da" / "da: 47" style anywhere in the row.
+        for c in texts:
+            m = _DA_RE.search(c)
+            if m and rec.get("claimed_da") is None:
+                rec["claimed_da"] = int(m.group(1) or m.group(2))
+            m = _SPAM_RE.search(c)
+            if m and rec.get("claimed_spam") is None:
+                rec["claimed_spam"] = int(m.group(1))
+        # Bare numbers, mapped by the declared section column order (DA PA SS…).
+        bare = [c for c in texts if re.fullmatch(r"\d{1,3}%?", c)]
+        if bare and metric_order:
+            for value, field in zip(bare, metric_order):
+                n = _int_or_none(value)
+                if field == "da" and rec.get("claimed_da") is None:
+                    rec["claimed_da"] = n
+                elif field in ("ss", "spam") and rec.get("claimed_spam") is None:
+                    rec["claimed_spam"] = n
+        elif bare and rec.get("claimed_da") is None and not metric_order:
+            # No declared order: a single plain 0-100 number is DA by convention;
+            # a %-suffixed one is spam.
+            for value in bare:
+                if value.endswith("%"):
+                    if rec.get("claimed_spam") is None:
+                        rec["claimed_spam"] = _int_or_none(value)
+                elif rec.get("claimed_da") is None and 0 <= int(value) <= 100:
+                    rec["claimed_da"] = int(value)
+
+    for i, line in enumerate(lines):
+        if i == header_at:
             continue
-        parts = _split_row(line)
-        out.append({
-            "source_url": parts[0],
-            "target_url": parts[1] if len(parts) > 1 and parts[1] else None,
-            "anchor_text": parts[2] if len(parts) > 2 and parts[2] else None,
-            "link_type": parts[3] if len(parts) > 3 and parts[3] else None,
-            "is_competitor": False,
-        })
-    return out[:500]
+        cells = _split_row(line)
+        url_cells = [(j, m.group().rstrip(".,;)")) for j, c in enumerate(cells)
+                     for m in [_URL_RE.search(c)] if m and len(c[: m.start()].strip()) < 8]
+        nonempty = [c for c in cells if c]
+
+        # ── Headered extraction: rows below the header with a URL in the URL col ──
+        if header is not None and i > header_at:
+            src_idx = next(k for k, f in header.items() if f == "source_url")
+            src = cells[src_idx].strip() if len(cells) > src_idx else ""
+            if _URL_RE.match(src):
+                rec: dict = {"source_url": src}
+                for k, field in header.items():
+                    if k == src_idx or k >= len(cells) or not cells[k].strip():
+                        continue
+                    val = cells[k].strip()
+                    if field in ("claimed_da", "claimed_spam"):
+                        num = _int_or_none(val)
+                        if num is not None:
+                            rec[field] = num
+                    else:
+                        rec[field] = val
+                lt = rec.get("link_type") or section_type
+                canon = _match_type(lt or "")
+                rec["link_type"] = canon or (lt or None)
+                rec["is_competitor"] = canon == "Competitor" or section_type == "Competitor"
+                out.append(rec)
+                continue
+            # No URL in the source column: a section marker, a competitor
+            # domain under the Competitor section, or junk between rows.
+            if nonempty:
+                t = _match_type(nonempty[0])
+                if t and all((not c) or _norm_type_key(c) in _HEADERISH for c in cells[1:]):
+                    section_type = t
+                    continue
+                if section_type == "Competitor" and _DOMAIN_RE.match(nonempty[0]):
+                    out.append({"source_url": f"https://{nonempty[0].strip('/')}/",
+                                "link_type": "Competitor", "is_competitor": True})
+                    continue
+            ignored += 1
+            continue
+
+        # ── No header: stateful, section-aware extraction ────────────────────
+        embedded_here = _embedded_urls(cells)
+        plain_urls = [(j, u) for j, u in url_cells if u not in embedded_here]
+
+        if not plain_urls:
+            # No submitted URL on this line. Section marker? Competitor domain?
+            if nonempty:
+                t = _match_type(nonempty[0])
+                rest = cells[cells.index(nonempty[0]) + 1:] if nonempty[0] in cells else []
+                if t and all((not c) or _norm_type_key(c) in _HEADERISH for c in rest):
+                    section_type = t
+                    order = [_norm_type_key(c) for c in rest if c and _norm_type_key(c) in ("da", "pa", "ss", "spam")]
+                    if order:
+                        metric_order[:] = order
+                    continue
+                # Inline competitor mention: "…competitor for: <target>  rival.com"
+                mentions_comp = any("compet" in _norm_type_key(c) or "compit" in _norm_type_key(c) for c in cells)
+                domains = [c for c in nonempty if _DOMAIN_RE.match(c) and _host(f"https://{c}") != target_host]
+                if domains and (mentions_comp or section_type == "Competitor"):
+                    for d in domains:
+                        out.append({"source_url": f"https://{d.strip('/')}/",
+                                    "link_type": "Competitor", "is_competitor": True})
+                    continue
+                if len(nonempty) == 1 and _DOMAIN_RE.match(nonempty[0]) and section_type == "Competitor":
+                    out.append({"source_url": f"https://{nonempty[0].strip('/')}/",
+                                "link_type": "Competitor", "is_competitor": True})
+                    continue
+            ignored += 1
+            continue
+
+        # Split URL cells into backlink sources vs the candidate's own target.
+        sources = [(j, u) for j, u in plain_urls if _host(u) != target_host or not target_host]
+        targets = [u for _, u in plain_urls if target_host and _host(u) == target_host]
+        if not sources:
+            ignored += 1  # a row of target links only = brief/junk
+            continue
+        j, src = sources[0]
+        rec = {"source_url": src}
+        if targets:
+            rec["target_url"] = targets[0]
+        # Link type: a type-ish text cell on the row wins; else the section.
+        row_type = None
+        for c in cells:
+            if c and not _URL_RE.search(c):
+                t = _match_type(c)
+                if t:
+                    row_type = t
+                    break
+        if row_type and row_type != "Competitor":
+            section_type = row_type  # label-first rows start a section too
+        effective = row_type or section_type
+        rec["link_type"] = effective
+        rec["is_competitor"] = effective == "Competitor"
+        _metrics_from_cells(rec, [c for k, c in enumerate(cells) if k != j])
+        out.append(rec)
+
+    return {"links": out[:500], "meta": {"ignored_lines": ignored, "inferred_target": inferred_target}}
+
+
+def parse_test_links(text: str) -> list[dict]:
+    """Back-compat shim — the flexible parser without target awareness."""
+    return parse_test_submission(text)["links"]
 
 
 async def create_batch(
@@ -135,7 +337,12 @@ async def create_batch(
     name = (candidate_name or "").strip()
     if not name:
         raise ValidationAppError("Candidate name is required.")
-    parsed = parse_test_links(links_text)
+    result = parse_test_submission(links_text, default_target=default_target)
+    parsed = result["links"]
+    # No explicit target? Use the one the brief text itself points at
+    # ("… for Service Page: https://x/…" — the most-mentioned host wins).
+    if not (default_target or "").strip() and result["meta"]["inferred_target"]:
+        default_target = result["meta"]["inferred_target"]
     if not parsed:
         raise ValidationAppError("Add at least one link (paste the candidate's sheet, or one URL per line).")
     batch = QATestBatch(
@@ -268,3 +475,86 @@ async def mark_running(db: AsyncSession, ctx: AuthContext, batch_id: uuid.UUID) 
     )
     await db.flush()
     return b
+
+
+# ── Manual row management (owner rule: every parse is correctable by hand) ───
+_EDITABLE = ("source_url", "target_url", "anchor_text", "link_type", "expected_rel",
+             "account_email", "account_password", "claimed_da", "claimed_spam",
+             "is_competitor")
+# Changing WHAT we check invalidates the old verdict; changing claims doesn't.
+_VERDICT_FIELDS = {"source_url", "target_url", "anchor_text", "link_type",
+                   "expected_rel", "is_competitor"}
+
+
+async def add_link(db: AsyncSession, ctx: AuthContext, batch_id: uuid.UUID, data: dict) -> QATestLink:
+    b = await _get(db, ctx, batch_id)
+    src = (data.get("source_url") or "").strip()
+    if not _URL_RE.match(src):
+        raise ValidationAppError("A full source URL (https://…) is required.")
+    is_comp = bool(data.get("is_competitor"))
+    link = QATestLink(
+        batch_id=b.id, workspace_id=ctx.workspace_id,
+        source_url=src[:2000],
+        target_url=(data.get("target_url") or "").strip()[:2000] or None,
+        anchor_text=(data.get("anchor_text") or "").strip()[:500] or None,
+        link_type=(data.get("link_type") or "").strip()[:80] or None,
+        account_email=(data.get("account_email") or "").strip()[:255] or None,
+        account_password=(data.get("account_password") or "").strip()[:255] or None,
+        claimed_da=data.get("claimed_da"), claimed_spam=data.get("claimed_spam"),
+        is_competitor=is_comp,
+        state="reference" if is_comp else "pending",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(link)
+    await db.flush()
+    return link
+
+
+async def update_link(
+    db: AsyncSession, ctx: AuthContext, batch_id: uuid.UUID, link_id: uuid.UUID, data: dict
+) -> QATestLink:
+    b = await _get(db, ctx, batch_id)
+    link = await db.get(QATestLink, link_id)
+    if link is None or link.batch_id != b.id:
+        raise NotFoundError("Link not found in this test")
+    reset = False
+    for field in _EDITABLE:
+        if field not in data:
+            continue
+        value = data[field]
+        if isinstance(value, str):
+            value = value.strip() or None
+        if field == "source_url":
+            if not value or not _URL_RE.match(value):
+                raise ValidationAppError("The source URL must be a full https://… URL.")
+            value = value[:2000]
+        if getattr(link, field) != value:
+            setattr(link, field, value)
+            if field in _VERDICT_FIELDS:
+                reset = True
+    if reset:
+        # The old verdict no longer describes this row — back to pending.
+        link.state = "reference" if link.is_competitor else "pending"
+        link.status = None
+        link.score = None
+        link.link_found = None
+        link.http_status = None
+        link.current_rel = None
+        link.current_anchor = None
+        link.indexability = None
+        link.matched_href = None
+        link.top_issue = None
+        link.facts = {}
+        link.error = None
+        link.checked_at = None
+    await db.flush()
+    return link
+
+
+async def delete_link(db: AsyncSession, ctx: AuthContext, batch_id: uuid.UUID, link_id: uuid.UUID) -> None:
+    b = await _get(db, ctx, batch_id)
+    link = await db.get(QATestLink, link_id)
+    if link is None or link.batch_id != b.id:
+        raise NotFoundError("Link not found in this test")
+    await db.delete(link)
+    await db.flush()
