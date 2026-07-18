@@ -799,13 +799,28 @@ const PROJECT_NAV: NavGroup[] = [
 // completion and leave — never the team-wide/admin desks.
 const MY_NAV: NavGroup[] = [
   {
-    // Owner rule (brief §17): the viewer sidebar is ONLY My Work — today,
-    // this week, targets and completion all live inside it; the calendar is
-    // its month view. No dashboards, no Grow pages, no count chips.
+    // Owner rule: My Work is the PRIMARY entry (first, and the landing tab).
+    // The old Today/This-week/Recent-links count chips stay gone — today and
+    // this week live INSIDE My Work; the calendar is its month view.
     label: "My Work",
     items: [
       ["mywork", "My Work", CalendarDays],
       ["mycal", "My calendar", CalendarDays]
+    ]
+  },
+  {
+    // The person's own dashboard — KPIs, trends, projects, plans, rates &
+    // leave (its section pages expand underneath while open).
+    label: "My Dashboard",
+    items: [["mydash", "My Dashboard", Gauge]]
+  },
+  {
+    label: "Grow",
+    items: [
+      ["myopps", "Opportunities", Globe],
+      ["guidance", "Guidance", Lightbulb],
+      ["myscoring", "Scoring", Gauge],
+      ["statusguide", "Status Guide", Info]
     ]
   }
 ];
@@ -9150,6 +9165,15 @@ function UserDashboard({
           </div>
         </div>
         <div className="grid grid-cols-7 gap-1 p-3">
+          {/* Monday-first weekday headers + first-day offset (all calendars start Monday). */}
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((w) => (
+            <div key={w} className="pb-1 text-center text-[10px] font-semibold uppercase tracking-wide text-muted">{w}</div>
+          ))}
+          {(() => {
+            const first = monthCal.data?.[0]?.day;
+            const offset = first ? (new Date(`${first}T00:00:00`).getDay() + 6) % 7 : 0;
+            return Array.from({ length: offset }).map((_, i) => <div key={`pad-${i}`} />);
+          })()}
           {(monthCal.data || []).map((cd) => {
             const rows = (monthPlan.data || []).filter((r) => r.day === cd.day);
             const onLeave = rows.some((r) => r.excused && r.excuse_reason === "On approved leave");
