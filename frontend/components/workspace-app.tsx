@@ -511,9 +511,9 @@ export function WorkspaceApp() {
           {tab === "settings" ? (
             <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
-          {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} onNav={setTab} /> : null}
           {/* Focused calendar page — full month view, straight from the sidebar. */}
-          {tab === "mycal" ? <MyWorkDesk token={token} onNotice={setNotice} focus="calendar" /> : null}
+          {tab === "mycal" ? <MyWorkDesk token={token} onNotice={setNotice} focus="calendar" onNav={setTab} /> : null}
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} section={dashSection} onSectionChange={setDashSection} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
           {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
@@ -5983,25 +5983,41 @@ function MyRecommendationsPanel({ token, userLabel }: { token: string | null; us
   );
 }
 
-function MyWorkDesk({ token, onNotice, focus }: {
+function MyWorkDesk({ token, onNotice, focus, onNav }: {
   token: string | null; onNotice: (text: string) => void;
   // Single-section pages: the sidebar's Today / This week / My calendar /
   // My recent links tabs render ONLY that section, uncapped.
   focus?: "today" | "week" | "calendar" | "links";
+  // View-only cross-navigation (calendar / dashboard / guidance quick actions).
+  onNav?: (tab: Tab) => void;
 }) {
   const queryClient = useQueryClient();
   const fmtIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const today = fmtIso(new Date());
-  const monday = (() => {
-    const x = new Date();
+  const mondayOf = (d: Date) => {
+    const x = new Date(d);
     x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
     return fmtIso(x);
-  })();
+  };
+  // Week navigation (‹ Today ›): every panel below follows the chosen week.
+  const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const sunday = (() => {
     const x = new Date(`${monday}T00:00:00`);
     x.setDate(x.getDate() + 6);
     return fmtIso(x);
+  })();
+  const shiftWeek = (dir: number) => {
+    const x = new Date(`${monday}T00:00:00`);
+    x.setDate(x.getDate() + dir * 7);
+    setMonday(fmtIso(x));
+  };
+  const isCurrentWeek = monday <= today && today <= sunday;
+  const weekLabel = (() => {
+    const a = new Date(`${monday}T00:00:00`);
+    const b = new Date(`${sunday}T00:00:00`);
+    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+    return `${a.toLocaleDateString(undefined, opts)} – ${b.toLocaleDateString(undefined, opts)}, ${b.getFullYear()}`;
   })();
 
   type MyRow = {
@@ -6026,6 +6042,52 @@ function MyWorkDesk({ token, onNotice, focus }: {
     queryFn: () => api<Project[]>("/projects", { token })
   });
   const projectName = (id: string) => (projectsQ.data || []).find((p) => p.id === id)?.name || "—";
+  // Who am I (cached — the shell fetches the same key) → role chip in the header.
+  const whoami = useQuery({
+    queryKey: ["me", token],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => api<{ role: string; user: { full_name: string; email: string } }>("/auth/me", { token })
+  });
+  // Personal capacity for the chosen week — the SAME self-scoped endpoint the
+  // Tasks desk uses (viewers only ever receive their own row). Fails soft:
+  // if this widget errors, the capacity cards simply hide.
+  type CapCell = { day: string; assigned: number; capacity: number; free: number; working: boolean; over: boolean };
+  const capacityQ = useQuery({
+    queryKey: ["my-capacity", token, monday],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () =>
+      api<{ people: Array<{ user_label: string; days: CapCell[]; week_assigned: number; week_capacity: number; week_free: number; week_over: number; utilization_pct: number | null }> }>(
+        `/workforce/capacity?week_start=${monday}`, { token }
+      )
+  });
+  const myCap = (() => {
+    const labels = new Set(me.data?.labels || []);
+    const mine = (capacityQ.data?.people || []).filter((p) => labels.has(p.user_label));
+    if (!mine.length) return null;
+    // Multi-label accounts (rare): sum across the person's identities.
+    const days = mine[0].days.map((_, i) => {
+      const cells = mine.map((p) => p.days[i]);
+      return {
+        day: cells[0].day,
+        assigned: cells.reduce((a, c) => a + c.assigned, 0),
+        capacity: cells.reduce((a, c) => a + c.capacity, 0),
+        free: cells.reduce((a, c) => a + c.free, 0),
+        working: cells.some((c) => c.working),
+        over: cells.some((c) => c.over)
+      };
+    });
+    return {
+      days,
+      assigned: mine.reduce((a, p) => a + p.week_assigned, 0),
+      capacity: mine.reduce((a, p) => a + p.week_capacity, 0),
+      free: mine.reduce((a, p) => a + p.week_free, 0),
+      over: mine.reduce((a, p) => a + p.week_over, 0)
+    };
+  })();
+  const capToday = myCap?.days.find((d) => d.day === today) || null;
 
   const [lvFrom, setLvFrom] = useState(today);
   const [lvTo, setLvTo] = useState(today);
@@ -6055,6 +6117,8 @@ function MyWorkDesk({ token, onNotice, focus }: {
   // Compact lists: a handful of rows first (urgent on top), "View all" expands.
   const [showAllToday, setShowAllToday] = useState(false);
   const [showAllWeek, setShowAllWeek] = useState(false);
+  // Needs-attention chips filter the week list (behind / high priority).
+  const [attnFilter, setAttnFilter] = useState<null | "behind" | "high">(null);
   // Section gates. The main "My Work" tab is now a clean, task-focused landing
   // (hero → KPIs → Today + This week → recommendations → leave). Calendar and
   // recent links live on their OWN sidebar tabs; the rich QA/performance
@@ -6123,50 +6187,143 @@ function MyWorkDesk({ token, onNotice, focus }: {
 
   return (
     <section className="space-y-4">
-      {/* Premium hero: who you are, where you stand, at a glance (Techsa accent). */}
-      <div className="relative overflow-hidden rounded-2xl border border-ocean/30 bg-gradient-to-r from-ocean/15 via-panel to-plum/10 p-5 shadow-soft">
-        <div className="flex flex-wrap items-center gap-4">
-          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft">
-            {(me.data?.labels[0] || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
+      {/* Compact header: identity + role + explicit week (with navigation) on
+          the left; the week's capacity strip on the right. No decorative bulk —
+          every line answers a question. */}
+      <header className="rounded-xl border border-line bg-panel p-4 shadow-card">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-sm font-bold text-white">
+            {(me.data?.labels[0] || whoami.data?.user.full_name || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
           </span>
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-ocean">My workspace</div>
-            <h2 className="truncate text-xl font-bold tracking-tight text-ink">
-              {me.data?.labels.length ? me.data.labels.join(", ") : "My Work"}
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 truncate text-lg font-bold capitalize tracking-tight text-ink">
+              {me.data?.labels.length ? me.data.labels.join(", ") : whoami.data?.user.full_name || "My Work"}
+              {whoami.data ? (
+                <span className="rounded-full border border-ocean/30 bg-ocean/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ocean">
+                  {ROLE_LABEL[whoami.data.role as Role] || whoami.data.role}
+                </span>
+              ) : null}
             </h2>
             <p className="text-sm text-muted">
-              {new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })} · week of {formatDay(monday)}
+              {new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
-              <span className="block text-lg font-bold leading-tight text-ink">{todayRows.length}</span>
-              <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Today&apos;s tasks</span>
-            </span>
-            <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
-              <span className="block text-lg font-bold leading-tight text-ocean">{weekDone}<span className="text-xs text-muted"> / {weekTarget}</span></span>
-              <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Week links</span>
-            </span>
-            <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
-              <span className={clsx("block text-lg font-bold leading-tight", weekPct != null && weekPct >= 100 ? "text-ocean" : "text-ember")}>
-                {weekPct != null ? `${weekPct}%` : "—"}
+          {/* Week navigation — explicit range; every panel below follows it. */}
+          <nav aria-label="Week navigation" className="flex items-center gap-1.5 sm:ml-2">
+            <button onClick={() => shiftWeek(-1)} aria-label="Previous week"
+              className="grid h-7 w-7 place-items-center rounded-lg border border-line text-muted hover:bg-field hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]">‹</button>
+            <span className="whitespace-nowrap text-sm font-semibold text-ink">{weekLabel}</span>
+            <button onClick={() => shiftWeek(1)} aria-label="Next week"
+              className="grid h-7 w-7 place-items-center rounded-lg border border-line text-muted hover:bg-field hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]">›</button>
+            {!isCurrentWeek ? (
+              <button onClick={() => setMonday(mondayOf(new Date()))}
+                className="rounded-lg border border-ocean/40 bg-ocean/10 px-2 py-0.5 text-xs font-semibold text-ocean hover:bg-ocean/20">
+                Today
+              </button>
+            ) : null}
+          </nav>
+          <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            {myCap ? (
+              <span title="Your working-hours capacity for this week vs the hours planned for you">
+                <span className="text-muted">Capacity </span><span className="font-bold text-ink">{myCap.capacity}h</span>
+                <span className="text-muted"> · Assigned </span><span className="font-bold text-ink">{myCap.assigned}h</span>
+                <span className="text-muted"> · </span>
+                {myCap.over > 0 ? (
+                  <span className="font-bold text-danger">{myCap.over}h overbooked</span>
+                ) : (
+                  <span className="font-bold text-success">{myCap.free}h free</span>
+                )}
               </span>
-              <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Completion</span>
+            ) : null}
+            <span title={`Link completion for this week: ${weekDone} of ${weekTarget} links built`}>
+              <span className="text-muted">Links </span>
+              <span className={clsx("font-bold", weekPct != null && weekPct >= 100 ? "text-success" : "text-ink")}>
+                {weekDone}<span className="font-normal text-muted"> of </span>{weekTarget}
+              </span>
+              {weekPct != null ? <span className="text-muted"> ({weekPct}%)</span> : null}
             </span>
           </div>
         </div>
-      </div>
+      </header>
 
       {(!focus || focus === "today" || focus === "week") ? (
-      <div className="grid gap-3 md:grid-cols-3">
-        <Metric label="Today's tasks" value={todayRows.length} icon={CalendarDays} tone="ink"
-          sub={todayRows.length ? `${todayRows.reduce((a, r) => a + r.hours, 0)}h planned` : "Nothing planned today"} />
-        <Metric label="This week's target" value={weekTarget} icon={Gauge} tone="ocean"
-          sub={`${weekDone} done so far`} help="Total links you're expected to build this week, from your assigned hours and rates." />
-        <Metric label="Completion" value={weekPct != null ? `${weekPct}%` : "—"} icon={CheckCircle2}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Today" value={isCurrentWeek ? todayRows.length : "—"} icon={CalendarDays} tone="ink"
+          sub={!isCurrentWeek ? "Viewing another week" : todayRows.length
+            ? `${todayRows.reduce((a, r) => a + r.hours, 0)}h assigned${capToday ? ` · ${capToday.free}h free` : ""}`
+            : capToday ? `No tasks — ${capToday.free}h free today` : "No tasks planned today"}
+          help="Tasks planned for today, the hours they take, and what's left of your working day." />
+        <Metric label="Weekly capacity" value={myCap ? `${myCap.capacity}h` : "—"} icon={Gauge}
+          tone={myCap && myCap.over > 0 ? "danger" : "ocean"}
+          sub={myCap
+            ? myCap.over > 0
+              ? `${myCap.assigned}h assigned — ${myCap.over}h OVER your hours`
+              : `${myCap.assigned}h assigned · ${myCap.free}h free`
+            : capacityQ.isError ? "Capacity unavailable" : "Working hours not set — ask your admin"}
+          help="Your personal working hours this week (set per weekday by your admin) vs the hours planned for you." />
+        <Metric label="Links completed this week" value={weekDone} icon={CheckCircle2} tone="ocean"
+          sub={`of ${weekTarget} links targeted`}
+          help="Links you actually built this week vs the target computed from your assigned hours and rates." />
+        <Metric label="Link completion rate" value={weekPct != null ? `${weekPct}%` : "—"} icon={Activity}
           tone={weekPct != null && weekPct >= 100 ? "ocean" : "ember"}
-          sub="Excused days (leave / days off) don't count against you" />
+          sub="Excused days (leave / days off) don't count against you"
+          help="Completed links ÷ targeted links for this week. This measures LINKS, not task count." />
       </div>
+      ) : null}
+
+      {/* Needs attention — only when something actually needs it (§ risk summary). */}
+      {(() => {
+        if (focus && focus !== "today" && focus !== "week") return null;
+        const behind = rows.filter((r) => !r.excused && r.day < today && (r.completion_pct ?? 0) < 100);
+        const highOpen = rows.filter((r) => r.priority === "high" && !r.excused && (r.completion_pct ?? 0) < 100);
+        const dueToday = isCurrentWeek ? todayRows.filter((r) => !r.excused && (r.completion_pct ?? 0) < 100) : [];
+        if (!behind.length && !highOpen.length && !dueToday.length) return null;
+        const chip = (label: string, count: number, tone: string, key: "behind" | "high" | null) =>
+          count > 0 ? (
+            <button
+              key={label}
+              onClick={() => key && setAttnFilter((f) => (f === key ? null : key))}
+              aria-pressed={attnFilter === key}
+              className={clsx(
+                "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
+                tone,
+                key && attnFilter === key && "ring-2 ring-current"
+              )}
+              title={key ? "Click to filter the week list to just these tasks" : undefined}
+            >
+              <AlertTriangle className="h-3 w-3" /> {count} {label}
+            </button>
+          ) : null;
+        return (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-ember/30 bg-ember/5 px-3 py-2">
+            <span className="text-xs font-bold uppercase tracking-wide text-ember">Needs attention</span>
+            {chip("behind (past days not finished)", behind.length, "border-danger/40 bg-danger/10 text-danger", "behind")}
+            {chip("high priority open", highOpen.length, "border-ember/40 bg-ember/10 text-ember", "high")}
+            {chip("due today", dueToday.length, "border-ocean/40 bg-ocean/10 text-ocean", null)}
+            {attnFilter ? (
+              <button onClick={() => setAttnFilter(null)} className="text-xs font-medium text-muted hover:text-ink hover:underline">
+                Clear filter
+              </button>
+            ) : null}
+          </div>
+        );
+      })()}
+
+      {/* Quick actions — view-only jumps a standard user is allowed to make. */}
+      {showLanding && onNav ? (
+        <div className="flex flex-wrap gap-2">
+          {([
+            ["mycal", "Open my calendar", CalendarDays],
+            ["mydash", "My dashboard", Gauge],
+            ["myopps", "Opportunities", Globe],
+            ["guidance", "Guidance", Lightbulb]
+          ] as Array<[Tab, string, NavIcon]>).map(([t, label, Icon]) => (
+            <button key={t} onClick={() => onNav(t)}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-panel px-3 text-xs font-medium text-ink shadow-card transition hover:bg-field focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]">
+              <Icon className="h-3.5 w-3.5 text-muted" /> {label}
+            </button>
+          ))}
+        </div>
       ) : null}
 
       {/* Today + This week side by side on wide screens, stacked on phones;
@@ -6174,9 +6331,14 @@ function MyWorkDesk({ token, onNotice, focus }: {
           highest-priority tasks always sort first. */}
       <div className={clsx("grid items-start gap-4", !focus && "xl:grid-cols-2")}>
         {showToday ? (
-        <section className="rounded-xl border border-line bg-panel shadow-card">
+        <section className="rounded-xl border border-line bg-panel shadow-card" aria-labelledby="today-heading">
           <div className="flex items-center justify-between pr-3">
-            <SectionTitle title={`Today · ${todayRows.length} task${todayRows.length === 1 ? "" : "s"}`} />
+            <SectionTitle title={
+              isCurrentWeek
+                ? `Today · ${todayRows.length} task${todayRows.length === 1 ? "" : "s"}` +
+                  (todayRows.length ? ` · ${Math.round(todayRows.reduce((a, r) => a + r.hours, 0) * 10) / 10}h` : "")
+                : "Today"
+            } />
             {todayRows.length > 4 ? (
               <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
                 {showAllToday ? "Show less" : `View all ${todayRows.length}`}
@@ -6184,34 +6346,129 @@ function MyWorkDesk({ token, onNotice, focus }: {
             ) : null}
           </div>
           <div className="space-y-2 p-3">
-            {sortByPriority(todayRows).slice(0, uncap || showAllToday ? undefined : 4).map(taskCard)}
-            {!todayRows.length ? <p className="p-2 text-sm text-muted">No tasks planned for today.</p> : null}
+            {me.isLoading ? (
+              <div className="space-y-2" aria-label="Loading today's tasks">
+                {[0, 1].map((i) => <div key={i} className="h-16 animate-pulse rounded-lg bg-field" />)}
+              </div>
+            ) : !isCurrentWeek ? (
+              <div className="rounded-lg bg-field/40 p-4 text-center">
+                <p className="text-sm text-muted">You&apos;re viewing {weekLabel}.</p>
+                <button onClick={() => setMonday(mondayOf(new Date()))} className="mt-2 rounded-lg border border-ocean/40 bg-ocean/10 px-3 py-1.5 text-xs font-semibold text-ocean hover:bg-ocean/20">
+                  Jump to this week
+                </button>
+              </div>
+            ) : todayRows.length ? (
+              sortByPriority(todayRows).slice(0, uncap || showAllToday ? undefined : 4).map(taskCard)
+            ) : (
+              /* Useful empty state: free hours + the NEXT scheduled task + actions. */
+              <div className="rounded-lg bg-field/40 p-5 text-center">
+                <CalendarDays aria-hidden className="mx-auto mb-2 h-7 w-7 text-muted" />
+                <p className="text-sm font-semibold text-ink">No tasks scheduled for today</p>
+                {capToday && capToday.capacity > 0 ? (
+                  <p className="mt-0.5 text-sm text-muted">You have <span className="font-semibold text-success">{capToday.free}h free</span> today.</p>
+                ) : capToday && !capToday.working ? (
+                  <p className="mt-0.5 text-sm text-muted">Today is a non-working day — enjoy it.</p>
+                ) : null}
+                {(() => {
+                  const next = [...rows].filter((r) => r.day > today && !r.excused).sort((a, b) => a.day.localeCompare(b.day))[0];
+                  return next ? (
+                    <p className="mt-1 text-xs text-muted">
+                      Next task: <span className="font-semibold text-ink">{projectName(next.project_id)}</span> on {formatDay(next.day)} ({next.hours}h).
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted">Nothing scheduled later this week either.</p>
+                  );
+                })()}
+                <div className="mt-3 flex flex-wrap justify-center gap-2">
+                  {onNav ? (
+                    <button onClick={() => onNav("mycal")} className="rounded-lg border border-ocean/40 bg-ocean/10 px-3 py-1.5 text-xs font-semibold text-ocean hover:bg-ocean/20">
+                      Open calendar
+                    </button>
+                  ) : null}
+                  <button onClick={() => setShowAllWeek(true)} className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-field">
+                    View this week&apos;s tasks
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
         ) : null}
 
         {showWeek ? (
-        <section className="rounded-xl border border-line bg-panel shadow-card">
-          <div className="flex items-center justify-between pr-3">
-            <SectionTitle title={`This week · ${rows.filter((r) => r.day !== today).length} more`} />
-            {rows.filter((r) => r.day !== today).length > 5 ? (
-              <button onClick={() => setShowAllWeek((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
-                {showAllWeek ? "Show less" : `View all ${rows.filter((r) => r.day !== today).length}`}
-              </button>
-            ) : null}
-          </div>
-          <div className="space-y-2 p-3">
-            {sortByPriority(rows.filter((r) => r.day !== today)).slice(0, uncap || showAllWeek ? undefined : 5).map((r) => (
-              <div key={r.id} className="flex items-start gap-3">
-                <span className="mt-3 w-20 shrink-0 whitespace-nowrap text-xs font-semibold text-muted">{formatDay(r.day)}</span>
-                <div className="min-w-0 flex-1">{taskCard(r)}</div>
-              </div>
-            ))}
-            {me.isLoading ? (
-              <div className="flex justify-center p-4"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
-            ) : null}
-            {!me.isLoading && !rows.length ? <p className="p-2 text-sm text-muted">Nothing planned this week yet.</p> : null}
-          </div>
+        <section className="rounded-xl border border-line bg-panel shadow-card" aria-labelledby="week-heading">
+          {(() => {
+            // Grouped by day — the date reads ONCE per day, not on every card.
+            const base = isCurrentWeek ? rows.filter((r) => r.day !== today) : rows;
+            const filtered = attnFilter === "behind"
+              ? base.filter((r) => !r.excused && r.day < today && (r.completion_pct ?? 0) < 100)
+              : attnFilter === "high"
+                ? base.filter((r) => r.priority === "high" && !r.excused && (r.completion_pct ?? 0) < 100)
+                : base;
+            const days = [...Array(7)].map((_, i) => {
+              const d = new Date(`${monday}T00:00:00`);
+              d.setDate(d.getDate() + i);
+              return fmtIso(d);
+            });
+            const groups = days
+              .map((d) => ({ day: d, items: sortByPriority(filtered.filter((r) => r.day === d)) }))
+              .filter((g) => g.items.length);
+            const total = filtered.length;
+            const cap = uncap || showAllWeek ? Infinity : 6;
+            let used = 0;
+            return (
+              <>
+                <div className="flex items-center justify-between pr-3">
+                  <SectionTitle title={
+                    (isCurrentWeek ? "This week" : weekLabel) +
+                    ` · ${total} task${total === 1 ? "" : "s"}` +
+                    (attnFilter ? " (filtered)" : "")
+                  } />
+                  {total > 6 ? (
+                    <button onClick={() => setShowAllWeek((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
+                      {showAllWeek ? "Show less" : `View all ${total}`}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="space-y-3 p-3">
+                  {me.isLoading ? (
+                    <div className="space-y-2" aria-label="Loading this week's tasks">
+                      {[0, 1, 2].map((i) => <div key={i} className="h-16 animate-pulse rounded-lg bg-field" />)}
+                    </div>
+                  ) : null}
+                  {groups.map((g) => {
+                    if (used >= cap) return null;
+                    const take = g.items.slice(0, Math.max(0, cap - used));
+                    used += take.length;
+                    const hrs = Math.round(g.items.reduce((a, r) => a + r.hours, 0) * 10) / 10;
+                    return (
+                      <div key={g.day}>
+                        <h4 className="mb-1.5 flex items-baseline gap-2 text-xs font-bold uppercase tracking-wide text-muted">
+                          {formatDay(g.day)}
+                          <span className="font-medium normal-case tracking-normal">
+                            {g.items.length} task{g.items.length === 1 ? "" : "s"} · {hrs}h
+                          </span>
+                          {g.day < today && g.items.some((r) => !r.excused && (r.completion_pct ?? 0) < 100) ? (
+                            <span className="rounded-full border border-danger/40 bg-danger/10 px-1.5 text-[9px] font-semibold uppercase text-danger">behind</span>
+                          ) : null}
+                        </h4>
+                        <div className="space-y-2">{take.map(taskCard)}</div>
+                      </div>
+                    );
+                  })}
+                  {!me.isLoading && !total ? (
+                    <div className="rounded-lg bg-field/40 p-5 text-center text-sm text-muted">
+                      {attnFilter
+                        ? "Nothing matches this filter — clear it above."
+                        : weekTarget > 0 && weekDone >= weekTarget
+                          ? "All of this week's work is done. 🎉"
+                          : "Nothing planned this week yet."}
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            );
+          })()}
         </section>
         ) : null}
       </div>
