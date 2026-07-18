@@ -399,7 +399,7 @@ export function WorkspaceApp() {
         onSection={setTab}
       />
       <section className="mx-auto flex w-full gap-5 px-5 py-4">
-        <aside className="hidden w-[248px] shrink-0 lg:block">
+        <aside className="hidden shrink-0 lg:block">
           <div className="sticky top-[56px]">
             <Sidebar
               activeTab={tab}
@@ -886,6 +886,39 @@ const TAB_LABELS: Record<string, string> = Object.fromEntries(
     g.items.map(([id, label]) => [id, label])
   )
 );
+
+// One-line purpose for every nav item — hover tooltips (expanded AND rail
+// mode), so ambiguous labels ("Duplicates", "Batches", "Temp QA") always
+// explain themselves without a rename that would break the team's vocabulary.
+const NAV_HELP: Partial<Record<Tab, string>> = {
+  overview: "Company-wide dashboard — every project combined",
+  analytics: "Slice all links by any dimension — filters, facets, drill-downs",
+  performance: "Team output per person — links built, new domains, quality",
+  users: "One full dashboard per person — KPIs, projects, plans, rates & leave",
+  apiusage: "Metric-provider API quota and usage",
+  backlinks: "Every link with its live QA verdict",
+  conflicts: "The same link submitted more than once — compare and resolve",
+  domains: "Source-domain catalog — quality metrics, usage, rules",
+  competitors: "Competitor backlink uploads and opportunities",
+  imports: "Paste or upload links — staged for review before anything lands",
+  sheets: "Connected Google Sheets — sync, mapping, write-back",
+  "domain-import": "Paste domains into the catalog — checked, then approved",
+  batches: "Every long-running run (imports, syncs, checks) with live progress and logs",
+  alerts: "Rule-based alerts on regressions (link lost, status drops)",
+  reports: "Generated report files — versioned, downloadable, viewable",
+  tasks: "Plan the team's week — assignments, capacity, calendar, leave",
+  team: "Logins, roles, project scoping, Gmail accounts, data health",
+  qatest: "Candidate trial-task evaluation — fully ISOLATED from production data (nothing here touches projects or dashboards)",
+  scoring: "How link scores are computed — weights and bands",
+  settings: "Workspace settings — branding, projects, link types, automation, QA",
+  mywork: "Your tasks — today, this week, targets and completion",
+  mycal: "Your work calendar — month, week and day views",
+  mydash: "Your personal dashboard — KPIs, projects, plans, rates & leave",
+  myopps: "Recommended source domains picked for you",
+  guidance: "How to build links that pass QA",
+  myscoring: "How your links are scored",
+  statusguide: "What every status and verdict means"
+};
 
 // ── Recent + pinned projects (shell UX): plain localStorage, filtered against
 // the live project list on read so deleted projects never linger. ──
@@ -1643,8 +1676,117 @@ function Sidebar({
   onDashSection: (s: DashSection) => void;
   dashSubFor: Tab | null;
 }) {
+  // ── Rail (collapsed) mode + per-group collapse, both remembered. Hydrated
+  // in effects (never in initializers) so static prerender stays clean. ──
+  const [collapsed, setCollapsed] = useState(false);
+  const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem("ls_nav_collapsed") === "1");
+      setClosedGroups(JSON.parse(localStorage.getItem("ls_nav_groups") || "{}"));
+    } catch {
+      /* fresh defaults */
+    }
+  }, []);
+  const setRail = (v: boolean) => {
+    setCollapsed(v);
+    try { localStorage.setItem("ls_nav_collapsed", v ? "1" : "0"); } catch { /* ignore */ }
+  };
+  const toggleGroup = (label: string) => {
+    setClosedGroups((g) => {
+      const next = { ...g, [label]: !g[label] };
+      try { localStorage.setItem("ls_nav_groups", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+  const groups = navGroups(Boolean(activeProjectId), role);
+
+  // ── Attention badges (permission-gated, low-noise): running batches for
+  // anyone who can see Batches; pending leave requests for approvers. ──
+  const canBatches = role !== "viewer";
+  const batchesRunning = useQuery({
+    queryKey: ["nav-batches-running", token],
+    enabled: Boolean(token) && canBatches,
+    retry: false,
+    refetchInterval: 60000,
+    queryFn: () => api<Array<{ id: string }>>("/batches?status=running&limit=50", { token })
+  });
+  const canApprove = role === "admin" || role === "manager";
+  const pendingLeaves = useQuery({
+    queryKey: ["nav-pending-leaves", token],
+    enabled: Boolean(token) && canApprove,
+    retry: false,
+    refetchInterval: 120000,
+    queryFn: () => api<Array<{ id: string }>>("/workforce/leaves?status=pending", { token })
+  });
+  const fmtCount = (n: number) => (n > 99 ? "99+" : String(n));
+  const badges: Partial<Record<Tab, { count: number; label: string; tone: "ocean" | "ember" }>> = {};
+  if ((batchesRunning.data?.length || 0) > 0)
+    badges.batches = { count: batchesRunning.data!.length, label: `${batchesRunning.data!.length} running`, tone: "ocean" };
+  if ((pendingLeaves.data?.length || 0) > 0)
+    badges.tasks = { count: pendingLeaves.data!.length, label: `${pendingLeaves.data!.length} leave request${pendingLeaves.data!.length === 1 ? "" : "s"} awaiting a decision`, tone: "ember" };
+
+  // ── Collapsed rail: icons + tooltips + badges + expand control. Groups stay
+  // readable via dividers; every control is keyboard-reachable and labeled. ──
+  if (collapsed) {
+    return (
+      <div className="w-[64px]">
+        <nav aria-label="Primary" className="ring-gradient flex flex-col items-stretch gap-0.5 rounded-xl p-1.5 shadow-card">
+          <button
+            onClick={() => setRail(false)}
+            title="Expand the sidebar"
+            aria-label="Expand sidebar"
+            className="mb-1 grid h-9 place-items-center rounded-lg border border-line text-muted hover:bg-field hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          {groups.map((group, gi) => (
+            <Fragment key={group.label}>
+              {gi > 0 ? <div role="separator" aria-hidden className="mx-2 my-1 border-t border-line" /> : null}
+              {group.items.map(([id, label, Icon]) => {
+                const active = activeTab === id;
+                const b = badges[id];
+                return (
+                  <button
+                    key={id}
+                    onClick={() => onTab(id)}
+                    aria-current={active ? "page" : undefined}
+                    aria-label={label}
+                    title={`${label}${b ? ` — ${b.label}` : ""}${NAV_HELP[id] ? `\n${NAV_HELP[id]}` : ""}`}
+                    className={clsx(
+                      "relative grid h-9 place-items-center rounded-lg transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
+                      active
+                        ? "bg-gradient-to-r from-ocean/15 to-plum/10 text-ocean shadow-[inset_0_0_0_1px_rgb(var(--ocean)/0.25)]"
+                        : "text-muted hover:bg-field hover:text-ink"
+                    )}
+                  >
+                    {active ? (
+                      <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-gradient-to-b from-ocean to-plum" />
+                    ) : null}
+                    <Icon className="h-4 w-4" />
+                    {b ? (
+                      <span
+                        aria-hidden
+                        className={clsx(
+                          "absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-0.5 text-[8px] font-bold text-white",
+                          b.tone === "ember" ? "bg-ember" : "bg-ocean"
+                        )}
+                      >
+                        {fmtCount(b.count)}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </Fragment>
+          ))}
+        </nav>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="w-[248px] space-y-4">
       {role !== "viewer" ? (
         <ProjectPanel
           token={token}
@@ -1668,20 +1810,43 @@ function Sidebar({
         </div>
       ) : null}
       <nav aria-label="Primary" className="ring-gradient rounded-xl p-2 shadow-card">
-        {navGroups(Boolean(activeProjectId), role).map((group) => (
+        <div className="flex justify-end">
+          <button
+            onClick={() => setRail(true)}
+            title="Collapse to an icon rail (labels stay as tooltips)"
+            aria-label="Collapse sidebar"
+            className="grid h-6 w-6 place-items-center rounded-md text-muted hover:bg-field hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        {groups.map((group) => {
+          const containsActive = group.items.some(([id]) => id === activeTab);
+          // The active section can never hide the current page.
+          const isOpen = containsActive || !closedGroups[group.label];
+          return (
           <div key={group.label} className="mb-1 last:mb-0">
-            <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+            <button
+              onClick={() => toggleGroup(group.label)}
+              aria-expanded={isOpen}
+              title={containsActive && closedGroups[group.label] ? "This section holds the current page — it stays open" : isOpen ? `Collapse ${group.label}` : `Expand ${group.label}`}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-muted transition hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
+            >
               <span aria-hidden className="h-1 w-1 rounded-full bg-gradient-to-r from-ocean to-plum" />
               {group.label}
-            </div>
+              <ChevronDown aria-hidden className={clsx("ml-auto h-3 w-3 transition", !isOpen && "-rotate-90")} />
+            </button>
+            {isOpen ? (
             <div className="space-y-0.5">
               {group.items.map(([id, label, Icon]) => {
                 const active = activeTab === id;
+                const b = badges[id];
                 return (
                   <Fragment key={id}>
                   <button
                     onClick={() => onTab(id)}
                     aria-current={active ? "page" : undefined}
+                    title={NAV_HELP[id]}
                     className={clsx(
                       "group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
                       active
@@ -1693,7 +1858,19 @@ function Sidebar({
                       <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-gradient-to-b from-ocean to-plum shadow-glow" />
                     ) : null}
                     <Icon className={clsx("h-4 w-4 shrink-0", active && "drop-shadow-[0_0_6px_rgb(var(--ocean)/0.6)]")} />
-                    {label}
+                    <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+                    {b ? (
+                      <span
+                        title={b.label}
+                        aria-label={b.label}
+                        className={clsx(
+                          "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none",
+                          b.tone === "ember" ? "bg-ember/15 text-ember" : "bg-ocean/15 text-ocean"
+                        )}
+                      >
+                        {fmtCount(b.count)}
+                      </span>
+                    ) : null}
                   </button>
                   {/* The open person-dashboard expands into its PAGES right here in
                       the main nav — a large dashboard area, not an inner widget. */}
@@ -1726,8 +1903,10 @@ function Sidebar({
                 );
               })}
             </div>
+            ) : null}
           </div>
-        ))}
+          );
+        })}
       </nav>
     </div>
   );
@@ -1756,7 +1935,7 @@ function MobileNav({
         <Fragment key={id}>
         <button
           onClick={() => onTab(id)}
-          title={label}
+          title={NAV_HELP[id] ? `${label} — ${NAV_HELP[id]}` : label}
           aria-current={activeTab === id ? "page" : undefined}
           className={clsx(
             "flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]",
