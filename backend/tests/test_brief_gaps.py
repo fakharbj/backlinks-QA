@@ -208,13 +208,25 @@ def test_case_merge_never_creates_ghosts_and_tasks_stay_visible(live_stack):
         assert asg.status_code in (200, 201), asg.text
 
         # Merge a capitalized alias into the person — canonical folds lowercase.
+        # Link the identity to the calling account so /workforce/me resolves it.
+        me_id = client.get("/api/v1/team/members", headers=h).json()[0]["user_id"]
         mg = client.post(
             "/api/v1/employees/merge",
-            json={"canonical_label": "Usman", "alias_labels": ["USMAN", "Usman"]},
+            json={"canonical_label": "Usman", "alias_labels": ["USMAN", "Usman"], "user_id": me_id},
             headers=h,
         )
         assert mg.status_code == 200, mg.text
         assert mg.json()["canonical_label"] == "usman"
+
+        # /workforce/me must resolve ONE lowercase identity — never the retired
+        # alias spelling (labels[0]='Usman' used to blank the This-week strip
+        # and the whole personal dashboard).
+        mine = client.get(
+            f"/api/v1/workforce/me?date_from={day.isoformat()}&date_to={day.isoformat()}",
+            headers=h,
+        ).json()
+        assert mine["labels"] == ["usman"], mine["labels"]
+        assert any(r["user_label"] == "usman" for r in mine["rows"])
 
         labels = client.get("/api/v1/workforce/labels", headers=h).json()
         assert "usman" in labels

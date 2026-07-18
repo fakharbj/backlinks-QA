@@ -4781,24 +4781,54 @@ function MyTaskCalendar({ token }: { token: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anchor, mode]);
 
+  // Detailed task chip — every mode shows project, done/target and hours;
+  // week/day modes add the link types and a live progress bar.
   const chip = (r: MyCalRow, full = false) => {
     const st = myCalStatus(r, today);
     return (
       <button
         key={r.id}
         onClick={() => setOpenTask(r)}
-        title={`${projectName(r.project_id)} — ${st.label}. Click for details.`}
+        title={
+          `${projectName(r.project_id)} — ${st.label}\n` +
+          `${r.hours}h · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"}\n` +
+          `${r.actual_links}/${r.expected_links} links done` +
+          (r.note ? `\nNote: ${r.note}` : "") + "\nClick for full details."
+        }
         className={clsx(
-          "block w-full truncate rounded border px-1 py-0.5 text-left font-medium leading-tight",
+          "block w-full rounded border px-1 py-0.5 text-left font-medium leading-tight",
           full ? "text-xs" : "text-[9px]",
           st.cls
         )}
       >
-        {r.priority === "high" ? "⬤ " : ""}
-        {projectName(r.project_id)}
-        {full ? ` · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"} · ${r.actual_links}/${r.expected_links}` : ""}
+        <span className="flex items-center gap-1">
+          {r.priority === "high" ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" /> : null}
+          <span className="truncate font-semibold">{projectName(r.project_id)}</span>
+        </span>
+        <span className="block truncate opacity-90">
+          {r.actual_links}/{r.expected_links} links · {r.hours}h
+          {full ? ` · ${r.link_type_names.map(linkTypeLabel).join(", ") || "any type"}` : ""}
+          {r.excused ? " · excused" : ""}
+        </span>
+        {!r.excused && r.expected_links > 0 ? (
+          <span className="mt-0.5 block h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+            <span
+              className="block h-full rounded-full bg-current"
+              style={{ width: `${Math.min(100, r.completion_pct ?? 0)}%` }}
+            />
+          </span>
+        ) : null}
       </button>
     );
+  };
+  // Per-day workload summary for the day-box headers.
+  const dayTotals = (day: string) => {
+    const list = byDay[day] || [];
+    if (!list.length) return null;
+    const hours = list.reduce((a, r) => a + (r.hours || 0), 0);
+    const done = list.reduce((a, r) => a + (r.excused ? 0 : r.actual_links), 0);
+    const target = list.reduce((a, r) => a + (r.excused ? 0 : r.expected_links), 0);
+    return { hours: Math.round(hours * 10) / 10, done, target };
   };
 
   const weekDays = useMemo(() => {
@@ -4860,14 +4890,22 @@ function MyTaskCalendar({ token }: { token: string | null }) {
                   <div
                     key={day}
                     className={clsx(
-                      "min-h-[64px] rounded-lg border p-1",
+                      "min-h-[92px] rounded-lg border p-1",
                       day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel"
                     )}
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-1">
                       <span className={clsx("text-[10px] font-semibold", day === today ? "text-ocean" : "text-muted")}>
                         {Number(day.slice(8))}
                       </span>
+                      {(() => {
+                        const t = dayTotals(day);
+                        return t ? (
+                          <span className="truncate text-[8px] font-semibold text-muted" title={`${t.hours}h planned · ${t.done}/${t.target} links done`}>
+                            {t.hours}h · {t.done}/{t.target}
+                          </span>
+                        ) : null;
+                      })()}
                       {onLeave(day) ? (
                         <span className="rounded bg-plum/15 px-1 text-[8px] font-semibold text-plum">Leave</span>
                       ) : null}
@@ -4890,15 +4928,28 @@ function MyTaskCalendar({ token }: { token: string | null }) {
           </>
         ) : mode === "week" ? (
           <div className="grid gap-1 sm:grid-cols-7">
-            {weekDays.map((day) => (
-              <div key={day} className={clsx("min-h-[90px] rounded-lg border p-1.5", day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel")}>
-                <div className="flex items-center justify-between">
-                  <span className={clsx("text-[10px] font-semibold", day === today ? "text-ocean" : "text-muted")}>{formatDay(day)}</span>
-                  {onLeave(day) ? <span className="rounded bg-plum/15 px-1 text-[8px] font-semibold text-plum">Leave</span> : null}
+            {weekDays.map((day) => {
+              const t = dayTotals(day);
+              return (
+                <div key={day} className={clsx("min-h-[130px] rounded-lg border p-1.5", day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel")}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={clsx("text-[10px] font-semibold", day === today ? "text-ocean" : "text-muted")}>{formatDay(day)}</span>
+                    {onLeave(day) ? <span className="rounded bg-plum/15 px-1 text-[8px] font-semibold text-plum">Leave</span> : null}
+                  </div>
+                  {t ? (
+                    <div className="mt-0.5 text-[9px] font-semibold text-muted">
+                      {t.hours}h planned · {t.done}/{t.target} links
+                    </div>
+                  ) : null}
+                  <div className="mt-1 space-y-1">
+                    {(byDay[day] || []).map((r) => chip(r, true))}
+                    {!(byDay[day] || []).length ? (
+                      <span className="block px-0.5 text-[9px] text-muted">—</span>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="mt-1 space-y-1">{(byDay[day] || []).map((r) => chip(r))}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="space-y-2">

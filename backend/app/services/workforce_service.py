@@ -30,19 +30,28 @@ _DEFAULT_LPH = 5.0
 
 
 async def own_labels(db: AsyncSession, ctx: AuthContext) -> set[str]:
-    """The sheet 'User' names linked to the CALLER's account (employee catalog)."""
+    """The sheet 'User' names linked to the CALLER's account (employee catalog).
+
+    Alias rows (merge memory — e.g. the retired "Usman" spelling pointing at
+    "usman") stay linked to the account but are NOT identities: including them
+    used to make labels[0] a capitalized ghost that owns zero rows, blanking
+    the person's dashboard and This-week strip. Only canonical rows count, and
+    everything folds to lowercase (one person, whatever the capitalization)."""
     from app.models.employee import UserEmployeeMapping
 
-    return set(
-        (
+    return {
+        lbl.strip().lower()
+        for lbl in (
             await db.execute(
                 select(UserEmployeeMapping.sheet_user_label).where(
                     UserEmployeeMapping.workspace_id == ctx.workspace_id,
                     UserEmployeeMapping.user_id == ctx.user.id,
+                    UserEmployeeMapping.canonical_label.is_(None),
                 )
             )
         ).scalars().all()
-    )
+        if lbl and lbl.strip()
+    }
 
 
 async def visible_labels(db: AsyncSession, ctx: AuthContext) -> set[str] | None:
