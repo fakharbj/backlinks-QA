@@ -136,13 +136,20 @@ async def _run_async(batch_id_str: str) -> dict:
                 batch.status = "done"
         return {"processed": 0}
 
+    _base = CrawlConfig.from_settings()
     config = dataclasses.replace(
-        CrawlConfig.from_settings(),
+        _base,
         render_enabled=settings.RENDER_ENABLED,
         # Accuracy-max (low-volume manual verification): give heavy SPAs
         # (Quora ~800KB, etc.) a generous render budget so a slow page loads
         # fully instead of timing out and landing in "couldn't check".
         render_timeout_ms=max(settings.RENDER_TIMEOUT_MS, 45_000),
+        # Fetch AS Googlebot. Quora/Reddit/news sites server-render their full
+        # content for search crawlers (that's the SEO view that actually
+        # matters for a backlink) while serving thin/blocked pages to other
+        # agents — so a Googlebot fetch reads what the raw fetch couldn't, and
+        # sites that still block it (Medium → 422) stay honestly "couldn't read".
+        user_agent=_base.googlebot_ua,
     )
     browser = get_browser() if settings.RENDER_ENABLED else None
     limiter = make_rate_limiter(settings.CRAWL_DEFAULT_RATE_PER_SEC, settings.CRAWL_DEFAULT_BURST)

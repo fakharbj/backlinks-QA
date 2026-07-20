@@ -447,11 +447,26 @@ class CrawlEngine:
         #       proxy fetch of a JS-driven page. THEN it's "couldn't confirm" →
         #       NEEDS_MANUAL_REVIEW, never a confident FAIL.
         rendered_ok = artifact.rendered and 200 <= (artifact.browser_http_status or 0) < 300
+        # A 2xx page that carries REAL content (many real links or substantial
+        # text) HAS been read — even if it also ships a JS framework (Quora,
+        # Reddit and many sites server-render for SEO then hydrate with React).
+        # Reaching it via the proxy doesn't make it unreadable. Only a true
+        # shell (thin/empty) or a non-2xx/blocked response we couldn't render
+        # is "couldn't confirm".
+        two_xx = (
+            artifact.http_status is not None
+            and 200 <= artifact.http_status < 300
+            and artifact.is_html
+        )
+        real_content = two_xx and (
+            len(artifact.all_links or []) >= 8
+            or (getattr(artifact.signals, "word_count", 0) or 0) >= 40
+        )
         if (
             not artifact.matched_links
-            and artifact.is_html
             and artifact.fetch_error is FetchError.NONE
             and not rendered_ok
+            and not real_content
             and (self._looks_js_driven(outcome.body) or artifact.egress == "proxy")
         ):
             artifact.js_render_suspected = True
