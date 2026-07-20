@@ -17578,46 +17578,40 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                               <div><span className="text-muted">Matched href:</span> <span className="break-all text-ink">{l.matched_href || "—"}</span></div>
                               <div><span className="text-muted">Anchor found:</span> <span className="text-ink">{l.current_anchor || "—"}</span></div>
                               <div><span className="text-muted">Final URL:</span> <span className="break-all text-ink">{String((l.facts?.final_url as string) || "—")}</span></div>
+                              <div><span className="text-muted">Indexable:</span> <span className="text-ink">{l.facts?.indexable == null ? "couldn't tell" : l.facts?.indexable ? "yes" : "no (noindex)"}</span></div>
+                              <div><span className="text-muted">Dofollow:</span> <span className="text-ink">{l.facts?.followable == null ? "couldn't tell" : l.facts?.followable ? "yes" : "no (nofollow)"}</span></div>
                               <div><span className="text-muted">How we reached it:</span> <span className="text-ink">{l.facts?.rendered ? "rendered browser" : "direct fetch"}{l.facts?.egress === "proxy" ? " · via unblocker proxy" : ""}</span></div>
                               {l.error ? <div className="text-danger">Error: {l.error}</div> : null}
-                              {/* Score breakdown — same as the production Backlinks drawer. */}
-                              {l.score != null && Array.isArray(l.facts?.score_breakdown) && (l.facts.score_breakdown as unknown[]).length > 1 ? (
-                                <div className="pt-1">
-                                  <div className="mb-0.5 text-[11px] font-semibold uppercase text-muted">How the score was built</div>
-                                  <ul className="space-y-0.5">
-                                    {(l.facts.score_breakdown as Array<{ code?: string; delta?: number; note?: string }>).map((st, i) => (
-                                      <li key={i} className="flex items-center justify-between gap-2">
-                                        <span className="text-muted">{st.code === "START" ? "Baseline" : (st.note || st.code)}</span>
-                                        <span className={clsx("font-mono font-semibold", (st.delta || 0) < 0 ? "text-danger" : (st.delta || 0) > 0 ? "text-success" : "text-muted")}>
-                                          {st.code === "START" ? "100" : `${(st.delta || 0) > 0 ? "+" : ""}${st.delta ?? 0}`}
-                                        </span>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              ) : null}
                             </div>
                             <div>
-                              <div className="mb-1 text-[11px] font-semibold uppercase text-muted">QA checks — full detail</div>
-                              {Array.isArray(l.facts?.issues) && (l.facts.issues as unknown[]).length ? (
+                              <div className="mb-1 text-[11px] font-semibold uppercase text-muted">Why this verdict</div>
+                              {Array.isArray(l.facts?.reasons) && (l.facts.reasons as unknown[]).length ? (
                                 <ul className="space-y-1">
-                                  {(l.facts.issues as Array<{ code?: string; label?: string; severity?: string; message?: string; recommendation?: string }>).map((iss, i) => (
-                                    <li key={i} className="rounded-md border border-line bg-panel p-1.5 text-[11px]">
-                                      <span className="flex items-center gap-1.5">
-                                        <span className={clsx("rounded px-1 py-0.5 text-[9px] font-bold uppercase",
-                                          iss.severity === "critical" || iss.severity === "major" || iss.severity === "high" ? "bg-danger/15 text-danger"
-                                            : iss.severity === "medium" ? "bg-ember/15 text-ember"
-                                              : iss.severity === "info" ? "bg-ocean/10 text-ocean" : "bg-field text-muted")}>
-                                          {iss.severity || "info"}
-                                        </span>
-                                        <span className="font-semibold text-ink">{(iss.label && iss.label !== "NONE" ? iss.label : iss.code || "check").replaceAll("_", " ")}</span>
-                                      </span>
-                                      {iss.message ? <span className="mt-0.5 block text-muted">{iss.message}</span> : null}
-                                      {iss.recommendation ? <span className="mt-0.5 block text-ocean">→ {iss.recommendation}</span> : null}
+                                  {(l.facts.reasons as Array<{ severity?: string; text?: string }>).map((r, i) => (
+                                    <li key={i} className="flex items-start gap-1.5 rounded-md border border-line bg-panel p-1.5 text-[11px]">
+                                      <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full",
+                                        r.severity === "critical" || r.severity === "high" ? "bg-danger"
+                                          : r.severity === "medium" ? "bg-ember" : "bg-ocean")} />
+                                      <span className="text-ink">{r.text}</span>
                                     </li>
                                   ))}
                                 </ul>
-                              ) : <p className="text-[11px] text-muted">No issues recorded.</p>}
+                              ) : <p className="text-[11px] text-muted">No issues — clean link.</p>}
+                              {/* Raw engine findings — every technical check, for transparency. */}
+                              {Array.isArray(l.facts?.engine_issues) && (l.facts.engine_issues as unknown[]).length ? (
+                                <details className="mt-2">
+                                  <summary className="cursor-pointer text-[11px] font-medium text-muted hover:text-ink">
+                                    All technical checks ({(l.facts.engine_issues as unknown[]).length})
+                                  </summary>
+                                  <ul className="mt-1 space-y-0.5">
+                                    {(l.facts.engine_issues as Array<{ code?: string; severity?: string; message?: string }>).map((iss, i) => (
+                                      <li key={i} className="text-[10px] leading-snug text-muted">
+                                        <span className="font-mono">{iss.code}</span> · <span className="font-semibold">{iss.severity}</span> — {iss.message}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              ) : null}
                             </div>
                           </div>
                         </td>

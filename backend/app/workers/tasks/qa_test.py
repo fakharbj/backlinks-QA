@@ -74,27 +74,19 @@ def _build_request(link: QATestLink) -> CrawlRequest:
     )
 
 
-def _facts(artifact, result) -> dict:
-    """Full per-link evidence for the results table — the SAME depth as the
-    production Backlinks drawer: every issue with its code, severity, message
-    and fix recommendation, the score breakdown, and why it wasn't scored."""
-    issues = []
+def _facts(artifact, result, lab: dict) -> dict:
+    """Per-link evidence for the lab detail panel. The headline is the LAB's
+    SEO-focused reasons (what actually decided the verdict); the raw engine
+    findings are kept under ``engine_issues`` for transparency/debugging."""
+    engine_issues = []
     for issue in (result.issues or []):
         label = getattr(issue, "label", None)
-        issues.append({
+        engine_issues.append({
             "code": getattr(issue, "code", None),
             "label": getattr(label, "value", None) or (str(label) if label else None),
             "severity": getattr(getattr(issue, "severity", None), "value", None),
             "message": getattr(issue, "message", None),
             "recommendation": getattr(issue, "recommendation", None),
-        })
-    # Score breakdown ("started at 100, −25 SOURCE_403 → …") — same as the drawer.
-    steps = []
-    for st in (result.score_breakdown or []):
-        steps.append({
-            "code": getattr(st, "code", None),
-            "delta": getattr(st, "delta", None),
-            "note": getattr(st, "note", None),
         })
     return {
         "found_in_raw": result.found_in_raw,
@@ -102,15 +94,18 @@ def _facts(artifact, result) -> dict:
         "rendered": bool(getattr(artifact, "rendered", False)),
         "egress": getattr(artifact, "egress", None),
         "final_url": result.final_url,
-        "is_followable": result.is_followable,
+        "followable": lab["followable"],
+        "indexable": lab["indexable"],
         "robots_status": result.robots_status,
-        "canonical_status": result.canonical_status,
         "word_count": getattr(getattr(artifact, "signals", None), "word_count", None),
-        "issues": issues,
-        "recommendations": list(result.recommendations or []),
-        "score_breakdown": steps,
-        # Why there's no score: we couldn't actually read the page.
-        "unverified": bool(result.unverified),
+        # The lab's decision — the reasons that MOVED the verdict/score.
+        "summary": lab["summary"],
+        "reasons": lab["reasons"],
+        "scored": lab["score"] is not None,
+        "unverified": lab["score"] is None and lab["status"] == "NEEDS_MANUAL_REVIEW",
+        # Full raw engine findings (all checks) for transparency.
+        "engine_issues": engine_issues,
+        "issues": lab["reasons"],  # back-compat for the existing panel
     }
 
 
@@ -178,21 +173,25 @@ async def _run_async(batch_id_str: str) -> dict:
                 artifact.raw_html = artifact.rendered_html = None
                 result = evaluate(artifact, policy=policy)
                 primary = getattr(artifact, "primary_link", None)
-                row.status = result.status.value if result.status else None
-                # Owner rule: never auto-score a page we couldn't actually read
-                # (hard block / CAPTCHA / JS-only / robots-unread). A number
-                # there is misleading — store NULL and let the UI say
-                # "Not scored — couldn't check the page".
-                row.score = None if result.unverified else result.score
-                row.link_found = result.link_found
+                # Lab lens (owner rule): SEO-outcome scoring — error/blocked =
+                # NOT scored; missing on a 200 = 0; nofollow+noindex = 0;
+                # canonical / JS-render / thin-content / placement excluded.
+                from app.services.qa_lab_scoring import lab_verdict
+
+                lab = lab_verdict(artifact, result)
+                row.status = lab["status"]
+                row.score = lab["score"]
+                row.link_found = lab["link_found"]
                 row.http_status = result.http_status
                 row.current_rel = result.current_rel
                 row.current_anchor = (result.current_anchor or None)
-                row.indexability = getattr(result.is_indexable, "value", None)
+                row.indexability = (
+                    None if lab["indexable"] is None
+                    else ("indexable" if lab["indexable"] else "not_indexable")
+                )
                 row.matched_href = getattr(primary, "normalized_url", None)
-                top = result.top_issue
-                row.top_issue = getattr(getattr(top, "label", None), "value", None) if top else None
-                row.facts = _facts(artifact, result)
+                row.top_issue = (lab["reasons"][0]["text"][:80] if lab["reasons"] else None)
+                row.facts = _facts(artifact, result, lab)
                 row.state = "checked"
                 row.error = None
                 row.checked_at = now
