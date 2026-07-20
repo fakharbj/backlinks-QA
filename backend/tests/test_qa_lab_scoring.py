@@ -99,6 +99,15 @@ def test_browser_blocked_stays_review():
     assert v["status"] == "NEEDS_MANUAL_REVIEW" and v["score"] is None
 
 
+def test_login_wall_redirect_is_fail():
+    # The page redirected to a sign-in wall → not publicly accessible → FAIL 0.
+    art = _art(http_status=200, fetch_error=FetchError.NONE, rendered=True,
+               browser_http_status=200, final_url="https://medium.com/m/signin")
+    v = lab_verdict(art, _result(link_found=False))
+    assert v["status"] == "FAIL" and v["score"] == 0
+    assert "login" in v["summary"].lower() or "sign" in v["summary"].lower()
+
+
 def test_nofollow_alone_is_penalised_not_zero():
     art = _art(http_status=200, is_html=True, fetch_error=FetchError.NONE)
     v = lab_verdict(art, _result(IssueLabel.LINK_NOFOLLOW, link_found=True, followable=False))

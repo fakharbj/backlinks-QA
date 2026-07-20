@@ -85,6 +85,17 @@ def lab_verdict(art: CrawlArtifact, result: QAResult) -> dict:
                         "text": f"Source page returns HTTP {art.http_status} — the page is gone, so the backlink is lost."})
         return out(OverallStatus.FAIL, 0, "Page not found — the backlink is lost.")
 
+    # 1b) The page redirected to a LOGIN / sign-in wall → it isn't publicly
+    #     accessible, so search engines can't see the link either. Clear FAIL 0.
+    final = (art.final_url or "").lower()
+    if not result.link_found and any(
+        seg in final for seg in ("/signin", "/sign-in", "/login", "/m/signin", "/auth/login", "accounts/login")
+    ):
+        reasons.append({"severity": "critical",
+                        "text": f"The page redirects to a login/sign-in wall ({art.final_url}) — it isn't publicly "
+                                "accessible, so search engines can't see or credit the link."})
+        return out(OverallStatus.FAIL, 0, "Redirects to a login page — not publicly accessible.")
+
     # 2) Couldn't read the page (block / captcha / JS-only). No evidence → no
     #    score. NEVER "link missing", never a number.
     if not _readable(art, result) or (not result.link_found and art.js_render_suspected):

@@ -32,6 +32,7 @@ from app.crawler.types import (
     CrawlRequest,
     FetchError,
     ParsedLink,
+    RedirectHop,
     RobotsResult,
 )
 
@@ -585,6 +586,17 @@ class CrawlEngine:
         artifact.rendered = True
         artifact.browser_http_status = getattr(result, "status", None)
         artifact.rendered_html = result.html
+        # The browser follows JS/meta redirects the HTTP client can't (qr.ae
+        # shortlinks, client-side "location=" hops, login-wall bounces). Its
+        # landing URL is the honest final URL — record it + the hop so the
+        # result shows where we actually ended up, not the source URL echoed.
+        rf = getattr(result, "final_url", None)
+        if rf and rf.rstrip("/") != (artifact.final_url or request.source_url).rstrip("/"):
+            artifact.redirect_chain.append(
+                RedirectHop(url=artifact.final_url or request.source_url,
+                            status=artifact.browser_http_status or 0, location=rf)
+            )
+            artifact.final_url = rf
         rendered_page = parse_html(
             result.html,
             final_url=result.final_url or outcome.final_url or request.source_url,
