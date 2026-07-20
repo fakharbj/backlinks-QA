@@ -447,28 +447,38 @@ class CrawlEngine:
         #       (403/challenge) or never ran, and all we have is a JS shell / a
         #       proxy fetch of a JS-driven page. THEN it's "couldn't confirm" →
         #       NEEDS_MANUAL_REVIEW, never a confident FAIL.
+        # We can only call a link "not found" when we CONFIDENTLY read the real
+        # page. That means one of:
+        #   - a successful browser render (2xx DOM — the JS content loaded), or
+        #   - a 2xx HTML page that is NOT a JS shell (server-rendered content we
+        #     actually received, direct or via proxy).
+        # A JS-driven platform where the browser was blocked (Medium 403,
+        # Quora/Reddit intermittently) and all we hold is a bot "shell" is NOT a
+        # confident read — its real article body is client-rendered / withheld
+        # from bots, so an absent link there is "couldn't confirm", never a
+        # confident LINK_MISSING (that was the false-FAIL on links that DO exist
+        # at the bottom of the article).
+        # Confident read = a successful browser render (2xx DOM), OR a DIRECT
+        # (non-proxy) 2xx HTML fetch. Reaching the page only via the proxy means
+        # our direct fetch was BLOCKED — the site is bot-hostile and its "200"
+        # is often a nav shell withholding the article body (Medium/Quora/Reddit
+        # serve real content only to logged-in browsers). There, an absent link
+        # is "couldn't confirm", never a confident LINK_MISSING — the link may
+        # sit in the article body we were never served (exactly the case where a
+        # link at the END of a Medium post was falsely reported missing).
         rendered_ok = artifact.rendered and 200 <= (artifact.browser_http_status or 0) < 300
-        # A 2xx page that carries REAL content (many real links or substantial
-        # text) HAS been read — even if it also ships a JS framework (Quora,
-        # Reddit and many sites server-render for SEO then hydrate with React).
-        # Reaching it via the proxy doesn't make it unreadable. Only a true
-        # shell (thin/empty) or a non-2xx/blocked response we couldn't render
-        # is "couldn't confirm".
         two_xx = (
             artifact.http_status is not None
             and 200 <= artifact.http_status < 300
             and artifact.is_html
         )
-        real_content = two_xx and (
-            len(artifact.all_links or []) >= 8
-            or (getattr(artifact.signals, "word_count", 0) or 0) >= 40
+        confident_read = rendered_ok or (
+            two_xx and artifact.egress == "direct" and not self._looks_js_driven(outcome.body)
         )
         if (
             not artifact.matched_links
             and artifact.fetch_error is FetchError.NONE
-            and not rendered_ok
-            and not real_content
-            and (self._looks_js_driven(outcome.body) or artifact.egress == "proxy")
+            and not confident_read
         ):
             artifact.js_render_suspected = True
 
