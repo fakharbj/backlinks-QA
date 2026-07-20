@@ -5541,7 +5541,7 @@ function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; 
   if (r.excused) return { key: "excused", label: r.excuse_reason || "Excused", cls: "border-line bg-field text-muted" };
   if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-success bg-success text-white" };
   if (r.day > today) return { key: "upcoming", label: "Upcoming", cls: "border-line bg-panel text-ink" };
-  if (r.day === today) return { key: "today", label: "In progress", cls: "border-ember/40 bg-ember/10 text-ember" };
+  if (r.day === today) return { key: "today", label: "In progress", cls: "border-ocean/40 bg-ocean/10 text-ocean" };
   return { key: "missed", label: "Behind", cls: "border-danger/40 bg-danger/10 text-danger" };
 }
 
@@ -21057,7 +21057,11 @@ function SheetsDesk({
         return (
           <section className={clsx(
             "rounded-xl border p-4 shadow-card",
-            running ? "border-ocean/40 bg-ocean/5" : "border-line bg-panel"
+            running ? "border-ocean/40 bg-ocean/5"
+              : b.status === "completed" ? "border-success/40 bg-success/5"
+                : b.status === "failed" ? "border-danger/40 bg-danger/5"
+                  : b.status === "partial" ? "border-ember/40 bg-ember/5"
+                    : "border-line bg-panel"
           )}>
             <div className="flex flex-wrap items-center gap-3">
               {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-success" />}
