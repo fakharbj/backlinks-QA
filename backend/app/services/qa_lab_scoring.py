@@ -100,15 +100,25 @@ def lab_verdict(art: CrawlArtifact, result: QAResult) -> dict:
         return out(OverallStatus.NEEDS_MANUAL_REVIEW, None, "Couldn't check automatically — verify by hand.")
 
     # ── From here the page WAS read. ────────────────────────────────────────
-    # 3) Link absent on a readable 200 → confident FAIL, 0.
+    # 3) Link absent on a readable page → confident FAIL, 0. Say plainly HOW we
+    #    read it, so "not found" is trustworthy (esp. after a full JS render).
     if not result.link_found:
+        rendered_full = art.rendered and 200 <= (art.browser_http_status or art.http_status or 0) < 300
+        how = (
+            "We fully loaded the page in a real browser (including its JavaScript)"
+            if rendered_full else "The page loaded (HTTP 200)"
+        )
+        final = art.final_url or art.request.source_url
+        redirected = final and final.rstrip("/") != art.request.source_url.rstrip("/")
         if IssueLabel.WRONG_TARGET in labels:
             reasons.append({"severity": "critical",
-                            "text": "A link to the target's domain exists, but it points to a different URL, not the agreed target."})
+                            "text": f"{how}. A link to the target's domain exists, but it points to a different URL, not the agreed target."})
             return out(OverallStatus.FAIL, 0, "Wrong target URL — the agreed link is not on the page.")
         reasons.append({"severity": "critical",
-                        "text": "The page loaded (HTTP 200) but the backlink to the target is not on it."})
-        return out(OverallStatus.FAIL, 0, "Link is missing from the page.")
+                        "text": f"{how}"
+                                + (f" (it redirected to {final})" if redirected else "")
+                                + ", but the backlink to the target is not on it."})
+        return out(OverallStatus.FAIL, 0, "Link not found on the page.")
 
     # 4) Link is present. Score by SEO value.
     nofollow = bool(labels & _NOFOLLOW) or result.is_followable is False

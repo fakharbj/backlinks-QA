@@ -81,6 +81,24 @@ def test_canonical_and_placement_are_ignored():
     assert v["status"] == "PASS" and v["score"] == 100
 
 
+def test_fully_rendered_but_absent_is_not_found_not_review():
+    # We DID render the real page (browser 200) and the link isn't there →
+    # genuine "not found" FAIL 0, NOT "couldn't check". (qr.ae → Quora case.)
+    art = _art(http_status=200, fetch_error=FetchError.NONE, rendered=True,
+               browser_http_status=200, js_render_suspected=False)
+    v = lab_verdict(art, _result(IssueLabel.LINK_MISSING, link_found=False))
+    assert v["status"] == "FAIL" and v["score"] == 0
+
+
+def test_browser_blocked_stays_review():
+    # The browser itself was blocked (403) — we could NOT read the real content
+    # → review, not scored. (Medium/Reddit case.)
+    art = _art(http_status=403, fetch_error=FetchError.NONE, rendered=True,
+               browser_http_status=403, js_render_suspected=True)
+    v = lab_verdict(art, _result(IssueLabel.SOURCE_403, link_found=False, http=403))
+    assert v["status"] == "NEEDS_MANUAL_REVIEW" and v["score"] is None
+
+
 def test_nofollow_alone_is_penalised_not_zero():
     art = _art(http_status=200, is_html=True, fetch_error=FetchError.NONE)
     v = lab_verdict(art, _result(IssueLabel.LINK_NOFOLLOW, link_found=True, followable=False))

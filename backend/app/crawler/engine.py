@@ -438,16 +438,20 @@ class CrawlEngine:
                 artifact.relaxed_reason = reason
 
         # ── "Couldn't confirm" signal ───────────────────────────────────────
-        # The link is STILL absent after raw + proxy + render. If the page's
-        # real content is JavaScript-built (framework markers / very low text
-        # ratio) OR we only reached it through the unblocker proxy, we could
-        # not fully read its dynamic content — so a "link missing" verdict here
-        # would be a false negative. Flag it so QA routes to NEEDS_MANUAL_REVIEW
-        # ("JavaScript page — verify manually"), never a confident FAIL.
+        # The link is STILL absent. Distinguish two very different cases:
+        #   (a) we FULLY rendered the real page (headless browser returned a 2xx
+        #       DOM) — the JavaScript content HAS been read, so an absent link is
+        #       a genuine "not found", not uncertainty. Do NOT flag it.
+        #   (b) we could NOT read the real content — the browser was blocked
+        #       (403/challenge) or never ran, and all we have is a JS shell / a
+        #       proxy fetch of a JS-driven page. THEN it's "couldn't confirm" →
+        #       NEEDS_MANUAL_REVIEW, never a confident FAIL.
+        rendered_ok = artifact.rendered and 200 <= (artifact.browser_http_status or 0) < 300
         if (
             not artifact.matched_links
             and artifact.is_html
             and artifact.fetch_error is FetchError.NONE
+            and not rendered_ok
             and (self._looks_js_driven(outcome.body) or artifact.egress == "proxy")
         ):
             artifact.js_render_suspected = True
