@@ -387,7 +387,12 @@ async def list_batches(db: AsyncSession, ctx: AuthContext) -> list[dict]:
             .limit(200)
         )
     ).scalars().all()
-    # Per-batch counters in one grouped query.
+    # Per-batch counters in one grouped query. NOTE: totals separate real
+    # backlinks from competitor references, and count links STILL IN FLIGHT
+    # (pending/checking, non-competitor) — the list card's spinner keys off
+    # ``in_flight``, never "checked < total" (competitors + failed rows made
+    # that comparison never reach zero, so the loader spun forever).
+    is_bl = QATestLink.is_competitor.is_(False)
     counts = (
         await db.execute(
             select(
@@ -397,6 +402,10 @@ async def list_batches(db: AsyncSession, ctx: AuthContext) -> list[dict]:
                 func.count().filter(QATestLink.status == "PASS"),
                 func.count().filter(QATestLink.status == "FAIL"),
                 func.avg(QATestLink.score).filter(QATestLink.score.is_not(None)),
+                func.count().filter(is_bl),  # backlinks (QA'd rows)
+                func.count().filter(is_bl, QATestLink.state.in_(("pending", "checking"))),
+                func.count().filter(QATestLink.is_competitor.is_(True)),
+                func.count().filter(QATestLink.status == "NEEDS_MANUAL_REVIEW"),
             )
             .where(QATestLink.workspace_id == ctx.workspace_id)
             .group_by(QATestLink.batch_id)
@@ -406,6 +415,7 @@ async def list_batches(db: AsyncSession, ctx: AuthContext) -> list[dict]:
     out = []
     for b in rows:
         c = by_batch.get(b.id)
+        in_flight = int(c[7]) if c else 0
         out.append({
             "id": str(b.id), "candidate_name": b.candidate_name,
             "candidate_email": b.candidate_email, "role_applied": b.role_applied,
@@ -416,6 +426,13 @@ async def list_batches(db: AsyncSession, ctx: AuthContext) -> list[dict]:
             "passed": int(c[3]) if c else 0,
             "failed": int(c[4]) if c else 0,
             "avg_score": round(float(c[5]), 1) if c and c[5] is not None else None,
+            "backlinks": int(c[6]) if c else 0,
+            "in_flight": in_flight,
+            "competitors": int(c[8]) if c else 0,
+            "review": int(c[9]) if c else 0,
+            # Authoritative completion: work remains only if a backlink is still
+            # pending/checking. Draft batches (never run) are not "running".
+            "running": b.status == "running" and in_flight > 0,
         })
     return out
 

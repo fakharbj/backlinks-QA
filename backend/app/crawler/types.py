@@ -185,6 +185,11 @@ class CrawlRequest:
     respect_robots: bool = True
     use_googlebot_ua: bool = False
     allow_render: bool = True
+    # Accuracy-max mode (Temp QA lab): when the link is absent after the raw/
+    # proxy fetch, ALWAYS attempt a browser render (bypass the JS-heuristic and
+    # status gates) and allow the proxy to run even through a captcha. These
+    # are one-off manual verifications where correctness beats speed.
+    force_render_on_missing: bool = False
     # Link-match scope: "url" = only the exact target URL counts; "domain" = any
     # link to the target's registrable domain counts; "auto" (default) = domain
     # scope when the agreed target is a bare domain root (project main domain),
@@ -263,6 +268,12 @@ class CrawlArtifact:
     # Set when a render WOULD help (link absent + JS-likely) but no browser was
     # attached — signals the HTTP pool to enqueue a render-pool task (Arch §6).
     render_recommended: bool = False
+    # Set by the engine when the link was NOT found but the page's real content
+    # is JavaScript-built (framework markers / very low text ratio) or only
+    # reachable through the unblocker proxy — i.e. we could not fully read the
+    # dynamic content. The QA layer treats this as "couldn't confirm"
+    # (NEEDS_MANUAL_REVIEW), never a confident LINK_MISSING / FAIL.
+    js_render_suspected: bool = False
 
     # ── Object-storage pointers (filled by the worker, not the engine) ───────
     raw_html_key: str | None = None

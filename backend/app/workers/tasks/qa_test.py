@@ -67,6 +67,9 @@ def _build_request(link: QATestLink) -> CrawlRequest:
         # actual link check.
         respect_robots=False,
         allow_render=True,
+        # Accuracy-max: when the link is missing, always browser-render and let
+        # the proxy clear captchas (Medium/Substack inject body links via JS).
+        force_render_on_missing=True,
         **relaxed_kwargs,
     )
 

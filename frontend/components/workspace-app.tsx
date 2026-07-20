@@ -17225,6 +17225,7 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
     id: string; candidate_name: string; candidate_email: string | null; role_applied: string | null;
     notes: string | null; status: string; created_at: string | null;
     total: number; checked: number; passed: number; failed: number; avg_score: number | null;
+    backlinks?: number; in_flight?: number; competitors?: number; review?: number; running?: boolean;
   };
   type TestLink = {
     id: string; source_url: string; target_url: string | null; anchor_text: string | null;
@@ -17241,7 +17242,10 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
     queryKey: ["qa-tests", token],
     enabled: Boolean(token) && !openId,
     retry: false,
-    refetchInterval: 15000,
+    // Poll fast only while a test is actually running; otherwise idle-poll.
+    refetchInterval: (q) =>
+      ((q.state.data as { tests: TestRow[] } | undefined)?.tests || []).some((t) => t.running)
+        ? 3000 : 20000,
     queryFn: () => api<{ tests: TestRow[] }>("/qa-tests", { token })
   });
   const detail = useQuery({
@@ -17702,7 +17706,12 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {tests.map((t) => {
-          const running = t.status === "running" || t.checked < t.total;
+          // Authoritative: the server flags running only while a backlink is
+          // still pending/checking. Drafts (never run) show "Not run yet".
+          const running = t.running ?? (t.status === "running");
+          const isDraft = t.status === "draft" && !running;
+          const backlinks = t.backlinks ?? t.total;
+          const checkedOf = Math.min(t.checked + t.failed + (t.review ?? 0), backlinks);
           return (
             <button key={t.id} onClick={() => setOpenId(t.id)}
               className="card-lift rounded-xl border border-line bg-panel p-4 text-left shadow-card">
@@ -17714,18 +17723,26 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                   <div className="truncate font-semibold text-ink">{t.candidate_name}</div>
                   <div className="truncate text-[11px] text-muted">{t.role_applied || t.candidate_email || "Candidate test"}</div>
                 </div>
-                {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-ocean" />}
+                {running ? (
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-ocean" title={`Checking — ${checkedOf}/${backlinks} done`}>
+                    <Loader2 className="h-4 w-4 animate-spin" /> {checkedOf}/{backlinks}
+                  </span>
+                ) : isDraft ? (
+                  <span className="rounded-full border border-line bg-field px-2 py-0.5 text-[10px] font-semibold text-muted">Not run</span>
+                ) : (
+                  <CheckCircle2 className="h-4 w-4 text-success" aria-label="QA complete" />
+                )}
               </div>
               <div className="mt-3 grid grid-cols-4 gap-1 text-center">
-                {([["Links", t.total], ["Done", t.checked], ["Pass", t.passed], ["Fail", t.failed]] as Array<[string, number]>).map(([lab, val]) => (
+                {([["Links", backlinks], ["Pass", t.passed], ["Review", t.review ?? 0], ["Fail", t.failed]] as Array<[string, number]>).map(([lab, val]) => (
                   <div key={lab}>
-                    <div className="text-lg font-bold text-ink">{val}</div>
+                    <div className={clsx("text-lg font-bold", lab === "Pass" ? "text-success" : lab === "Fail" ? "text-danger" : lab === "Review" ? "text-ember" : "text-ink")}>{val}</div>
                     <div className="text-[10px] uppercase tracking-wide text-muted">{lab}</div>
                   </div>
                 ))}
               </div>
               <div className="mt-2 flex items-center justify-between text-[11px] text-muted">
-                <span>{t.avg_score != null ? `Avg score ${t.avg_score}` : "—"}</span>
+                <span>{t.avg_score != null ? `Avg score ${t.avg_score}` : "—"}{t.competitors ? ` · ${t.competitors} competitor${t.competitors === 1 ? "" : "s"}` : ""}</span>
                 <span>{t.created_at ? fmtChartLabel(t.created_at.slice(0, 10), true) : ""}</span>
               </div>
             </button>

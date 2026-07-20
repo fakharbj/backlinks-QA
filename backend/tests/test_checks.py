@@ -143,6 +143,48 @@ def test_robots_blocked_but_page_read_gives_real_verdict():
     assert "ROBOTS_BLOCKED" in labels(result)  # still visible as a note
 
 
+def test_js_injected_link_missing_is_review_not_fail():
+    # Medium/Substack inject article-body links via JS: the page HAS nav/footer
+    # links but the target link is absent. When the engine flagged the page as
+    # JS-driven / proxy-reached, this is "couldn't confirm" (REVIEW), never a
+    # confident LINK_MISSING / FAIL.
+    from app.crawler.types import ParsedLink
+
+    req = CrawlRequest(source_url="https://medium.com/@x/post", target_url="https://acme.test/seo")
+    art = CrawlArtifact(request=req, http_status=200, final_url="https://medium.com/@x/post",
+                        content_type="text/html")
+    art.robots.source_allowed = True
+    # Nav/footer links present, but NOT the target link.
+    art.all_links = [
+        ParsedLink(href="https://medium.com/about", resolved_url="https://medium.com/about",
+                   normalized_url="https://medium.com/about", anchor_text="About"),
+    ]
+    art.js_render_suspected = True
+    result = evaluate(art)
+    assert result.status is OverallStatus.NEEDS_MANUAL_REVIEW
+    assert "JS_RENDER_REQUIRED" in labels(result)
+    assert "LINK_MISSING" not in labels(result)
+
+
+def test_plain_page_missing_link_still_fails():
+    # A normal HTML page (not JS-flagged) that genuinely lacks the link is a
+    # real LINK_MISSING / FAIL — the review path must not swallow true misses.
+    from app.crawler.types import ParsedLink
+
+    req = CrawlRequest(source_url="https://blog.test/p", target_url="https://acme.test/seo")
+    art = CrawlArtifact(request=req, http_status=200, final_url="https://blog.test/p",
+                        content_type="text/html")
+    art.robots.source_allowed = True
+    art.all_links = [
+        ParsedLink(href="https://other.test/x", resolved_url="https://other.test/x",
+                   normalized_url="https://other.test/x", anchor_text="Other"),
+    ]
+    # js_render_suspected stays False (default) → genuine miss.
+    result = evaluate(art)
+    assert result.status is OverallStatus.FAIL
+    assert "LINK_MISSING" in labels(result)
+
+
 def test_soft_404_is_fail():
     art, _ = clean()
     art.detection.soft_404 = True

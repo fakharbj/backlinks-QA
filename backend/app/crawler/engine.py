@@ -344,8 +344,10 @@ class CrawlEngine:
             and self.config.proxy_render_on_js_missing
             and self._proxy_client is not None
             and artifact.egress != "proxy"
-            and not artifact.detection.captcha
-            and (self._looks_js_driven(outcome.body) or not page.links)
+            # Accuracy-max lab mode bypasses the captcha guard: the unblocker
+            # proxy is built to clear challenges, so let it try.
+            and (request.force_render_on_missing or not artifact.detection.captcha)
+            and (self._looks_js_driven(outcome.body) or not page.links or request.force_render_on_missing)
         ):
             proxied = await _fetch_via(self._proxy_client, via_proxy=True)
             if proxied.error is FetchError.NONE and proxied.status and proxied.status < 400:
@@ -391,17 +393,22 @@ class CrawlEngine:
             and self.config.render_enabled
             and (
                 blocked_status
+                or request.force_render_on_missing
                 or (
                     not artifact.detection.captcha
                     and not artifact.detection.cloudflare_challenge
                 )
             )
             # An HTML page that parses to ZERO links is an app shell (Notion,
-            # SPAs) — real pages always carry some links. Render it.
+            # SPAs) — real pages always carry some links. Render it. In lab
+            # accuracy-max mode, render whenever the link is still missing
+            # (Medium/Substack inject article-body links client-side, so the
+            # server/proxy HTML carries only nav/footer links).
             and (
                 self._looks_js_driven(outcome.body)
                 or not page.links
                 or blocked_status
+                or request.force_render_on_missing
             )
         )
         if should_render and self._browser is not None:
@@ -429,6 +436,21 @@ class CrawlEngine:
                 link, reason = hit
                 artifact.matched_links = [link]
                 artifact.relaxed_reason = reason
+
+        # ── "Couldn't confirm" signal ───────────────────────────────────────
+        # The link is STILL absent after raw + proxy + render. If the page's
+        # real content is JavaScript-built (framework markers / very low text
+        # ratio) OR we only reached it through the unblocker proxy, we could
+        # not fully read its dynamic content — so a "link missing" verdict here
+        # would be a false negative. Flag it so QA routes to NEEDS_MANUAL_REVIEW
+        # ("JavaScript page — verify manually"), never a confident FAIL.
+        if (
+            not artifact.matched_links
+            and artifact.is_html
+            and artifact.fetch_error is FetchError.NONE
+            and (self._looks_js_driven(outcome.body) or artifact.egress == "proxy")
+        ):
+            artifact.js_render_suspected = True
 
         return artifact
 

@@ -60,6 +60,20 @@ def link_presence(ctx: CheckContext) -> Iterable[Issue]:
                     evidence={"outbound_links": 0, "rendered": art.rendered})
         return
 
+    # The page HAS links (nav/footer) but its real content is JavaScript-built
+    # or only reachable via the unblocker proxy — e.g. Medium/Substack inject
+    # article-body outbound links client-side. We couldn't fully read that
+    # content, so this is "couldn't confirm", NEVER a confident LINK_MISSING.
+    if getattr(art, "js_render_suspected", False):
+        yield issue(code="LNK-09", label=IssueLabel.JS_RENDER_REQUIRED, category=CAT,
+                    severity=Severity.INFO,
+                    message=("This page loads its main content with JavaScript, so our checker "
+                             "may not see links added inside the article body. Open the page and "
+                             "confirm the link manually — it could not be verified automatically."),
+                    evidence={"outbound_links": len(art.all_links), "rendered": art.rendered,
+                              "egress": getattr(art, "egress", None)})
+        return
+
     # No exact match → wrong-target (same domain) or genuinely missing.
     exp_dom = _expected_domain(ctx)
     same_domain_link = next(
