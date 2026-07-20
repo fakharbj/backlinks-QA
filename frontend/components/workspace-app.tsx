@@ -5539,10 +5539,29 @@ type MyCalRow = {
 
 function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; cls: string } {
   if (r.excused) return { key: "excused", label: r.excuse_reason || "Excused", cls: "border-line bg-field text-muted" };
+  if ((r.expected_links ?? 0) === 0) return { key: "none", label: "No target", cls: "border-line bg-field text-muted" };
   if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-success bg-success text-white" };
   if (r.day > today) return { key: "upcoming", label: "Upcoming", cls: "border-line bg-panel text-ink" };
   if (r.day === today) return { key: "today", label: "In progress", cls: "border-ocean/40 bg-ocean/10 text-ocean" };
   return { key: "missed", label: "Behind", cls: "border-danger/40 bg-danger/10 text-danger" };
+}
+
+// Date-aware colour for a planner/assignment chip. Planned work is coloured by
+// SITUATION, not raw completion — an unstarted FUTURE task is calm, not red:
+//   done → green · no target (0/0) → neutral · upcoming → neutral ·
+//   today → blue (in progress) · past & behind → red (or amber if mostly done).
+function planChipCls(r: { day: string; completion_pct: number | null; excused?: boolean | null; expected_links?: number | null }): string {
+  if (r.excused) return "border-line bg-field text-muted";
+  const target = r.expected_links ?? 0;
+  if (target === 0) return "border-line bg-field text-muted";            // nothing required — don't alarm
+  const pct = r.completion_pct ?? 0;
+  if (pct >= 100) return "border-success bg-success text-white";          // done
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (r.day > today) return "border-line bg-panel text-ink";              // upcoming — calm
+  if (r.day === today) return "border-ocean/40 bg-ocean/10 text-ocean";   // in progress — active
+  return pct >= 60 ? "border-ember/40 bg-ember/15 text-ember"             // past, mostly done
+                   : "border-danger/40 bg-danger/15 text-danger";        // past, behind
 }
 
 function MyTaskCalendar({ token }: { token: string | null }) {
@@ -7750,13 +7769,7 @@ function TasksDesk({
                   }
                   className={clsx(
                     "block cursor-pointer rounded-md border px-1.5 py-1 text-[11px] leading-tight transition hover:ring-1 hover:ring-ocean/40",
-                    r.excused
-                      ? "border-line bg-field text-muted"
-                      : (r.completion_pct ?? 0) >= 100
-                        ? "border-success bg-success text-white"
-                        : (r.completion_pct ?? 0) >= 60
-                          ? "border-ember/40 bg-ember/15 text-ember"
-                          : "border-danger/40 bg-danger/15 text-danger"
+                    planChipCls(r)
                   )}
                 >
                   <span className="flex items-center gap-1">
@@ -7996,13 +8009,7 @@ function TasksDesk({
                                         title={`${r.user_label} — ${r.hours}h · target ${r.expected_links}, done ${r.actual_links}${r.excused ? ` · ${r.excuse_reason}` : `${r.completion_pct != null ? ` · ${r.completion_pct}% done` : ""}`}. Click to edit.`}
                                         className={clsx(
                                           "block cursor-pointer rounded-md border px-1.5 py-1 text-[11px] leading-tight transition hover:ring-1 hover:ring-ocean/40",
-                                          r.excused
-                                            ? "border-line bg-field text-muted"
-                                            : (r.completion_pct ?? 0) >= 100
-                                              ? "border-success bg-success text-white"
-                                              : (r.completion_pct ?? 0) >= 60
-                                                ? "border-ember/40 bg-ember/15 text-ember"
-                                                : "border-danger/40 bg-danger/15 text-danger"
+                                          planChipCls(r)
                                         )}
                                       >
                                         {r.user_label} · {r.hours}h · {r.actual_links}/{r.expected_links}
@@ -9508,13 +9515,7 @@ function UserWeekStrip({
                   title={`${pName(r.project_id)} — ${r.hours}h · ${r.actual_links}/${r.expected_links}${r.excused ? ` · ${r.excuse_reason}` : ""}${r.note ? ` · ${r.note}` : ""}`}
                   className={clsx(
                     "mb-1 rounded border px-1 py-0.5 text-[10px] leading-tight",
-                    r.excused
-                      ? "border-line bg-field text-muted"
-                      : (r.completion_pct ?? 0) >= 100
-                        ? "border-success bg-success text-white"
-                        : (r.completion_pct ?? 0) >= 60
-                          ? "border-ember/40 bg-ember/15 text-ember"
-                          : "border-danger/40 bg-danger/15 text-danger"
+                    planChipCls(r)
                   )}
                 >
                   <span className="block truncate font-semibold">{pName(r.project_id)}</span>
@@ -10440,13 +10441,7 @@ function UserDashboard({
                     title={`${projectName(r.project_id)} — ${r.hours}h · ${r.actual_links}/${r.expected_links}${r.note ? ` · ${r.note}` : ""}. Click to edit.`}
                     className={clsx(
                       "mt-0.5 block w-full truncate rounded border px-1 py-0.5 text-left text-[9px] font-medium leading-tight",
-                      r.excused
-                        ? "border-line bg-field text-muted"
-                        : (r.completion_pct ?? 0) >= 100
-                          ? "border-success bg-success text-white"
-                          : (r.completion_pct ?? 0) >= 60
-                            ? "border-ember/40 bg-ember/15 text-ember"
-                            : "border-danger/40 bg-danger/15 text-danger"
+                      planChipCls(r)
                     )}
                   >
                     {projectName(r.project_id)} · {r.hours}h · {r.actual_links}/{r.expected_links}
