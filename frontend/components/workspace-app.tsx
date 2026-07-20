@@ -2311,7 +2311,7 @@ function Overview({
                 <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Links</span>
               </span>
               <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
-                <span className="block text-lg font-bold leading-tight text-ocean">{stats?.totals.pass_count ?? 0}</span>
+                <span className="block text-lg font-bold leading-tight text-success">{stats?.totals.pass_count ?? 0}</span>
                 <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Pass</span>
               </span>
               <span className="rounded-xl border border-line bg-panel/80 px-3 py-2 text-center shadow-card">
@@ -2364,7 +2364,7 @@ function Overview({
         <Metric label="Total" value={stats?.totals.total ?? 0} icon={Link2} tone="ink"
           help="All backlinks being monitored in this view. Click to open the full list."
           onClick={() => onOpenBacklinks({})} />
-        <Metric label="Qualified" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="ocean"
+        <Metric label="Qualified" value={stats?.totals.pass_count ?? 0} icon={CheckCircle2} tone="success"
           help="Links that are live and passed every check — nothing to do. Click to see them."
           onClick={() => onOpenBacklinks({ status: "PASS" })} />
         <Metric label="Needs review" value={stats?.totals.review_count ?? 0} icon={ShieldAlert} tone="plum"
@@ -2389,9 +2389,9 @@ function Overview({
           </div>
           <StackedBar
             segments={[
-              { name: "Qualified", cssVar: "--ocean", value: stats.totals.pass_count ?? 0 },
+              { name: "Qualified", cssVar: "--success", value: stats.totals.pass_count ?? 0 },
               { name: "Needs improvement", cssVar: "--ember", value: stats.totals.warning_count ?? 0 },
-              { name: "Needs review", cssVar: "--plum", value: stats.totals.review_count ?? 0 },
+              { name: "Needs review", cssVar: "--ember", value: stats.totals.review_count ?? 0 },
               { name: "Not qualified", cssVar: "--danger", value: stats.totals.fail_count ?? 0 },
               // Each bucket uses its OWN count — never a remainder (that wrongly
               // folded UNKNOWN links into "QA pending"). Zero buckets are hidden.
@@ -2414,7 +2414,7 @@ function Overview({
           Each drills into the Backlinks list via the matching filter. */}
       {stats?.kpi && Object.keys(stats.kpi).length ? (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-12">
-          <StatBox label="200 OK" value={Number(stats.kpi.http_200 || 0)} tone="ocean"
+          <StatBox label="200 OK" value={Number(stats.kpi.http_200 || 0)} tone="success"
             help="Source pages returning HTTP 200. Click to see them."
             onClick={() => onOpenBacklinks({ http_status: "200" })} />
           <StatBox label="301" value={Number(stats.kpi.http_301 || 0)} tone="ember"
@@ -2429,13 +2429,13 @@ function Overview({
           <StatBox label="Broken" value={Number(stats.kpi.broken || 0)} tone="danger"
             help="Any 4xx/5xx source page. Click to see them."
             onClick={() => onOpenBacklinks({ broken: "1" })} />
-          <StatBox label="Indexed" value={Number(stats.kpi.indexed || 0)} tone="ocean"
+          <StatBox label="Indexed" value={Number(stats.kpi.indexed || 0)} tone="success"
             help="Pages Google shows in its index. Click to see them."
             onClick={() => onOpenBacklinks({ index_status: "indexed" })} />
           <StatBox label="Not indexed" value={Number(stats.kpi.not_indexed || 0)} tone="danger"
             help="Pages Google does not show. Click to see them."
             onClick={() => onOpenBacklinks({ index_status: "not_indexed" })} />
-          <StatBox label="Qualified" value={Number(stats.kpi.qualified || 0)} tone="ocean"
+          <StatBox label="Qualified" value={Number(stats.kpi.qualified || 0)} tone="success"
             help="Links that passed every check. Click to see them."
             onClick={() => onOpenBacklinks({ status: "PASS" })} />
           <StatBox label="Not qualified" value={Number(stats.kpi.non_qualified || 0)} tone="danger"
@@ -2553,7 +2553,7 @@ function Overview({
                 tickFmt={(w) => bucketTick(w, trendGran)}
                 onPointClick={openBucket}
                 series={[
-                  { name: "Qualified", cssVar: "--ocean", values: weekly.map((w) => w.qualified ?? 0) },
+                  { name: "Qualified", cssVar: "--success", values: weekly.map((w) => w.qualified ?? 0) },
                   { name: "Not qualified", cssVar: "--danger", values: weekly.map((w) => w.not_qualified ?? 0) },
                   { name: "Needs improvement", cssVar: "--ember", values: weekly.map((w) => w.needs_improvement ?? 0) }
                 ]}
@@ -2569,7 +2569,7 @@ function Overview({
                 tickFmt={(w) => bucketTick(w, trendGran)}
                 onPointClick={openBucket}
                 series={[
-                  { name: "Indexed", cssVar: "--plum", values: weekly.map((w) => w.indexed ?? 0) }
+                  { name: "Indexed", cssVar: "--success", values: weekly.map((w) => w.indexed ?? 0) }
                 ]}
               />
             </div>
@@ -2645,7 +2645,7 @@ function Overview({
                       >
                         <Td><span className="font-medium text-ocean hover:underline">{linkTypeLabel(r.link_type)}</span></Td>
                         <Td>{r.total}</Td>
-                        <Td><span className="text-ocean">{r.pass_count}</span></Td>
+                        <Td><span className="text-success">{r.pass_count}</span></Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
                         <Td>{r.avg_score ?? "-"}</Td>
                       </tr>
@@ -2743,7 +2743,7 @@ function Overview({
                       >
                         <Td><span className="break-all text-ocean hover:underline">{r.source_domain}</span></Td>
                         <Td>{r.total}</Td>
-                        <Td><span className="text-ocean">{r.pass_count}</span></Td>
+                        <Td><span className="text-success">{r.pass_count}</span></Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
                         <Td>{r.indexed_pct != null ? `${r.indexed_pct}%` : "-"}</Td>
                       </tr>
@@ -3930,7 +3930,7 @@ function BacklinkDetailDrawer({
                       title={`Automated requests get HTTP ${data.http_status} (bot protection), but the page opens normally in a real browser${data.latest_result?.browser_http_status ? ` (browser saw HTTP ${data.latest_result.browser_http_status})` : ""} — we verified the link in a rendered browser session.`}
                     >
                       <span className="text-muted line-through">{data.http_status}</span>{" "}
-                      <span className="text-ocean">✓ browser OK</span>
+                      <span className="text-success">✓ browser OK</span>
                     </span>
                   ) : (
                     <span className="font-semibold">{data.http_status ?? "-"}</span>
@@ -4397,13 +4397,13 @@ function QaEvidencePanel({ data }: { data: BacklinkDetail }) {
   // One-line conclusion chip — the classification in human words.
   const conclusion =
     browserOk && (rawStatus ?? 0) >= 400
-      ? { label: "Verified in a real browser", cls: "bg-ocean/10 text-ocean border-ocean/40",
+      ? { label: "Verified in a real browser", cls: "bg-success/10 text-success border-success/40",
           text: "The site refuses automated requests, but the page loads fine in a real browser — the link is genuinely live." }
       : browserBlocked
       ? { label: "Blocked for automated tools", cls: "bg-plum/10 text-plum border-plum/40",
           text: "Both our automated request AND a real browser from our servers were refused — the site blocks our network (IP-level bot protection). The page most likely opens fine for real visitors; confirm once in your own browser." }
       : eff === "PASS"
-      ? { label: "Confirmed working", cls: "bg-ocean/10 text-ocean border-ocean/40",
+      ? { label: "Confirmed working", cls: "bg-success/10 text-success border-success/40",
           text: "The page loaded, the link is present, and no serious problems were found." }
       : eff === "FAIL"
       ? { label: "Confirmed problem", cls: "bg-danger/10 text-danger border-danger/40",
@@ -4584,7 +4584,7 @@ function QaAttemptsBlock({ token, backlinkId }: { token: string | null; backlink
             <span className="w-32 shrink-0 text-muted">{formatDate(a.at)}</span>
             <span className={clsx(
               "rounded px-1.5 py-0.5 font-semibold",
-              a.status === "success" ? "bg-ocean/10 text-ocean" : "bg-danger/10 text-danger"
+              a.status === "success" ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
             )}>
               {a.status === "success" ? (STATUS_HELP[a.verdict || ""]?.label || a.verdict) : `failed — ${a.failure_kind || "error"}`}
             </span>
@@ -4988,7 +4988,7 @@ function ApiUsageDesk({ token }: { token: string | null }) {
       ? { label: "Erroring", cls: "bg-ember/10 text-ember border-ember/30" }
       : s === "idle"
       ? { label: "Idle today", cls: "bg-field text-muted border-line" }
-      : { label: "Healthy", cls: "bg-ocean/10 text-ocean border-ocean/30" };
+      : { label: "Healthy", cls: "bg-success/10 text-success border-success/30" };
   if (snap.isError) {
     return (
       <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
@@ -5199,7 +5199,7 @@ function ApiUsageDesk({ token }: { token: string | null }) {
             <TrendChart
               labels={points.map((p) => p.bucket)}
               series={[
-                { name: "Successful", cssVar: "--ocean", values: points.map((p) => p.ok) },
+                { name: "Successful", cssVar: "--success", values: points.map((p) => p.ok) },
                 { name: "Failed", cssVar: "--danger", values: points.map((p) => p.fail) }
               ]}
             />
@@ -5276,7 +5276,7 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
                 </span>
                 <span className={clsx(
                   "shrink-0 rounded-lg px-2 py-1 text-sm font-bold",
-                  d.opp >= 70 ? "bg-ocean/10 text-ocean" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
+                  d.opp >= 70 ? "bg-success/10 text-success" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
                 )}>
                   {d.opp}
                 </span>
@@ -5287,7 +5287,7 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
                 <SpamTag value={d.spam_score} />
                 <span className={clsx(
                   "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                  (d.robots_band || "unknown") === "allowed" ? "bg-ocean/10 text-ocean" : "bg-field text-muted"
+                  (d.robots_band || "unknown") === "allowed" ? "bg-success/10 text-success" : "bg-field text-muted"
                 )}>
                   robots: {(d.robots_band || "unknown").replaceAll("_", " ")}
                 </span>
@@ -5439,7 +5439,7 @@ function GuidanceDesk({ token, fixed }: { token: string | null; fixed?: "next" |
               <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</div>
                 <div className={clsx("mt-1 text-3xl font-bold",
-                  v == null ? "text-muted" : v >= 80 ? "text-ocean" : v >= 50 ? "text-ember" : "text-danger")}>
+                  v == null ? "text-muted" : v >= 80 ? "text-success" : v >= 50 ? "text-ember" : "text-danger")}>
                   {v ?? "—"}{v != null ? <span className="text-base font-semibold text-muted">/100</span> : null}
                 </div>
                 <p className="mt-1 text-xs leading-snug text-muted">{why}</p>
@@ -6138,9 +6138,9 @@ function MyQaSummary({ token, userLabel }: { token: string | null; userLabel: st
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Links built</div>
           <div className="text-xl font-bold text-ink">{total.toLocaleString()}</div>
         </div>
-        <div className="rounded-lg border border-ocean/30 bg-ocean/5 p-2.5">
+        <div className="rounded-lg border border-success/30 bg-success/5 p-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Qualified</div>
-          <div className="text-xl font-bold text-ocean">{n("pass").toLocaleString()}</div>
+          <div className="text-xl font-bold text-success">{n("pass").toLocaleString()}</div>
           <div className="text-[10px] text-muted">{pct(n("pass"))}% of your links</div>
         </div>
         <div className="rounded-lg border border-ember/30 bg-ember/5 p-2.5">
@@ -6216,7 +6216,7 @@ function MyPerformancePanel({ token, userLabel }: { token: string | null; userLa
                 labelFmt={weekRangeLabel}
                 series={[
                   { name: "Links built", cssVar: "--ocean", values: weekly.map((w) => w.links) },
-                  { name: "Qualified", cssVar: "--plum", values: weekly.map((w) => w.pass) }
+                  { name: "Qualified", cssVar: "--success", values: weekly.map((w) => w.pass) }
                 ]}
               />
             ) : (
@@ -6233,7 +6233,7 @@ function MyPerformancePanel({ token, userLabel }: { token: string | null; userLa
                       <span className="min-w-0 truncate font-medium text-ink">{projectName(p.project_id)}</span>
                       <span className="flex shrink-0 items-center gap-2 text-xs text-muted">
                         <span><span className="font-bold text-ink">{p.links}</span> links</span>
-                        <span className="text-ocean">{p.links ? Math.round((100 * p.indexed) / p.links) : 0}% indexed</span>
+                        <span className="text-success">{p.links ? Math.round((100 * p.indexed) / p.links) : 0}% indexed</span>
                         {p.fail ? <span className="text-danger">{p.fail} failed</span> : null}
                       </span>
                     </div>
@@ -6570,7 +6570,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           <span
             className={clsx(
               "rounded px-2 py-0.5 text-xs font-semibold",
-              r.completion_pct >= 100 ? "bg-ocean/10 text-ocean" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
+              r.completion_pct >= 100 ? "bg-success/10 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
             )}
           >
             {r.completion_pct}% done
@@ -6670,11 +6670,11 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
               : `${myCap.assigned}h assigned · ${myCap.free}h free`
             : capacityQ.isError ? "Capacity unavailable" : "Working hours not set — ask your admin"}
           help="Your personal working hours this week (set per weekday by your admin) vs the hours planned for you." />
-        <Metric label="Links completed this week" value={weekDone} icon={CheckCircle2} tone="ocean"
+        <Metric label="Links completed this week" value={weekDone} icon={CheckCircle2} tone="success"
           sub={`of ${weekTarget} links targeted`}
           help="Links you actually built this week vs the target computed from your assigned hours and rates." />
         <Metric label="Link completion rate" value={weekPct != null ? `${weekPct}%` : "—"} icon={Activity}
-          tone={weekPct != null && weekPct >= 100 ? "ocean" : "ember"}
+          tone={weekPct != null && weekPct >= 100 ? "success" : "ember"}
           sub="Excused days (leave / days off) don't count against you"
           help="Completed links ÷ targeted links for this week. This measures LINKS, not task count." />
       </div>
@@ -7417,7 +7417,7 @@ function TasksDesk({
                           <span
                             className={clsx(
                               "block h-full rounded-full",
-                              pctDone == null ? "bg-line" : pctDone >= 100 ? "bg-ocean" : pctDone >= 60 ? "bg-ember" : "bg-danger"
+                              pctDone == null ? "bg-line" : pctDone >= 100 ? "bg-success" : pctDone >= 60 ? "bg-ember" : "bg-danger"
                             )}
                             style={{ width: `${Math.min(100, pctDone ?? 0)}%` }}
                           />
@@ -8035,7 +8035,7 @@ function TasksDesk({
                       <span
                         className={clsx(
                           "rounded px-2 py-0.5 text-xs font-semibold",
-                          r.completion_pct >= 100 ? "bg-ocean/10 text-ocean"
+                          r.completion_pct >= 100 ? "bg-success/10 text-success"
                             : r.completion_pct >= 60 ? "bg-ember/10 text-ember"
                               : "bg-danger/10 text-danger"
                         )}
@@ -8637,7 +8637,7 @@ function ArcGauge({
   const cy = H - 4;
   const arc = Math.PI * r; // semicircle length
   const frac = v == null ? 0 : v / 100;
-  const tone = v == null ? "var(--muted)" : v >= 70 ? "var(--ocean)" : v >= 40 ? "var(--ember)" : "var(--danger)";
+  const tone = v == null ? "var(--muted)" : v >= 70 ? "var(--success)" : v >= 40 ? "var(--ember)" : "var(--danger)";
   return (
     <div className="flex flex-col items-center">
       <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label={`${label}: ${v ?? "—"} of 100`}>
@@ -9211,7 +9211,7 @@ function CopyButton({ text, title = "Copy" }: { text: string; title?: string }) 
       aria-label={title}
       className="inline-flex shrink-0 items-center text-muted transition hover:text-ink"
     >
-      {done ? <CheckCircle2 className="h-3.5 w-3.5 text-ocean" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
+      {done ? <CheckCircle2 className="h-3.5 w-3.5 text-success" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
     </button>
   );
 }
@@ -9893,7 +9893,7 @@ function UserDashboard({
             <Metric label="Target links" value={num(d.plan.target)} icon={Gauge} tone="ink"
               sub={`from ${num(d.plan.assignments)} assignment${num(d.plan.assignments) === 1 ? "" : "s"}${pv ? ` · prev: ${num(pv.plan.target)}` : ""}`}
               help="What the plans expected for this period (manual targets and personal/global rates all included, as saved at assignment time)." />
-            <Metric label="Done vs plan" value={num(d.plan.done)} icon={CheckCircle2} tone="ocean"
+            <Metric label="Done vs plan" value={num(d.plan.done)} icon={CheckCircle2} tone="success"
               sub={pv ? `prev: ${num(pv.plan.done)}` : "links on planned project-days"}
               help="Links actually created on the planned days, per project." />
             <Metric label="Plan completion" value={d.plan.completion_pct != null ? `${d.plan.completion_pct}%` : "—"} icon={Activity}
@@ -9919,24 +9919,24 @@ function UserDashboard({
             <Metric label="New domains (overall)" value={num(d.links.global_new_domains)} icon={Globe} tone="plum"
               sub={pv ? `prev: ${num(pv.links.global_new_domains)}` : undefined}
               help="First time the domain appears anywhere in the workspace." />
-            <Metric label="Qualified" value={num(d.links.pass)} icon={CheckCircle2} tone="ocean"
+            <Metric label="Qualified" value={num(d.links.pass)} icon={CheckCircle2} tone="success"
               sub={d.links.qualified_rate != null ? `${d.links.qualified_rate}% of created` : "pass QA"}
               onClick={() => open({ status: "PASS" })} help="Links that passed QA with no blocking issue. Click to see them." />
-            <Metric label="Indexed" value={num(d.links.indexed)} icon={Activity} tone="ocean"
+            <Metric label="Indexed" value={num(d.links.indexed)} icon={Activity} tone="success"
               sub={d.links.indexed_rate != null ? `${d.links.indexed_rate}% of checked` : `${pct(num(d.links.indexed), num(d.links.links))} of created`}
               onClick={() => open({ index_status: "indexed" })} help="Links Google shows in its index. Click to see them." />
             <Metric label="Not qualified" value={num(d.links.fail)} icon={XCircle} tone="danger"
               sub={pv ? `prev: ${num(pv.links.fail)}` : undefined}
               onClick={() => open({ status: "FAIL" })} help="Links with a serious problem. Click to see them." />
             <Metric label="Avg score" value={d.links.avg_score != null ? String(d.links.avg_score) : "—"} icon={Gauge}
-              tone={d.links.avg_score == null ? "ink" : d.links.avg_score >= 70 ? "ocean" : d.links.avg_score >= 40 ? "ember" : "danger"}
+              tone={d.links.avg_score == null ? "ink" : d.links.avg_score >= 70 ? "success" : d.links.avg_score >= 40 ? "ember" : "danger"}
               sub={pv && pv.links.avg_score != null ? `prev: ${pv.links.avg_score}` : "0–100 quality score"}
               help="Average QA score across this person's scored links (blank when nothing is scored yet)." />
           </div>
 
           {/* Full quality vocabulary — dense KPI row, matches Analytics */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
-            <StatBox label="Qualified" value={num(d.links.pass)} tone="ocean" onClick={() => open({ status: "PASS" })} help="Passed QA. Click to see them." />
+            <StatBox label="Qualified" value={num(d.links.pass)} tone="success" onClick={() => open({ status: "PASS" })} help="Passed QA. Click to see them." />
             <StatBox label="Warning" value={num(d.links.warning)} tone="ember" onClick={() => open({ status: "WARNING" })} help="Passed with a minor issue. Click to see them." />
             <StatBox label="Needs review" value={num(d.links.review)} tone="ember" onClick={() => open({ status: "NEEDS_MANUAL_REVIEW" })} help="A human needs to look (e.g. JS page / CAPTCHA). Click to see them." />
             <StatBox label="Unknown" value={num(d.links.unknown)} tone="ink" onClick={() => open({ status: "UNKNOWN" })} help="QA could not reach a verdict. Click to see them." />
@@ -10007,7 +10007,7 @@ function UserDashboard({
                   }}
                   series={[
                     { name: "Links created", cssVar: "--ocean", values: d.weekly.map((w) => w.links) },
-                    { name: "Qualified", cssVar: "--plum", values: d.weekly.map((w) => w.pass) },
+                    { name: "Qualified", cssVar: "--success", values: d.weekly.map((w) => w.pass) },
                     { name: "Indexed", cssVar: "--ember", values: d.weekly.map((w) => w.indexed) },
                     { name: "Not qualified", cssVar: "--danger", values: d.weekly.map((w) => w.fail) }
                   ]}
@@ -10136,7 +10136,7 @@ function UserDashboard({
                         <Td>
                           {cpl == null ? "—" : (
                             <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
-                              cpl >= 100 ? "bg-ocean/10 text-ocean" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                              cpl >= 100 ? "bg-success/10 text-success" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                               {cpl}%
                             </span>
                           )}
@@ -10403,7 +10403,7 @@ function UserDashboard({
                         <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-muted" title={r.excuse_reason || ""}>Excused</span>
                       ) : r.completion_pct == null ? "—" : (
                         <span className={clsx("rounded px-1.5 py-0.5 text-[11px] font-semibold",
-                          r.completion_pct >= 100 ? "bg-ocean/10 text-ocean" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          r.completion_pct >= 100 ? "bg-success/10 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                           {r.completion_pct}%
                         </span>
                       )}
@@ -10628,7 +10628,7 @@ function ProjectEffort({
                     <Td>
                       {u.completion_pct == null ? "—" : (
                         <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
-                          u.completion_pct >= 100 ? "bg-ocean/10 text-ocean" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          u.completion_pct >= 100 ? "bg-success/10 text-success" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                           {u.completion_pct}%
                         </span>
                       )}
@@ -10823,7 +10823,7 @@ function UserDashboardsDesk({
                   <span className="text-xs text-muted">{u.links} links · all time</span>
                   {rate != null ? (
                     <span className={clsx("w-fit rounded px-2 py-0.5 text-[11px] font-semibold",
-                      rate >= 80 ? "bg-ocean/10 text-ocean" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                      rate >= 80 ? "bg-success/10 text-success" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                       {rate}% indexed
                     </span>
                   ) : null}
@@ -11149,7 +11149,7 @@ function PerformanceDesk({
                     <Td>{u.global_new_domains}<DeltaPill now={u.global_new_domains} prev={u.previous?.global_new_domains} /></Td>
                     <Td><span className="whitespace-nowrap">{u.indexed} <span className="text-xs text-muted">({pct(u.indexed, u.links)})</span></span></Td>
                     <Td>
-                      <span className="text-ocean">{u.pass}</span> /{" "}
+                      <span className="text-success">{u.pass}</span> /{" "}
                       <span className="text-danger">{u.fail}</span>
                     </Td>
                     <Td><span className="text-plum">{u.duplicates}</span></Td>
@@ -11159,7 +11159,7 @@ function PerformanceDesk({
                     <tr>
                       <td colSpan={8} className="bg-field/40 p-4">
                         <div className="mb-2 flex flex-wrap gap-2 text-xs">
-                          <span className="rounded-full bg-ocean/10 px-2.5 py-1 font-medium text-ocean">Pass {u.pass}</span>
+                          <span className="rounded-full bg-success/10 px-2.5 py-1 font-medium text-success">Pass {u.pass}</span>
                           <span className="rounded-full bg-danger/10 px-2.5 py-1 font-medium text-danger">Fail {u.fail}</span>
                           <span className="rounded-full bg-plum/10 px-2.5 py-1 font-medium text-plum">Duplicates {u.duplicates}</span>
                           <span className="rounded-full bg-field px-2.5 py-1 font-medium text-muted">Indexed {pct(u.indexed, u.links)}</span>
@@ -11893,9 +11893,9 @@ function BatchDetails({
           <Metric label="New" value={byPresence.new || 0} icon={Star} tone="ocean" onClick={() => { setPresenceF(["new"]); }} help="Not in your data yet — the interesting rows. Click to filter." />
           <Metric label="Already there" value={byPresence.existing || 0} icon={CheckCircle2} tone="plum" onClick={() => { setPresenceF(["existing"]); }} help="Already in the main data — approving refreshes them. Click to filter." />
           <Metric label="Repeated" value={byPresence.duplicate || 0} icon={Layers} tone="ember" onClick={() => { setPresenceF(["duplicate"]); }} help="Repeated inside this import. Click to filter." />
-          <Metric label="Checked" value={byState.checked || 0} icon={Gauge} tone="ocean" onClick={() => { setStateF(["checked"]); }} help={isLinks ? "QA-tested in isolation. Click to filter." : "Metrics fetched. Click to filter."} />
+          <Metric label="Checked" value={byState.checked || 0} icon={Gauge} tone="success" onClick={() => { setStateF(["checked"]); }} help={isLinks ? "QA-tested in isolation. Click to filter." : "Metrics fetched. Click to filter."} />
           <Metric label="Failed" value={byState.failed || 0} icon={XCircle} tone="danger" onClick={() => { setStateF(["failed"]); }} help="Invalid rows or checks that crashed — re-run or reject them. Click to filter." />
-          <Metric label="Approved" value={byState.approved || 0} icon={CheckCircle2} tone="ocean" onClick={() => { setStateF(["approved"]); }} help="Imported into the main data. Click to filter." />
+          <Metric label="Approved" value={byState.approved || 0} icon={CheckCircle2} tone="success" onClick={() => { setStateF(["approved"]); }} help="Imported into the main data. Click to filter." />
           <Metric label="Rejected" value={byState.rejected || 0} icon={XCircle} tone="ink" onClick={() => { setStateF(["rejected"]); }} help="Kept for the audit trail, never imported. Click to filter." />
         </div>
       ) : null}
@@ -14252,7 +14252,7 @@ const SD_RULE_OPS: Array<{ value: string; label: string }> = [
 // Spam is inverted (low is good): reuse MetricTag coloring by flipping the value.
 function SpamTag({ value }: { value: number | null }) {
   if (value == null) return <MetricTag label="Spam" value={null} />;
-  const tone = value <= 5 ? "bg-ocean/10 text-ocean" : value <= 20 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
+  const tone = value <= 5 ? "bg-success/10 text-success" : value <= 20 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
   return (
     <span
       className={clsx("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tone)}
@@ -14362,7 +14362,7 @@ function OpportunitiesPanel({ token, onNotice }: { token: string | null; onNotic
                   <Td>
                     <span className={clsx(
                       "rounded px-2 py-0.5 text-xs font-bold",
-                      d.opp >= 70 ? "bg-ocean/10 text-ocean" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
+                      d.opp >= 70 ? "bg-success/10 text-success" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
                     )}>
                       {d.opp}
                     </span>
@@ -14374,7 +14374,7 @@ function OpportunitiesPanel({ token, onNotice }: { token: string | null; onNotic
                   <Td>
                     <span className={clsx(
                       "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                      (d.robots_band || "unknown") === "allowed" ? "bg-ocean/10 text-ocean"
+                      (d.robots_band || "unknown") === "allowed" ? "bg-success/10 text-success"
                         : d.robots_band === "partially_blocked" ? "bg-ember/10 text-ember" : "bg-field text-muted"
                     )}>
                       {(d.robots_band || "unknown").replaceAll("_", " ")}
@@ -17825,7 +17825,7 @@ function ScoringGuideContent() {
                 {row("High", "−25", "bg-danger/10 text-danger", "Link hidden by CSS, wrong target URL, page-level nofollow, cross-domain canonical")}
                 {row("Medium", "−10", "bg-ember/10 text-ember", "rel=nofollow on the link, sponsored/UGC placement, JS-only link")}
                 {row("Low", "−3", "bg-field text-muted", "Footer/sidebar placement, matched only after URL normalization")}
-                {row("Info", "0", "bg-ocean/10 text-ocean", "Notes only — e.g. found via a GBP/Maps listing, multiple links to the target")}
+                {row("Info", "0", "bg-success/10 text-success", "Notes only — e.g. found via a GBP/Maps listing, multiple links to the target")}
               </tbody>
             </table>
           </div>
@@ -19094,7 +19094,7 @@ function ConflictsDesk({
           help="Each group = one page URL that appears in more than one record. Matches the table below exactly (same filters)." />
         <Metric label="Open" value={listAgg?.open ?? 0} icon={AlertTriangle} tone="ember"
           help="Groups nobody has dealt with yet — review these first. Same filters as the table." />
-        <Metric label="Resolved" value={listAgg?.resolved ?? 0} icon={CheckCircle2} tone="ocean"
+        <Metric label="Resolved" value={listAgg?.resolved ?? 0} icon={CheckCircle2} tone="success"
           help="Groups someone reviewed and closed. Same filters as the table." />
         <Metric label="Duplicate links" value={listAgg?.total_duplicate_links ?? 0} icon={Copy} tone="plum"
           help="Total redundant records = sum of (records in group − 1). Remove these to de-duplicate." />
@@ -19321,7 +19321,7 @@ function ScopeChip({ scope }: { scope: string }) {
 function SimilarityMeter({ value }: { value: number | null | undefined }) {
   if (value == null) return <span className="text-xs text-muted">—</span>;
   const v = Math.max(0, Math.min(100, value));
-  const cssVar = v >= 90 ? "--danger" : v >= 60 ? "--ember" : "--ocean";
+  const cssVar = v >= 90 ? "--danger" : v >= 60 ? "--ember" : "--success";
   return (
     <span className="inline-flex items-center gap-1.5" title={`${v}% similar`}>
       <span className="h-1.5 w-16 overflow-hidden rounded-full bg-field">
@@ -19764,7 +19764,7 @@ function Metric({
   label: string;
   value: number | string;
   icon: typeof Gauge;
-  tone: "ink" | "ocean" | "ember" | "danger" | "plum";
+  tone: "ink" | "ocean" | "ember" | "danger" | "plum" | "success";
   help?: string;
   onClick?: () => void;
   sub?: string; // plain-words context line, e.g. "6% of total" or "Previous period: 0"
@@ -19774,13 +19774,14 @@ function Metric({
     ocean: "bg-ocean/10 text-ocean",
     ember: "bg-ember/10 text-ember",
     danger: "bg-danger/10 text-danger",
-    plum: "bg-plum/10 text-plum"
+    plum: "bg-plum/10 text-plum",
+    success: "bg-success/10 text-success"
   }[tone];
   // Tonal corner wash baked into the card background (radial-gradient) so the
   // card needs NO overflow-hidden — HelpTip tooltips render freely above it.
   const washColor = {
     ink: "var(--ocean)", ocean: "var(--ocean)", ember: "var(--ember)",
-    danger: "var(--danger)", plum: "var(--plum)"
+    danger: "var(--danger)", plum: "var(--plum)", success: "var(--success)"
   }[tone];
   return (
     <div
@@ -19821,7 +19822,7 @@ function StatBox({
 }: {
   label: string;
   value: number;
-  tone: "ink" | "ocean" | "ember" | "danger" | "plum";
+  tone: "ink" | "ocean" | "ember" | "danger" | "plum" | "success";
   onClick?: () => void;
   help?: string;
 }) {
@@ -19830,14 +19831,16 @@ function StatBox({
     ocean: "text-ocean",
     ember: "text-ember",
     danger: "text-danger",
-    plum: "text-plum"
+    plum: "text-plum",
+    success: "text-success"
   }[tone];
   const ring = {
     ink: "hover:border-line",
     ocean: "hover:border-ocean/50",
     ember: "hover:border-ember/50",
     danger: "hover:border-danger/50",
-    plum: "hover:border-plum/50"
+    plum: "hover:border-plum/50",
+    success: "hover:border-success/50"
   }[tone];
   return (
     <div
@@ -20138,7 +20141,7 @@ function QaLiveProgress({
     <div className="fixed bottom-4 right-4 z-40 w-[340px] rounded-xl border border-line bg-panel p-4 shadow-pop">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 text-sm font-semibold text-ink">
-          {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-ocean" />}
+          {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-success" />}
           {running ? "QA check running…" : "QA check finished"}
         </span>
         <button onClick={onClose} className="text-muted hover:text-ink" aria-label="Dismiss">✕</button>
@@ -20209,15 +20212,17 @@ function QaWaitBadge({ reason }: { reason: string }) {
 }
 
 function Status({ value, reason, compact }: { value: string; reason?: string | null; compact?: boolean }) {
+  // Semantic status colors (owner rule): success/completed = GREEN, warnings =
+  // amber, failures = red, review = amber (attention), never violet.
   const tone =
     value === "PASS" || value === "completed"
-      ? "bg-ocean/10 text-ocean border-ocean/30"
+      ? "bg-success/10 text-success border-success/30"
       : value === "FAIL" || value === "failed"
         ? "bg-danger/10 text-danger border-danger/30"
         : value === "WARNING" || value === "partial" || value === "running"
           ? "bg-ember/10 text-ember border-ember/30"
           : value === "NEEDS_MANUAL_REVIEW"
-            ? "bg-plum/10 text-plum border-plum/30"
+            ? "bg-ember/10 text-ember border-ember/30"
             : "bg-field text-muted border-line";
   const help = STATUS_HELP[value];
   const label = compact
@@ -21005,7 +21010,7 @@ function SheetsDesk({
                         <span
                           className={clsx(
                             "rounded px-2 py-0.5 text-xs font-medium",
-                            s.last_sync_status === "ok" && "bg-ocean/10 text-ocean",
+                            s.last_sync_status === "ok" && "bg-success/10 text-success",
                             s.last_sync_status === "error" && "bg-danger/10 text-danger",
                             s.last_sync_status === "running" && "bg-ember/10 text-ember",
                             !s.last_sync_status && "bg-field text-muted"
@@ -22078,7 +22083,7 @@ function AnalyticsDesk({
           filter AND clears any open drill so the pivots refocus. */}
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-12">
         {/* ── Workflow outcome (Qualified → Needs review → Not qualified → Broken → Duplicates → Missing → Spam) ── */}
-        <StatBox label="Qualified" value={Number(s.qualified ?? s.pass ?? 0)} tone="ocean"
+        <StatBox label="Qualified" value={Number(s.qualified ?? s.pass ?? 0)} tone="success"
           help="Links that passed every check. Click to filter."
           onClick={() => kpiFilter({ status: "PASS" })} />
         <StatBox label="Needs review" value={Number(s.review || 0)} tone="plum"
@@ -22100,13 +22105,13 @@ function AnalyticsDesk({
           help={`Links on a source domain with spam score ≥ ${ANALYTICS_SPAM_THRESHOLD}. Click to filter.`}
           onClick={() => kpiFilter({ spam: String(ANALYTICS_SPAM_THRESHOLD) })} />
         {/* ── Technical breakdown (index + HTTP status + orphaned) ── */}
-        <StatBox label="Indexed" value={Number(s.indexed || 0)} tone="ocean"
+        <StatBox label="Indexed" value={Number(s.indexed || 0)} tone="success"
           help="Pages Google shows in its index. Click to filter."
           onClick={() => kpiFilter({ index_status: "indexed" })} />
         <StatBox label="Not indexed" value={Number(s.not_indexed || 0)} tone="danger"
           help="Pages Google does not show. Click to filter."
           onClick={() => kpiFilter({ index_status: "not_indexed" })} />
-        <StatBox label="200 OK" value={Number(s.http_200 || 0)} tone="ocean"
+        <StatBox label="200 OK" value={Number(s.http_200 || 0)} tone="success"
           help="Links whose source page returned HTTP 200 (loads fine). Click to filter."
           onClick={() => kpiFilter({ http_status: "200" })} />
         <StatBox label="404" value={Number(s.http_404 || 0)} tone="danger"
@@ -22122,7 +22127,7 @@ function AnalyticsDesk({
         <Metric label="Total" value={total} icon={Link2} tone="ink"
           sub="Links matching the filters"
           help="How many links match the filters above. Change a filter and this updates instantly." />
-        <Metric label="Indexed" value={Number(s.indexed || 0)} icon={CheckCircle2} tone="ocean"
+        <Metric label="Indexed" value={Number(s.indexed || 0)} icon={CheckCircle2} tone="success"
           sub={`${pct(Number(s.indexed || 0), total)} of total`}
           help="Links whose page Google shows in its index — these actually help SEO. Click to filter to them."
           onClick={() => { setFilters((f) => ({ ...f, index_status: "indexed" })); setDrillKey(null); }} />
@@ -22394,7 +22399,7 @@ function AnalyticsDesk({
 
 function IndexBadge({ value }: { value: string }) {
   const map: Record<string, string> = {
-    indexed: "bg-ocean/10 text-ocean",
+    indexed: "bg-success/10 text-success",
     not_indexed: "bg-danger/10 text-danger",
     uncertain: "bg-ember/10 text-ember"
   };
@@ -22413,7 +22418,7 @@ function IndexBadge({ value }: { value: string }) {
 // 0-100 authority tag (DA/PA/AS): higher is better — ocean ≥ 60, ember 30-59, danger < 30.
 function MetricTag({ label, value, title }: { label: string; value: number | null | undefined; title?: string }) {
   if (value == null) return <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-field text-muted" title={title}>{label} —</span>;
-  const tone = value >= 60 ? "bg-ocean/10 text-ocean" : value >= 30 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
+  const tone = value >= 60 ? "bg-success/10 text-success" : value >= 30 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
   return <span className={clsx("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tone)} title={title}>{label} {value}</span>;
 }
 
@@ -22596,7 +22601,7 @@ function severityClass(value: string) {
     HIGH: "bg-ember/15 text-ember",
     MEDIUM: "bg-ember/10 text-ember",
     LOW: "bg-field text-muted",
-    INFO: "bg-ocean/10 text-ocean"
+    INFO: "bg-success/10 text-success"
   }[value] || "bg-field text-muted";
 }
 
@@ -23081,7 +23086,7 @@ function EmailUsersCard({
                 <Td><span className="line-clamp-1">{r.subject}</span></Td>
                 <Td>
                   <span className={clsx("rounded px-1.5 py-0.5 text-xs font-semibold",
-                    r.status === "sent" ? "bg-ocean/10 text-ocean" : r.status === "failed" ? "bg-danger/10 text-danger" : "bg-field text-muted")}>
+                    r.status === "sent" ? "bg-success/10 text-success" : r.status === "failed" ? "bg-danger/10 text-danger" : "bg-field text-muted")}>
                     {r.status}
                   </span>
                   {r.error ? <span className="ml-2 text-xs text-danger">{r.error.slice(0, 60)}</span> : null}
