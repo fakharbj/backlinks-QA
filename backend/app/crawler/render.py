@@ -146,9 +146,16 @@ class BrowserManager:
                 # always land on domcontentloaded, then wait for what QA
                 # actually needs: the target link itself (or a bounded
                 # hydration pause when no selector is given).
-                response = await page.goto(
-                    url, timeout=timeout_ms, wait_until="domcontentloaded"
-                )
+                # A slow goto (heavy SPA like Quora at ~800KB) may exceed the
+                # budget even though the DOM is usable — don't discard it. Keep
+                # any partial navigation and fall through to capture content;
+                # ``status`` stays best-effort.
+                try:
+                    response = await page.goto(
+                        url, timeout=timeout_ms, wait_until="domcontentloaded"
+                    )
+                except Exception:  # noqa: BLE001 — goto timeout / interstitial
+                    response = None
                 if wait_selector:
                     try:
                         await page.wait_for_selector(
@@ -175,11 +182,18 @@ class BrowserManager:
                             html = await page.content()
                     except Exception:  # noqa: BLE001 — scrolling is best-effort
                         pass
+                # A real DOM counts as a successful read even if goto timed out
+                # (status unknown). Too-small content = the page never loaded.
+                if not html or len(html) < 500:
+                    return RenderOutcome(ok=False, error="empty_or_unloaded", final_url=page.url)
                 return RenderOutcome(
                     ok=True,
                     html=html,
                     final_url=page.url,
-                    status=response.status if response else None,
+                    # If goto timed out we have no HTTP status; assume 200 since a
+                    # substantial DOM did load (the engine only treats a 2xx render
+                    # as "we read the page").
+                    status=(response.status if response else 200),
                 )
             except Exception as exc:  # noqa: BLE001
                 return RenderOutcome(ok=False, error=repr(exc))

@@ -139,6 +139,10 @@ async def _run_async(batch_id_str: str) -> dict:
     config = dataclasses.replace(
         CrawlConfig.from_settings(),
         render_enabled=settings.RENDER_ENABLED,
+        # Accuracy-max (low-volume manual verification): give heavy SPAs
+        # (Quora ~800KB, etc.) a generous render budget so a slow page loads
+        # fully instead of timing out and landing in "couldn't check".
+        render_timeout_ms=max(settings.RENDER_TIMEOUT_MS, 45_000),
     )
     browser = get_browser() if settings.RENDER_ENABLED else None
     limiter = make_rate_limiter(settings.CRAWL_DEFAULT_RATE_PER_SEC, settings.CRAWL_DEFAULT_BURST)
