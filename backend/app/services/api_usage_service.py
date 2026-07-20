@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -45,6 +49,53 @@ def _hkey(api: str, dt: datetime) -> str:
 
 def _dkey(api: str, dt: datetime) -> str:
     return f"ls:apiu:{api}:d:{dt.strftime('%Y%m%d')}"
+
+
+async def proxy_egress(db: AsyncSession, workspace_id: uuid.UUID, days: int = 30) -> dict:
+    """Durable proxy-vs-direct crawl split from our OWN ``crawl_results`` (Postgres),
+    workspace-scoped and independent of the Redis quota counters.
+
+    Answers "how often did we actually need the IPRoyal proxy?". The proxy runs
+    in ``escalate`` mode — it only engages when a direct fetch is blocked — so a
+    low proxy share is HEALTHY (most pages read fine directly), not missing data.
+    This is why the Redis ``iproyal`` counters can look near-empty even though the
+    crawler is busy: only the escalated ~fraction touches the proxy."""
+    days = max(1, min(int(days), 90))
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT to_char(date_trunc('day', crawled_at), 'YYYY-MM-DD') AS day,
+                       CASE WHEN page_signals->>'egress' = 'proxy' THEN 'proxy' ELSE 'direct' END AS egress,
+                       count(*) AS n
+                FROM crawl_results
+                WHERE workspace_id = :wsid
+                  AND crawled_at >= now() - make_interval(days => :days)
+                GROUP BY 1, 2
+                ORDER BY 1
+                """
+            ),
+            {"wsid": workspace_id, "days": days},
+        )
+    ).all()
+    by_day: dict[str, dict] = {}
+    proxy = direct = 0
+    for day, egress, n in rows:
+        bucket = by_day.setdefault(day, {"day": day, "proxy": 0, "direct": 0})
+        bucket[egress] = int(n)
+        if egress == "proxy":
+            proxy += int(n)
+        else:
+            direct += int(n)
+    total = proxy + direct
+    return {
+        "days": days,
+        "proxy": proxy,
+        "direct": direct,
+        "total": total,
+        "escalation_pct": round(100 * proxy / total, 2) if total else 0.0,
+        "by_day": list(by_day.values()),
+    }
 
 
 def _limits(raw: str) -> dict[str, int]:

@@ -57,6 +57,19 @@ async def put_api_limits(
     return {"daily_limits": daily, "hourly_limits": hourly}
 
 
+@router.get("/proxy")
+async def api_usage_proxy(
+    db: DbSession,
+    days: int = Query(30, ge=1, le=90),
+    ctx: AuthContext = Depends(require_role(Role.MANAGER)),
+) -> dict:
+    """Durable IPRoyal proxy usage from our own crawl history (workspace-scoped):
+    proxy-vs-direct crawl counts + escalation rate + a daily trend. Complements
+    the Redis quota counters — proxy engages only when a direct fetch is blocked,
+    so this is the honest "how much did we lean on the proxy" number."""
+    return await api_usage_service.proxy_egress(db, ctx.workspace_id, days)
+
+
 @router.get("/series")
 async def api_usage_series(
     api: str,

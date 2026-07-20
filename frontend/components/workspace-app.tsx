@@ -4951,6 +4951,19 @@ function ApiUsageDesk({ token }: { token: string | null }) {
         { token }
       )
   });
+  // Durable proxy-vs-direct split from our own crawl history — the honest
+  // "how much did we lean on IPRoyal" number, independent of the Redis counters.
+  const proxyQ = useQuery({
+    queryKey: ["api-usage-proxy", token],
+    enabled: Boolean(token),
+    retry: false,
+    refetchInterval: 60000,
+    queryFn: () =>
+      api<{ days: number; proxy: number; direct: number; total: number; escalation_pct: number; by_day: Array<{ day: string; proxy: number; direct: number }> }>(
+        "/api-usage/proxy?days=30",
+        { token }
+      )
+  });
   const rows = snap.data?.apis || [];
   const points = series.data?.points || [];
   const [showLimits, setShowLimits] = useState(false);
@@ -5126,6 +5139,53 @@ function ApiUsageDesk({ token }: { token: string | null }) {
             </div>
           );
         })}
+
+      {/* IPRoyal proxy egress — durable, from our own crawl history (crawl_results).
+          The Redis counters can look empty because the proxy runs in escalate mode
+          (only when a site blocks a direct fetch); this shows the real split. */}
+      {proxyQ.data && proxyQ.data.total > 0 ? (() => {
+        const pd = proxyQ.data;
+        const maxDay = Math.max(1, ...pd.by_day.map((d) => d.proxy + d.direct));
+        return (
+          <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                  IPRoyal proxy egress
+                  <HelpTip text="Measured from our own crawl history, not the quota counters. The proxy runs in escalate mode — it only engages when a site blocks a direct fetch — so a low proxy share means most pages read fine directly. That's healthy, not missing data. (Bandwidth & account balance would need IPRoyal's account API, which isn't connected.)" />
+                </h3>
+                <p className="text-xs text-muted">Last {pd.days} days · {pd.total.toLocaleString()} crawls</p>
+              </div>
+              <span className="rounded-full bg-ocean/10 px-2.5 py-1 text-xs font-semibold text-ocean">{pd.escalation_pct}% via proxy</span>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <Metric label="Direct fetches" value={pd.direct.toLocaleString()} icon={Globe} tone="success" sub="No proxy needed" />
+              <Metric label="Proxy fetches" value={pd.proxy.toLocaleString()} icon={ShieldAlert} tone="ocean" sub="Escalated — site blocked a direct read" />
+              <Metric label="Escalation rate" value={`${pd.escalation_pct}%`} icon={Activity} tone={pd.escalation_pct >= 25 ? "ember" : "ink"} sub="Share that needed the proxy" />
+            </div>
+            {pd.by_day.length > 1 ? (
+              <>
+                <div className="mt-3 flex items-end gap-0.5" style={{ height: 40 }}>
+                  {pd.by_day.map((d) => (
+                    <div key={d.day} className="flex flex-1 flex-col justify-end" title={`${d.day}: ${d.proxy.toLocaleString()} proxy · ${d.direct.toLocaleString()} direct`} style={{ height: "100%" }}>
+                      <span className="w-full rounded-t bg-ocean" style={{ height: `${(d.proxy / maxDay) * 100}%` }} />
+                      <span className="w-full bg-line" style={{ height: `${(d.direct / maxDay) * 100}%` }} />
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-1 flex items-center gap-3 text-[10px] text-muted">
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-ocean" /> Proxy</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-line" /> Direct</span>
+                </div>
+              </>
+            ) : null}
+          </section>
+        );
+      })() : proxyQ.data ? (
+        <div className="rounded-xl border border-line bg-field/40 p-3 text-sm text-muted">
+          No crawls in the last {proxyQ.data.days} days yet — IPRoyal proxy usage appears here once QA checks run. The proxy only engages when a site blocks a direct fetch.
+        </div>
+      ) : null}
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {rows.map((r) => {
@@ -6654,6 +6714,79 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           </div>
         </div>
       </header>
+
+      {/* Viewer detail: this week's production broken down by link type + a daily
+          trend. Derived entirely from the person's own (self-scoped) rows — no
+          extra endpoint, nothing cross-user. Full landing only. */}
+      {!focus && (me.data?.rows?.length ?? 0) > 0 ? (() => {
+        const rows = me.data!.rows;
+        const byType = new Map<string, { done: number; target: number }>();
+        for (const r of rows) {
+          const types = r.link_type_names.length ? r.link_type_names : ["Any type"];
+          for (const t of types) {
+            const key = linkTypeLabel(t) || t;
+            const b = byType.get(key) || { done: 0, target: 0 };
+            b.done += Math.round(r.actual_links / types.length);
+            b.target += Math.round(r.expected_links / types.length);
+            byType.set(key, b);
+          }
+        }
+        const typeRows = Array.from(byType.entries())
+          .map(([type, v]) => ({ type, ...v }))
+          .filter((t) => t.done || t.target)
+          .sort((a, b) => b.done - a.done || b.target - a.target)
+          .slice(0, 8);
+        const maxType = Math.max(1, ...typeRows.map((t) => Math.max(t.done, t.target)));
+        const days: string[] = [];
+        for (let i = 0; i < 7; i++) { const d = new Date(`${monday}T00:00:00`); d.setDate(d.getDate() + i); days.push(fmtIso(d)); }
+        const dayAgg = days.map((d) => {
+          const rr = rows.filter((r) => r.day === d);
+          return { day: d, done: rr.reduce((a, r) => a + r.actual_links, 0), target: rr.reduce((a, r) => a + r.expected_links, 0) };
+        });
+        const maxDay = Math.max(1, ...dayAgg.map((d) => Math.max(d.done, d.target)));
+        const dow = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        if (!typeRows.length) return null;
+        return (
+          <section className="grid gap-3 lg:grid-cols-2">
+            <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <h3 className="text-sm font-semibold text-ink">This week by link type</h3>
+              <p className="text-xs text-muted">Your production per type — done vs target.</p>
+              <div className="mt-3 space-y-2">
+                {typeRows.map((t) => (
+                  <div key={t.type}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="truncate font-medium text-ink">{t.type}</span>
+                      <span className="shrink-0 text-muted">{t.done}/{t.target}</span>
+                    </div>
+                    <div className="mt-0.5 h-2 overflow-hidden rounded-full bg-field">
+                      <span className={clsx("block h-full rounded-full", t.done >= t.target && t.target > 0 ? "bg-success" : "bg-ocean")}
+                        style={{ width: `${Math.min(100, (t.done / maxType) * 100)}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <h3 className="text-sm font-semibold text-ink">Daily production</h3>
+              <p className="text-xs text-muted">Links built each day this week.</p>
+              <div className="mt-3 flex items-end gap-1.5" style={{ height: 96 }}>
+                {dayAgg.map((d) => (
+                  <div key={d.day} className="flex flex-1 flex-col items-center justify-end gap-1" style={{ height: "100%" }}
+                    title={`${d.day}: ${d.done}/${d.target} links`}>
+                    <span className="flex w-full flex-1 items-end justify-center">
+                      <span className={clsx("w-full max-w-[26px] rounded-t", d.done >= d.target && d.target > 0 ? "bg-success" : "bg-ocean")}
+                        style={{ height: `${(d.done / maxDay) * 100}%`, minHeight: d.done ? 4 : 0 }} />
+                    </span>
+                    <span className={clsx("text-[9px]", d.day === today ? "font-bold text-ocean" : "text-muted")}>
+                      {dow[(new Date(`${d.day}T00:00:00`).getDay() + 6) % 7]}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        );
+      })() : null}
 
       {(!focus || focus === "today" || focus === "week") ? (
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
