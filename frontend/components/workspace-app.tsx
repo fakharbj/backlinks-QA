@@ -5479,7 +5479,7 @@ type MyCalRow = {
 
 function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; cls: string } {
   if (r.excused) return { key: "excused", label: r.excuse_reason || "Excused", cls: "border-line bg-field text-muted" };
-  if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-ocean/40 bg-ocean/10 text-ocean" };
+  if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-success/50 bg-success/20 text-success" };
   if (r.day > today) return { key: "upcoming", label: "Upcoming", cls: "border-line bg-panel text-ink" };
   if (r.day === today) return { key: "today", label: "In progress", cls: "border-ember/40 bg-ember/10 text-ember" };
   return { key: "missed", label: "Behind", cls: "border-danger/40 bg-danger/10 text-danger" };
@@ -7620,7 +7620,7 @@ function TasksDesk({
                     r.excused
                       ? "border-line bg-field text-muted"
                       : (r.completion_pct ?? 0) >= 100
-                        ? "border-ocean/40 bg-ocean/15 text-ocean"
+                        ? "border-success/50 bg-success/20 text-success"
                         : (r.completion_pct ?? 0) >= 60
                           ? "border-ember/40 bg-ember/15 text-ember"
                           : "border-danger/40 bg-danger/15 text-danger"
@@ -7866,7 +7866,7 @@ function TasksDesk({
                                           r.excused
                                             ? "border-line bg-field text-muted"
                                             : (r.completion_pct ?? 0) >= 100
-                                              ? "border-ocean/40 bg-ocean/15 text-ocean"
+                                              ? "border-success/50 bg-success/20 text-success"
                                               : (r.completion_pct ?? 0) >= 60
                                                 ? "border-ember/40 bg-ember/15 text-ember"
                                                 : "border-danger/40 bg-danger/15 text-danger"
@@ -9378,7 +9378,7 @@ function UserWeekStrip({
                     r.excused
                       ? "border-line bg-field text-muted"
                       : (r.completion_pct ?? 0) >= 100
-                        ? "border-ocean/40 bg-ocean/15 text-ocean"
+                        ? "border-success/50 bg-success/20 text-success"
                         : (r.completion_pct ?? 0) >= 60
                           ? "border-ember/40 bg-ember/15 text-ember"
                           : "border-danger/40 bg-danger/15 text-danger"
@@ -9897,7 +9897,7 @@ function UserDashboard({
               sub={pv ? `prev: ${num(pv.plan.done)}` : "links on planned project-days"}
               help="Links actually created on the planned days, per project." />
             <Metric label="Plan completion" value={d.plan.completion_pct != null ? `${d.plan.completion_pct}%` : "—"} icon={Activity}
-              tone={(d.plan.completion_pct ?? 0) >= 100 ? "ocean" : "ember"}
+              tone={(d.plan.completion_pct ?? 0) >= 100 ? "success" : "ember"}
               sub={pv && pv.plan.completion_pct != null ? `prev: ${pv.plan.completion_pct}%` : "excused days don't count"}
               help="Done ÷ target for the period, excusal-aware." />
           </div>
@@ -10310,7 +10310,7 @@ function UserDashboard({
                       r.excused
                         ? "border-line bg-field text-muted"
                         : (r.completion_pct ?? 0) >= 100
-                          ? "border-ocean/40 bg-ocean/15 text-ocean"
+                          ? "border-success/50 bg-success/20 text-success"
                           : (r.completion_pct ?? 0) >= 60
                             ? "border-ember/40 bg-ember/15 text-ember"
                             : "border-danger/40 bg-danger/15 text-danger"
@@ -11281,7 +11281,7 @@ function BatchProgress({ totals }: { totals: Record<string, number> }) {
   return (
     <div className="flex items-center gap-2">
       <div className="h-2 w-28 overflow-hidden rounded-full bg-field">
-        <div className="h-full rounded-full bg-ocean transition-all" style={{ width: `${pct}%` }} />
+        <div className={clsx("h-full rounded-full transition-all", pct >= 100 ? "bg-success" : "bg-ocean")} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs text-muted">
         {done}/{total || "?"}
@@ -22223,7 +22223,7 @@ function AnalyticsDesk({
                       <Td>{t}</Td>
                       <Td>{g.avg_score ?? "-"}</Td>
                       <Td>
-                        <span className="text-ocean">{Number(g.pass || 0)}</span> /{" "}
+                        <span className="text-success">{Number(g.pass || 0)}</span> /{" "}
                         <span className="text-ember">{Number(g.warning || 0)}</span> /{" "}
                         <span className="text-danger">{Number(g.fail || 0)}</span>
                       </Td>
