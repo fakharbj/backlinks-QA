@@ -18,7 +18,7 @@
   --plum: 192 38 211;     /* fuchsia-600 — secondary */
   --ember: 217 119 6;     /* amber-600 */
   --danger: 225 29 72;    /* rose-600 */
-  --success: 5 150 105;   /* emerald-600 — completion / success / info */
+  --success: 4 120 87;    /* emerald-700 — completion / success / info (deep, never washed-out) */
   --accent: 139 92 246;   /* violet-500 */
   --shadow: 26 20 47;     /* violet-black shadow base */
   --app-bg: 244 244 250;
@@ -96,6 +96,14 @@ textarea {
   background-clip: text;
   color: transparent;
 }
+
+/* Solid semantic status pills — a clear, standard fill (never a washed-out
+   translucent tint). Text color flips by theme so it stays legible on both
+   the deeper light-theme colour and the lighter dark-theme one. */
+.pill-pass { background-color: rgb(var(--success)); color: #ffffff; border-color: transparent; }
+.pill-fail { background-color: rgb(var(--danger)); color: #ffffff; border-color: transparent; }
+.pill-warn { background-color: rgb(var(--ember)); color: #ffffff; border-color: transparent; }
+.dark .pill-pass, .dark .pill-fail, .dark .pill-warn { color: rgb(12 14 20); }
 
 /* Gradient hairline card — wrap a panel to give it a luminous edge. */
 .ring-gradient {

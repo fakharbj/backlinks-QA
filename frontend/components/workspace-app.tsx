@@ -4397,13 +4397,13 @@ function QaEvidencePanel({ data }: { data: BacklinkDetail }) {
   // One-line conclusion chip — the classification in human words.
   const conclusion =
     browserOk && (rawStatus ?? 0) >= 400
-      ? { label: "Verified in a real browser", cls: "bg-success/10 text-success border-success/40",
+      ? { label: "Verified in a real browser", cls: "bg-success/20 text-success border-success/50",
           text: "The site refuses automated requests, but the page loads fine in a real browser — the link is genuinely live." }
       : browserBlocked
       ? { label: "Blocked for automated tools", cls: "bg-plum/10 text-plum border-plum/40",
           text: "Both our automated request AND a real browser from our servers were refused — the site blocks our network (IP-level bot protection). The page most likely opens fine for real visitors; confirm once in your own browser." }
       : eff === "PASS"
-      ? { label: "Confirmed working", cls: "bg-success/10 text-success border-success/40",
+      ? { label: "Confirmed working", cls: "bg-success/20 text-success border-success/50",
           text: "The page loaded, the link is present, and no serious problems were found." }
       : eff === "FAIL"
       ? { label: "Confirmed problem", cls: "bg-danger/10 text-danger border-danger/40",
@@ -4584,7 +4584,7 @@ function QaAttemptsBlock({ token, backlinkId }: { token: string | null; backlink
             <span className="w-32 shrink-0 text-muted">{formatDate(a.at)}</span>
             <span className={clsx(
               "rounded px-1.5 py-0.5 font-semibold",
-              a.status === "success" ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
+              a.status === "success" ? "bg-success/20 text-success" : "bg-danger/10 text-danger"
             )}>
               {a.status === "success" ? (STATUS_HELP[a.verdict || ""]?.label || a.verdict) : `failed — ${a.failure_kind || "error"}`}
             </span>
@@ -4988,7 +4988,7 @@ function ApiUsageDesk({ token }: { token: string | null }) {
       ? { label: "Erroring", cls: "bg-ember/10 text-ember border-ember/30" }
       : s === "idle"
       ? { label: "Idle today", cls: "bg-field text-muted border-line" }
-      : { label: "Healthy", cls: "bg-success/10 text-success border-success/30" };
+      : { label: "Healthy", cls: "bg-success/20 text-success border-success/50" };
   if (snap.isError) {
     return (
       <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
@@ -5276,7 +5276,7 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
                 </span>
                 <span className={clsx(
                   "shrink-0 rounded-lg px-2 py-1 text-sm font-bold",
-                  d.opp >= 70 ? "bg-success/10 text-success" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
+                  d.opp >= 70 ? "bg-success/20 text-success" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
                 )}>
                   {d.opp}
                 </span>
@@ -5287,7 +5287,7 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
                 <SpamTag value={d.spam_score} />
                 <span className={clsx(
                   "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                  (d.robots_band || "unknown") === "allowed" ? "bg-success/10 text-success" : "bg-field text-muted"
+                  (d.robots_band || "unknown") === "allowed" ? "bg-success/20 text-success" : "bg-field text-muted"
                 )}>
                   robots: {(d.robots_band || "unknown").replaceAll("_", " ")}
                 </span>
@@ -6138,7 +6138,7 @@ function MyQaSummary({ token, userLabel }: { token: string | null; userLabel: st
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Links built</div>
           <div className="text-xl font-bold text-ink">{total.toLocaleString()}</div>
         </div>
-        <div className="rounded-lg border border-success/30 bg-success/5 p-2.5">
+        <div className="rounded-lg border border-success/50 bg-success/20 p-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Qualified</div>
           <div className="text-xl font-bold text-success">{n("pass").toLocaleString()}</div>
           <div className="text-[10px] text-muted">{pct(n("pass"))}% of your links</div>
@@ -6570,7 +6570,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           <span
             className={clsx(
               "rounded px-2 py-0.5 text-xs font-semibold",
-              r.completion_pct >= 100 ? "bg-success/10 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
+              r.completion_pct >= 100 ? "bg-success/20 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
             )}
           >
             {r.completion_pct}% done
@@ -8035,7 +8035,7 @@ function TasksDesk({
                       <span
                         className={clsx(
                           "rounded px-2 py-0.5 text-xs font-semibold",
-                          r.completion_pct >= 100 ? "bg-success/10 text-success"
+                          r.completion_pct >= 100 ? "bg-success/20 text-success"
                             : r.completion_pct >= 60 ? "bg-ember/10 text-ember"
                               : "bg-danger/10 text-danger"
                         )}
@@ -10136,7 +10136,7 @@ function UserDashboard({
                         <Td>
                           {cpl == null ? "—" : (
                             <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
-                              cpl >= 100 ? "bg-success/10 text-success" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                              cpl >= 100 ? "bg-success/20 text-success" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                               {cpl}%
                             </span>
                           )}
@@ -10403,7 +10403,7 @@ function UserDashboard({
                         <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-muted" title={r.excuse_reason || ""}>Excused</span>
                       ) : r.completion_pct == null ? "—" : (
                         <span className={clsx("rounded px-1.5 py-0.5 text-[11px] font-semibold",
-                          r.completion_pct >= 100 ? "bg-success/10 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          r.completion_pct >= 100 ? "bg-success/20 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                           {r.completion_pct}%
                         </span>
                       )}
@@ -10628,7 +10628,7 @@ function ProjectEffort({
                     <Td>
                       {u.completion_pct == null ? "—" : (
                         <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
-                          u.completion_pct >= 100 ? "bg-success/10 text-success" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          u.completion_pct >= 100 ? "bg-success/20 text-success" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                           {u.completion_pct}%
                         </span>
                       )}
@@ -10823,7 +10823,7 @@ function UserDashboardsDesk({
                   <span className="text-xs text-muted">{u.links} links · all time</span>
                   {rate != null ? (
                     <span className={clsx("w-fit rounded px-2 py-0.5 text-[11px] font-semibold",
-                      rate >= 80 ? "bg-success/10 text-success" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                      rate >= 80 ? "bg-success/20 text-success" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                       {rate}% indexed
                     </span>
                   ) : null}
@@ -11159,7 +11159,7 @@ function PerformanceDesk({
                     <tr>
                       <td colSpan={8} className="bg-field/40 p-4">
                         <div className="mb-2 flex flex-wrap gap-2 text-xs">
-                          <span className="rounded-full bg-success/10 px-2.5 py-1 font-medium text-success">Pass {u.pass}</span>
+                          <span className="rounded-full bg-success/20 px-2.5 py-1 font-medium text-success">Pass {u.pass}</span>
                           <span className="rounded-full bg-danger/10 px-2.5 py-1 font-medium text-danger">Fail {u.fail}</span>
                           <span className="rounded-full bg-plum/10 px-2.5 py-1 font-medium text-plum">Duplicates {u.duplicates}</span>
                           <span className="rounded-full bg-field px-2.5 py-1 font-medium text-muted">Indexed {pct(u.indexed, u.links)}</span>
@@ -11234,7 +11234,7 @@ const BATCH_STATUS: Record<string, { label: string; cls: string }> = {
   review: { label: "Needs review", cls: "bg-plum/10 text-plum border-plum/30" },
   running: { label: "Running", cls: "bg-ocean/10 text-ocean border-ocean/30" },
   pending: { label: "Queued", cls: "bg-field text-muted border-line" },
-  completed: { label: "Completed", cls: "bg-success/10 text-success border-success/30" },
+  completed: { label: "Completed", cls: "bg-success/20 text-success border-success/50" },
   partial: { label: "Finished with problems", cls: "bg-ember/10 text-ember border-ember/30" },
   failed: { label: "Failed", cls: "bg-danger/10 text-danger border-danger/30" }
 };
@@ -11833,7 +11833,7 @@ function BatchDetails({
         const done = Number(b.counters?.done ?? 0);
         const running = b.status === "running" || b.status === "pending";
         const rowCls = (st?: string) =>
-          st === "completed" ? { chip: "bg-success/10 text-success border-success/30", label: "Completed" }
+          st === "completed" ? { chip: "bg-success/20 text-success border-success/50", label: "Completed" }
             : st === "partial" ? { chip: "bg-ember/10 text-ember border-ember/30", label: "Finished with problems" }
               : st === "failed" ? { chip: "bg-danger/10 text-danger border-danger/30", label: "Failed" }
                 : st === "running" ? { chip: "bg-ocean/10 text-ocean border-ocean/30", label: "Running" }
@@ -14252,7 +14252,7 @@ const SD_RULE_OPS: Array<{ value: string; label: string }> = [
 // Spam is inverted (low is good): reuse MetricTag coloring by flipping the value.
 function SpamTag({ value }: { value: number | null }) {
   if (value == null) return <MetricTag label="Spam" value={null} />;
-  const tone = value <= 5 ? "bg-success/10 text-success" : value <= 20 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
+  const tone = value <= 5 ? "bg-success/20 text-success" : value <= 20 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
   return (
     <span
       className={clsx("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tone)}
@@ -14362,7 +14362,7 @@ function OpportunitiesPanel({ token, onNotice }: { token: string | null; onNotic
                   <Td>
                     <span className={clsx(
                       "rounded px-2 py-0.5 text-xs font-bold",
-                      d.opp >= 70 ? "bg-success/10 text-success" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
+                      d.opp >= 70 ? "bg-success/20 text-success" : d.opp >= 45 ? "bg-ember/10 text-ember" : "bg-field text-muted"
                     )}>
                       {d.opp}
                     </span>
@@ -14374,7 +14374,7 @@ function OpportunitiesPanel({ token, onNotice }: { token: string | null; onNotic
                   <Td>
                     <span className={clsx(
                       "rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                      (d.robots_band || "unknown") === "allowed" ? "bg-success/10 text-success"
+                      (d.robots_band || "unknown") === "allowed" ? "bg-success/20 text-success"
                         : d.robots_band === "partially_blocked" ? "bg-ember/10 text-ember" : "bg-field text-muted"
                     )}>
                       {(d.robots_band || "unknown").replaceAll("_", " ")}
@@ -16792,7 +16792,7 @@ function DataHealthCard({ token }: { token: string | null }) {
             <div key={c.key} className="flex items-start gap-3 px-4 py-3">
               <span className={clsx(
                 "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full",
-                c.ok ? "bg-success/10 text-success" : "bg-ember/10 text-ember"
+                c.ok ? "bg-success/20 text-success" : "bg-ember/10 text-ember"
               )}>
                 {c.ok ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
               </span>
@@ -16939,7 +16939,7 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
                       className={clsx(
                         "rounded-full border px-2.5 py-1 text-xs font-semibold transition",
                         active
-                          ? "border-success/40 bg-success/10 text-success hover:bg-success/20"
+                          ? "border-success/50 bg-success/20 text-success hover:bg-success/20"
                           : "border-line bg-field text-muted hover:text-ink"
                       )}
                       title={active ? "Active — click to deactivate" : "Deactivated — click to activate"}
@@ -17825,7 +17825,7 @@ function ScoringGuideContent() {
                 {row("High", "−25", "bg-danger/10 text-danger", "Link hidden by CSS, wrong target URL, page-level nofollow, cross-domain canonical")}
                 {row("Medium", "−10", "bg-ember/10 text-ember", "rel=nofollow on the link, sponsored/UGC placement, JS-only link")}
                 {row("Low", "−3", "bg-field text-muted", "Footer/sidebar placement, matched only after URL normalization")}
-                {row("Info", "0", "bg-success/10 text-success", "Notes only — e.g. found via a GBP/Maps listing, multiple links to the target")}
+                {row("Info", "0", "bg-success/20 text-success", "Notes only — e.g. found via a GBP/Maps listing, multiple links to the target")}
               </tbody>
             </table>
           </div>
@@ -19775,7 +19775,7 @@ function Metric({
     ember: "bg-ember/10 text-ember",
     danger: "bg-danger/10 text-danger",
     plum: "bg-plum/10 text-plum",
-    success: "bg-success/10 text-success"
+    success: "bg-success/20 text-success"
   }[tone];
   // Tonal corner wash baked into the card background (radial-gradient) so the
   // card needs NO overflow-hidden — HelpTip tooltips render freely above it.
@@ -20212,17 +20212,18 @@ function QaWaitBadge({ reason }: { reason: string }) {
 }
 
 function Status({ value, reason, compact }: { value: string; reason?: string | null; compact?: boolean }) {
-  // Semantic status colors (owner rule): success/completed = GREEN, warnings =
-  // amber, failures = red, review = amber (attention), never violet.
+  // Semantic status colors (owner rule): success/completed = solid GREEN,
+  // failures = solid red, warnings/review = solid amber — a clear standard
+  // fill, never a washed-out translucent tint, never violet.
   const tone =
     value === "PASS" || value === "completed"
-      ? "bg-success/10 text-success border-success/30"
+      ? "pill-pass"
       : value === "FAIL" || value === "failed"
-        ? "bg-danger/10 text-danger border-danger/30"
+        ? "pill-fail"
         : value === "WARNING" || value === "partial" || value === "running"
-          ? "bg-ember/10 text-ember border-ember/30"
+          ? "pill-warn"
           : value === "NEEDS_MANUAL_REVIEW"
-            ? "bg-ember/10 text-ember border-ember/30"
+            ? "pill-warn"
             : "bg-field text-muted border-line";
   const help = STATUS_HELP[value];
   const label = compact
@@ -20865,7 +20866,7 @@ function SheetsDesk({
         const mins = startMs ? Math.max(0, Math.round((endMs - startMs) / 60000)) : null;
         const elapsed = mins === null ? null : mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
         const chipCls = (st?: string) =>
-          st === "completed" ? "border-success/40 bg-success/10 text-success"
+          st === "completed" ? "border-success/50 bg-success/20 text-success"
             : st === "partial" ? "border-ember/40 bg-ember/10 text-ember"
               : st === "failed" ? "border-danger/40 bg-danger/10 text-danger"
                 : st === "running" ? "border-ocean/40 bg-ocean/10 text-ocean"
@@ -20879,7 +20880,7 @@ function SheetsDesk({
               {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-success" />}
               <span className="text-sm font-semibold text-ink">{b.label || "Bulk sheet sync"}</span>
               <span className={clsx("rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-                b.status === "completed" ? "border-success/40 bg-success/10 text-success"
+                b.status === "completed" ? "border-success/50 bg-success/20 text-success"
                   : b.status === "partial" ? "border-ember/40 bg-ember/10 text-ember"
                     : b.status === "failed" ? "border-danger/40 bg-danger/10 text-danger"
                       : "border-ocean/40 bg-ocean/10 text-ocean")}>
@@ -21010,7 +21011,7 @@ function SheetsDesk({
                         <span
                           className={clsx(
                             "rounded px-2 py-0.5 text-xs font-medium",
-                            s.last_sync_status === "ok" && "bg-success/10 text-success",
+                            s.last_sync_status === "ok" && "bg-success/20 text-success",
                             s.last_sync_status === "error" && "bg-danger/10 text-danger",
                             s.last_sync_status === "running" && "bg-ember/10 text-ember",
                             !s.last_sync_status && "bg-field text-muted"
@@ -22399,7 +22400,7 @@ function AnalyticsDesk({
 
 function IndexBadge({ value }: { value: string }) {
   const map: Record<string, string> = {
-    indexed: "bg-success/10 text-success",
+    indexed: "bg-success/20 text-success",
     not_indexed: "bg-danger/10 text-danger",
     uncertain: "bg-ember/10 text-ember"
   };
@@ -22418,7 +22419,7 @@ function IndexBadge({ value }: { value: string }) {
 // 0-100 authority tag (DA/PA/AS): higher is better — ocean ≥ 60, ember 30-59, danger < 30.
 function MetricTag({ label, value, title }: { label: string; value: number | null | undefined; title?: string }) {
   if (value == null) return <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-field text-muted" title={title}>{label} —</span>;
-  const tone = value >= 60 ? "bg-success/10 text-success" : value >= 30 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
+  const tone = value >= 60 ? "bg-success/20 text-success" : value >= 30 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger";
   return <span className={clsx("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tone)} title={title}>{label} {value}</span>;
 }
 
@@ -22601,7 +22602,7 @@ function severityClass(value: string) {
     HIGH: "bg-ember/15 text-ember",
     MEDIUM: "bg-ember/10 text-ember",
     LOW: "bg-field text-muted",
-    INFO: "bg-success/10 text-success"
+    INFO: "bg-success/20 text-success"
   }[value] || "bg-field text-muted";
 }
 
@@ -23086,7 +23087,7 @@ function EmailUsersCard({
                 <Td><span className="line-clamp-1">{r.subject}</span></Td>
                 <Td>
                   <span className={clsx("rounded px-1.5 py-0.5 text-xs font-semibold",
-                    r.status === "sent" ? "bg-success/10 text-success" : r.status === "failed" ? "bg-danger/10 text-danger" : "bg-field text-muted")}>
+                    r.status === "sent" ? "bg-success/20 text-success" : r.status === "failed" ? "bg-danger/10 text-danger" : "bg-field text-muted")}>
                     {r.status}
                   </span>
                   {r.error ? <span className="ml-2 text-xs text-danger">{r.error.slice(0, 60)}</span> : null}
