@@ -5479,7 +5479,7 @@ type MyCalRow = {
 
 function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; cls: string } {
   if (r.excused) return { key: "excused", label: r.excuse_reason || "Excused", cls: "border-line bg-field text-muted" };
-  if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-success/50 bg-success/20 text-success" };
+  if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-success bg-success text-white" };
   if (r.day > today) return { key: "upcoming", label: "Upcoming", cls: "border-line bg-panel text-ink" };
   if (r.day === today) return { key: "today", label: "In progress", cls: "border-ember/40 bg-ember/10 text-ember" };
   return { key: "missed", label: "Behind", cls: "border-danger/40 bg-danger/10 text-danger" };
@@ -6570,7 +6570,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           <span
             className={clsx(
               "rounded px-2 py-0.5 text-xs font-semibold",
-              r.completion_pct >= 100 ? "bg-success/20 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
+              r.completion_pct >= 100 ? "bg-success text-white" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger"
             )}
           >
             {r.completion_pct}% done
@@ -7620,7 +7620,7 @@ function TasksDesk({
                     r.excused
                       ? "border-line bg-field text-muted"
                       : (r.completion_pct ?? 0) >= 100
-                        ? "border-success/50 bg-success/20 text-success"
+                        ? "border-success bg-success text-white"
                         : (r.completion_pct ?? 0) >= 60
                           ? "border-ember/40 bg-ember/15 text-ember"
                           : "border-danger/40 bg-danger/15 text-danger"
@@ -7866,7 +7866,7 @@ function TasksDesk({
                                           r.excused
                                             ? "border-line bg-field text-muted"
                                             : (r.completion_pct ?? 0) >= 100
-                                              ? "border-success/50 bg-success/20 text-success"
+                                              ? "border-success bg-success text-white"
                                               : (r.completion_pct ?? 0) >= 60
                                                 ? "border-ember/40 bg-ember/15 text-ember"
                                                 : "border-danger/40 bg-danger/15 text-danger"
@@ -8035,7 +8035,7 @@ function TasksDesk({
                       <span
                         className={clsx(
                           "rounded px-2 py-0.5 text-xs font-semibold",
-                          r.completion_pct >= 100 ? "bg-success/20 text-success"
+                          r.completion_pct >= 100 ? "bg-success text-white"
                             : r.completion_pct >= 60 ? "bg-ember/10 text-ember"
                               : "bg-danger/10 text-danger"
                         )}
@@ -9378,7 +9378,7 @@ function UserWeekStrip({
                     r.excused
                       ? "border-line bg-field text-muted"
                       : (r.completion_pct ?? 0) >= 100
-                        ? "border-success/50 bg-success/20 text-success"
+                        ? "border-success bg-success text-white"
                         : (r.completion_pct ?? 0) >= 60
                           ? "border-ember/40 bg-ember/15 text-ember"
                           : "border-danger/40 bg-danger/15 text-danger"
@@ -10136,7 +10136,7 @@ function UserDashboard({
                         <Td>
                           {cpl == null ? "—" : (
                             <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
-                              cpl >= 100 ? "bg-success/20 text-success" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                              cpl >= 100 ? "bg-success text-white" : cpl >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                               {cpl}%
                             </span>
                           )}
@@ -10310,7 +10310,7 @@ function UserDashboard({
                       r.excused
                         ? "border-line bg-field text-muted"
                         : (r.completion_pct ?? 0) >= 100
-                          ? "border-success/50 bg-success/20 text-success"
+                          ? "border-success bg-success text-white"
                           : (r.completion_pct ?? 0) >= 60
                             ? "border-ember/40 bg-ember/15 text-ember"
                             : "border-danger/40 bg-danger/15 text-danger"
@@ -10403,7 +10403,7 @@ function UserDashboard({
                         <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-medium text-muted" title={r.excuse_reason || ""}>Excused</span>
                       ) : r.completion_pct == null ? "—" : (
                         <span className={clsx("rounded px-1.5 py-0.5 text-[11px] font-semibold",
-                          r.completion_pct >= 100 ? "bg-success/20 text-success" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          r.completion_pct >= 100 ? "bg-success text-white" : r.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                           {r.completion_pct}%
                         </span>
                       )}
@@ -10628,7 +10628,7 @@ function ProjectEffort({
                     <Td>
                       {u.completion_pct == null ? "—" : (
                         <span className={clsx("rounded px-2 py-0.5 text-xs font-semibold",
-                          u.completion_pct >= 100 ? "bg-success/20 text-success" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                          u.completion_pct >= 100 ? "bg-success text-white" : u.completion_pct >= 60 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                           {u.completion_pct}%
                         </span>
                       )}
@@ -10690,6 +10690,9 @@ function UserDashboardsDesk({
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.search).get("f_user") || "";
   });
+  // List controls: filter text + whether laid-off people are shown (active-only default).
+  const [q, setQ] = useState("");
+  const [showLaidOff, setShowLaidOff] = useState(false);
   useEffect(() => {
     onPersonChange?.(person || null);
     // Reports open/close only — deliberately not reactive to the callback identity.
@@ -10751,15 +10754,15 @@ function UserDashboardsDesk({
       />
     );
 
-  // The grid lists EVERY known person (not just those with links in the last 30
-  // days) — activity is a stat, not a filter. Merge the full label list with the
-  // windowed activity so people with no recent links still get a card (0 links).
+  // List EVERY known person (not just recently active) — activity is a stat, not a
+  // filter. Merge the full label list with windowed activity so people with no
+  // recent links still appear (0 links). Active-only by default; laid-off behind a toggle.
   const activity = new Map((team.data?.users || []).map((u) => [u.user_label, u]));
   const activeMap = new Map((people.data || []).map((p) => [p.user_label, p.active]));
   const labelSet = Array.from(
     new Set([...(people.data || []).map((p) => p.user_label), ...(team.data?.users || []).map((u) => u.user_label)])
   );
-  const users: DeskUser[] = labelSet
+  const allUsers: DeskUser[] = labelSet
     .map(
       (l) =>
         activity.get(l) || {
@@ -10768,6 +10771,14 @@ function UserDashboardsDesk({
         }
     )
     .sort((a, b) => b.links - a.links || a.user_label.localeCompare(b.user_label));
+  const laidOffCount = allUsers.filter((u) => activeMap.get(u.user_label) === false).length;
+  const activeCount = allUsers.length - laidOffCount;
+  const needle = q.trim().toLowerCase();
+  const users = allUsers.filter(
+    (u) =>
+      (showLaidOff || activeMap.get(u.user_label) !== false) &&
+      (!needle || u.user_label.toLowerCase().includes(needle))
+  );
   const loading = team.isLoading || people.isLoading;
   return (
     <section className="space-y-4">
@@ -10775,7 +10786,7 @@ function UserDashboardsDesk({
         <div>
           <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
             User Dashboards
-            <HelpTip text="Open any person's full dashboard — hours, targets, production, quality, calendar and trends. Pick a name or click a card." />
+            <HelpTip text="Open any person's full dashboard — hours, targets, production, quality, calendar and trends. Pick a name or click a row." />
           </h2>
           <p className="text-sm text-muted">
             {projectId ? "This project only." : "All people across the workspace."} Choose someone to see their full dashboard.
@@ -10785,9 +10796,35 @@ function UserDashboardsDesk({
           value={person}
           onChange={setPerson}
           options={(people.data || []).map((p) => ({ value: p.user_label, label: p.active ? p.user_label : `${p.user_label} (laid off)` }))}
-          placeholder="Find a person…"
+          placeholder="Jump to a person…"
           width="w-64"
         />
+      </div>
+
+      {/* Toolbar: filter the list · toggle laid-off · headcount */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter people…"
+            className="w-56 rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-sm text-ink placeholder:text-muted focus:border-ocean/50 focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={() => setShowLaidOff((v) => !v)}
+          className={clsx(
+            "rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition",
+            showLaidOff ? "border-ocean/50 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:text-ink"
+          )}
+          title="Laid-off people keep all history but are hidden from planning pickers"
+        >
+          {showLaidOff ? "Showing laid-off" : "Show laid-off"}{laidOffCount ? ` (${laidOffCount})` : ""}
+        </button>
+        <span className="text-xs text-muted">
+          {activeCount} active{laidOffCount ? ` · ${laidOffCount} laid off` : ""}{needle ? ` · ${users.length} shown` : ""}
+        </span>
       </div>
 
       {loading ? (
@@ -10801,38 +10838,53 @@ function UserDashboardsDesk({
 
       {!loading && !team.isError ? (
         users.length ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel shadow-card">
             {users.map((u) => {
               const rate = u.links > 0 ? Math.round((100 * u.indexed) / u.links) : null;
+              const laid = activeMap.get(u.user_label) === false;
               return (
                 <button
                   key={u.user_label}
                   onClick={() => setPerson(u.user_label)}
                   title={`Open ${u.user_label}'s dashboard`}
-                  className="flex flex-col gap-2 rounded-xl border border-line bg-panel p-4 text-left shadow-card transition hover:border-ocean/40 hover:bg-field/40"
+                  className={clsx(
+                    "flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-field/50",
+                    laid && "opacity-70"
+                  )}
                 >
-                  <span className="flex items-center gap-2">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ocean/10 text-ocean">
-                      <Users className="h-4 w-4" />
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ocean/10 text-ocean">
+                    <Users className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-semibold text-ink">{u.user_label}</span>
+                      {laid ? (
+                        <span className="shrink-0 rounded-full bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted" title="Laid off — history kept, hidden from planning pickers">laid off</span>
+                      ) : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-semibold text-ink">{u.user_label}</span>
-                    {activeMap.get(u.user_label) === false ? (
-                      <span className="shrink-0 rounded-full bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted" title="Laid off — history kept, hidden from planning pickers">laid off</span>
+                    <span className="block truncate text-xs text-muted">
+                      {u.links.toLocaleString()} links · all time{u.avg_score != null ? ` · avg score ${Math.round(u.avg_score)}` : ""}
+                    </span>
+                  </span>
+                  <span className="hidden shrink-0 items-center gap-1.5 sm:flex">
+                    <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-semibold text-muted" title="Qualified links">{u.pass.toLocaleString()} qual.</span>
+                    {u.duplicates ? (
+                      <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-semibold text-muted" title="Duplicates">{u.duplicates.toLocaleString()} dup</span>
                     ) : null}
                   </span>
-                  <span className="text-xs text-muted">{u.links} links · all time</span>
                   {rate != null ? (
-                    <span className={clsx("w-fit rounded px-2 py-0.5 text-[11px] font-semibold",
+                    <span className={clsx("shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold",
                       rate >= 80 ? "bg-success/20 text-success" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
                       {rate}% indexed
                     </span>
                   ) : null}
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted" />
                 </button>
               );
             })}
           </div>
         ) : (
-          <Empty label="No people with activity in the last 30 days." />
+          <Empty label={needle ? `No people match “${q}”.` : showLaidOff ? "No people yet." : "No active people. Toggle “Show laid-off” to see former staff."} />
         )
       ) : null}
     </section>
@@ -11234,7 +11286,7 @@ const BATCH_STATUS: Record<string, { label: string; cls: string }> = {
   review: { label: "Needs review", cls: "bg-plum/10 text-plum border-plum/30" },
   running: { label: "Running", cls: "bg-ocean/10 text-ocean border-ocean/30" },
   pending: { label: "Queued", cls: "bg-field text-muted border-line" },
-  completed: { label: "Completed", cls: "bg-success/20 text-success border-success/50" },
+  completed: { label: "Completed", cls: "bg-success text-white border-success" },
   partial: { label: "Finished with problems", cls: "bg-ember/10 text-ember border-ember/30" },
   failed: { label: "Failed", cls: "bg-danger/10 text-danger border-danger/30" }
 };
@@ -11833,7 +11885,7 @@ function BatchDetails({
         const done = Number(b.counters?.done ?? 0);
         const running = b.status === "running" || b.status === "pending";
         const rowCls = (st?: string) =>
-          st === "completed" ? { chip: "bg-success/20 text-success border-success/50", label: "Completed" }
+          st === "completed" ? { chip: "bg-success text-white border-success", label: "Completed" }
             : st === "partial" ? { chip: "bg-ember/10 text-ember border-ember/30", label: "Finished with problems" }
               : st === "failed" ? { chip: "bg-danger/10 text-danger border-danger/30", label: "Failed" }
                 : st === "running" ? { chip: "bg-ocean/10 text-ocean border-ocean/30", label: "Running" }
@@ -16939,7 +16991,7 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
                       className={clsx(
                         "rounded-full border px-2.5 py-1 text-xs font-semibold transition",
                         active
-                          ? "border-success/50 bg-success/20 text-success hover:bg-success/20"
+                          ? "border-success bg-success text-white hover:bg-success/90"
                           : "border-line bg-field text-muted hover:text-ink"
                       )}
                       title={active ? "Active — click to deactivate" : "Deactivated — click to activate"}
@@ -17741,7 +17793,7 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
         </section>
       ) : null}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel shadow-card">
         {tests.map((t) => {
           // Authoritative: the server flags running only while a backlink is
           // still pending/checking. Drafts (never run) show "Not run yet".
@@ -17751,37 +17803,35 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
           const checkedOf = Math.min(t.checked + t.failed + (t.review ?? 0), backlinks);
           return (
             <button key={t.id} onClick={() => setOpenId(t.id)}
-              className="card-lift rounded-xl border border-line bg-panel p-4 text-left shadow-card">
-              <div className="flex items-center gap-2.5">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-plum to-ocean text-sm font-bold text-white">
-                  {t.candidate_name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
+              className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-field/50">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-plum to-ocean text-xs font-bold text-white">
+                {t.candidate_name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-semibold text-ink">{t.candidate_name}</span>
+                <span className="block truncate text-[11px] text-muted">
+                  {t.role_applied || t.candidate_email || "Candidate test"}
+                  {t.avg_score != null ? ` · avg score ${t.avg_score}` : ""}
+                  {t.competitors ? ` · ${t.competitors} competitor${t.competitors === 1 ? "" : "s"}` : ""}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-semibold text-ink">{t.candidate_name}</div>
-                  <div className="truncate text-[11px] text-muted">{t.role_applied || t.candidate_email || "Candidate test"}</div>
-                </div>
-                {running ? (
-                  <span className="flex items-center gap-1 text-[11px] font-medium text-ocean" title={`Checking — ${checkedOf}/${backlinks} done`}>
-                    <Loader2 className="h-4 w-4 animate-spin" /> {checkedOf}/{backlinks}
-                  </span>
-                ) : isDraft ? (
-                  <span className="rounded-full border border-line bg-field px-2 py-0.5 text-[10px] font-semibold text-muted">Not run</span>
-                ) : (
-                  <CheckCircle2 className="h-4 w-4 text-success" aria-label="QA complete" />
-                )}
-              </div>
-              <div className="mt-3 grid grid-cols-4 gap-1 text-center">
-                {([["Links", backlinks], ["Pass", t.passed], ["Review", t.review ?? 0], ["Fail", t.failed]] as Array<[string, number]>).map(([lab, val]) => (
-                  <div key={lab}>
-                    <div className={clsx("text-lg font-bold", lab === "Pass" ? "text-success" : lab === "Fail" ? "text-danger" : lab === "Review" ? "text-ember" : "text-ink")}>{val}</div>
-                    <div className="text-[10px] uppercase tracking-wide text-muted">{lab}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[11px] text-muted">
-                <span>{t.avg_score != null ? `Avg score ${t.avg_score}` : "—"}{t.competitors ? ` · ${t.competitors} competitor${t.competitors === 1 ? "" : "s"}` : ""}</span>
-                <span>{t.created_at ? fmtChartLabel(t.created_at.slice(0, 10), true) : ""}</span>
-              </div>
+              </span>
+              {running ? (
+                <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-ocean" title={`Checking — ${checkedOf}/${backlinks} done`}>
+                  <Loader2 className="h-4 w-4 animate-spin" /> {checkedOf}/{backlinks}
+                </span>
+              ) : isDraft ? (
+                <span className="shrink-0 rounded-full border border-line bg-field px-2 py-0.5 text-[10px] font-semibold text-muted">Not run</span>
+              ) : (
+                <span className="hidden shrink-0 items-center gap-1 text-[11px] font-semibold text-success sm:flex"><CheckCircle2 className="h-4 w-4" /> Done</span>
+              )}
+              <span className="hidden shrink-0 items-center gap-1.5 md:flex">
+                <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-semibold text-ink" title="Links">{backlinks}</span>
+                <span className="rounded bg-success/15 px-1.5 py-0.5 text-[11px] font-semibold text-success" title="Pass">{t.passed}</span>
+                <span className="rounded bg-ember/10 px-1.5 py-0.5 text-[11px] font-semibold text-ember" title="Review">{t.review ?? 0}</span>
+                <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger" title="Fail">{t.failed}</span>
+              </span>
+              <span className="hidden shrink-0 text-[11px] text-muted lg:block">{t.created_at ? fmtChartLabel(t.created_at.slice(0, 10), true) : ""}</span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted" />
             </button>
           );
         })}
@@ -20866,7 +20916,7 @@ function SheetsDesk({
         const mins = startMs ? Math.max(0, Math.round((endMs - startMs) / 60000)) : null;
         const elapsed = mins === null ? null : mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
         const chipCls = (st?: string) =>
-          st === "completed" ? "border-success/50 bg-success/20 text-success"
+          st === "completed" ? "border-success bg-success text-white"
             : st === "partial" ? "border-ember/40 bg-ember/10 text-ember"
               : st === "failed" ? "border-danger/40 bg-danger/10 text-danger"
                 : st === "running" ? "border-ocean/40 bg-ocean/10 text-ocean"
@@ -20880,7 +20930,7 @@ function SheetsDesk({
               {running ? <Loader2 className="h-4 w-4 animate-spin text-ocean" /> : <CheckCircle2 className="h-4 w-4 text-success" />}
               <span className="text-sm font-semibold text-ink">{b.label || "Bulk sheet sync"}</span>
               <span className={clsx("rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-                b.status === "completed" ? "border-success/50 bg-success/20 text-success"
+                b.status === "completed" ? "border-success bg-success text-white"
                   : b.status === "partial" ? "border-ember/40 bg-ember/10 text-ember"
                     : b.status === "failed" ? "border-danger/40 bg-danger/10 text-danger"
                       : "border-ocean/40 bg-ocean/10 text-ocean")}>
