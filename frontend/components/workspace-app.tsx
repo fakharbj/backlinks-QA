@@ -11257,9 +11257,9 @@ const ITEM_PRESENCE: Record<string, { label: string; cls: string; help: string }
 const ITEM_STATE: Record<string, { label: string; cls: string }> = {
   pending: { label: "Awaiting review", cls: "bg-field text-muted" },
   checking: { label: "Checking…", cls: "bg-ocean/10 text-ocean animate-pulse" },
-  checked: { label: "Checked", cls: "bg-ocean/10 text-ocean" },
+  checked: { label: "Checked", cls: "bg-success/20 text-success" },
   failed: { label: "Failed", cls: "bg-danger/10 text-danger" },
-  approved: { label: "Approved", cls: "bg-ocean/15 text-ocean" },
+  approved: { label: "Approved", cls: "bg-success/20 text-success" },
   rejected: { label: "Rejected", cls: "bg-field text-muted line-through" }
 };
 
@@ -12123,7 +12123,7 @@ function BatchDetails({
             Run log
             {(b?.status === "running" || (itemsQ.data?.items || []).some((it) => it.state === "checking")) ? (
               <span className="flex items-center gap-1 rounded-full bg-ocean/10 px-2 py-0.5 text-[10px] font-semibold text-ocean">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ocean" /> LIVE
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> LIVE
               </span>
             ) : null}
             <span className="text-[11px] font-normal text-muted">{(logs.data || []).length} entr{(logs.data || []).length === 1 ? "y" : "ies"}</span>
@@ -22858,7 +22858,7 @@ function GmailAccountsCard({
             {assignmentsQ.data ? (
               <span className="flex flex-wrap gap-1.5 text-[11px]">
                 <span className="rounded-full bg-field px-2 py-0.5 text-muted">{assignmentsQ.data.stats.total} total</span>
-                <span className="rounded-full bg-ocean/10 px-2 py-0.5 text-ocean">{assignmentsQ.data.stats.active} active</span>
+                <span className="rounded-full bg-success/20 px-2 py-0.5 text-success">{assignmentsQ.data.stats.active} active</span>
                 <span className="rounded-full bg-field px-2 py-0.5 text-muted">{assignmentsQ.data.stats.active_users} users</span>
                 <span className="rounded-full bg-field px-2 py-0.5 text-muted">{assignmentsQ.data.stats.active_projects} projects</span>
               </span>
@@ -22898,7 +22898,7 @@ function GmailAccountsCard({
                     <Td><span className="whitespace-nowrap text-xs text-muted">{r.last_used_at ? formatDay(r.last_used_at) : "never"}</span></Td>
                     <Td>
                       {r.status === "active" ? (
-                        <button onClick={() => revoke.mutate(r.id)} className="rounded bg-ocean/10 px-1.5 py-0.5 text-xs font-medium text-ocean hover:bg-danger/10 hover:text-danger" title="Click to revoke">active ×</button>
+                        <button onClick={() => revoke.mutate(r.id)} className="rounded bg-success/20 px-1.5 py-0.5 text-xs font-medium text-success hover:bg-danger/10 hover:text-danger" title="Click to revoke">active ×</button>
                       ) : <span className="rounded bg-field px-1.5 py-0.5 text-xs text-muted">revoked</span>}
                     </Td>
                   </tr>
