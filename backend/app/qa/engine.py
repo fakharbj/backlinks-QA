@@ -7,7 +7,7 @@ deterministic: the same artifact always yields the same verdict (Arch §4).
 
 from __future__ import annotations
 
-from app.crawler.types import CrawlArtifact
+from app.crawler.types import CrawlArtifact, FetchError
 from app.qa.classification import classify
 from app.qa.composite import compute_followability, compute_indexability
 from app.qa.enums import (
@@ -15,6 +15,7 @@ from app.qa.enums import (
     Indexability,
     IssueCategory,
     IssueLabel,
+    OverallStatus,
     RelType,
     Severity,
 )
@@ -75,9 +76,35 @@ def evaluate(
     recommendations = _aggregate_recommendations(issues)
     top = _top_issue(issues)
 
+    # "Unverified": we never actually READ the page (hard IP block, CAPTCHA/WAF
+    # the browser couldn't clear, JS-only shell, robots-disallowed-and-unread)
+    # AND the link was never confirmed. The score is then not evidence-based —
+    # flag it so the UI can show "Not scored — couldn't check" (owner rule:
+    # never auto-score what we couldn't see).
+    read_direct = (
+        artifact.fetch_error is FetchError.NONE
+        and artifact.http_status is not None
+        and 200 <= artifact.http_status < 300
+        and artifact.is_html
+        and not (
+            artifact.detection.captcha
+            or artifact.detection.cloudflare_challenge
+            or artifact.detection.waf_block
+        )
+    )
+    read_browser = artifact.found_in_rendered or (
+        artifact.rendered and 200 <= (artifact.browser_http_status or 0) < 300
+    )
+    unverified = (
+        status is OverallStatus.NEEDS_MANUAL_REVIEW
+        and not artifact.link_found
+        and not (read_direct or read_browser)
+    )
+
     return QAResult(
         status=status,
         score=score,
+        unverified=unverified,
         grade_band=grade,
         is_followable=followable,
         is_indexable=indexable,

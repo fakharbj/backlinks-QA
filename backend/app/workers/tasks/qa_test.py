@@ -75,26 +75,42 @@ def _build_request(link: QATestLink) -> CrawlRequest:
 
 
 def _facts(artifact, result) -> dict:
-    """Full per-link evidence for the results table (issues, redirects, etc.)."""
+    """Full per-link evidence for the results table — the SAME depth as the
+    production Backlinks drawer: every issue with its code, severity, message
+    and fix recommendation, the score breakdown, and why it wasn't scored."""
     issues = []
-    for issue in (result.issues or [])[:10]:
+    for issue in (result.issues or []):
         label = getattr(issue, "label", None)
         issues.append({
             "code": getattr(issue, "code", None),
             "label": getattr(label, "value", None) or (str(label) if label else None),
             "severity": getattr(getattr(issue, "severity", None), "value", None),
             "message": getattr(issue, "message", None),
+            "recommendation": getattr(issue, "recommendation", None),
+        })
+    # Score breakdown ("started at 100, −25 SOURCE_403 → …") — same as the drawer.
+    steps = []
+    for st in (result.score_breakdown or []):
+        steps.append({
+            "code": getattr(st, "code", None),
+            "delta": getattr(st, "delta", None),
+            "note": getattr(st, "note", None),
         })
     return {
         "found_in_raw": result.found_in_raw,
         "found_in_rendered": result.found_in_rendered,
         "rendered": bool(getattr(artifact, "rendered", False)),
+        "egress": getattr(artifact, "egress", None),
         "final_url": result.final_url,
         "is_followable": result.is_followable,
         "robots_status": result.robots_status,
         "canonical_status": result.canonical_status,
         "word_count": getattr(getattr(artifact, "signals", None), "word_count", None),
         "issues": issues,
+        "recommendations": list(result.recommendations or []),
+        "score_breakdown": steps,
+        # Why there's no score: we couldn't actually read the page.
+        "unverified": bool(result.unverified),
     }
 
 
@@ -163,7 +179,11 @@ async def _run_async(batch_id_str: str) -> dict:
                 result = evaluate(artifact, policy=policy)
                 primary = getattr(artifact, "primary_link", None)
                 row.status = result.status.value if result.status else None
-                row.score = result.score
+                # Owner rule: never auto-score a page we couldn't actually read
+                # (hard block / CAPTCHA / JS-only / robots-unread). A number
+                # there is misleading — store NULL and let the UI say
+                # "Not scored — couldn't check the page".
+                row.score = None if result.unverified else result.score
                 row.link_found = result.link_found
                 row.http_status = result.http_status
                 row.current_rel = result.current_rel

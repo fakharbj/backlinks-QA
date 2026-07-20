@@ -19,12 +19,20 @@ def source_disallowed(ctx: CheckContext) -> Iterable[Issue]:
     blocked = art.robots.source_allowed is False or art.fetch_error is FetchError.BLOCKED_ROBOTS
     if not blocked:
         return
-    # Did we actually read the page anyway? (The QA lab crawls with
-    # respect_robots=False — one-off manual verifications.) With real page
-    # evidence in hand, robots.txt is an INDEXABILITY note, not an
-    # unanswerable question: the verdict comes from what we saw.
-    fetched = art.fetch_error in (None, FetchError.NONE) and art.http_status is not None
-    if fetched:
+    # Did we actually READ the page (a real 2xx body, direct or via the
+    # browser)? A 403/blocked status is NOT "page loads" — for those the
+    # source is unread and RBT-03 fires instead, so we never print the
+    # contradiction "Page loads, but robots disallows" beside a SOURCE_403
+    # "we couldn't read the page" on the same row.
+    read_direct = (
+        art.fetch_error in (None, FetchError.NONE)
+        and art.http_status is not None
+        and 200 <= art.http_status < 300
+    )
+    read_browser = bool(art.found_in_rendered) or (
+        art.rendered and 200 <= (art.browser_http_status or 0) < 300
+    )
+    if read_direct or read_browser:
         yield issue(code="RBT-05", label=IssueLabel.ROBOTS_BLOCKED, category=CAT,
                     severity=Severity.MEDIUM,
                     message="Page loads, but robots.txt disallows Googlebot — the link was checked; search engines may not crawl/index this page.",  # noqa: E501

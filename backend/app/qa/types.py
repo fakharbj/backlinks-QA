@@ -104,6 +104,12 @@ class QAResult:
     robots_status: str | None = None
     top_issue: Issue | None = None
     scoring_rule_version_id: uuid.UUID | None = None
+    # True when we could NOT actually read the source page's content (hard IP
+    # block, CAPTCHA/WAF the browser couldn't clear, JS-only page, robots-
+    # disallowed-and-unread) AND the link was never confirmed. The numeric
+    # score is then NOT evidence-based — surfaces let the UI show
+    # "Not scored — couldn't check" instead of a misleading number.
+    unverified: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {

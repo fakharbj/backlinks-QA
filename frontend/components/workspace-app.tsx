@@ -17512,8 +17512,16 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                           <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger">check failed</span>
                         ) : <Status value={l.status || "PENDING"} compact />}
                       </Td>
-                      <Td><span className={clsx("font-semibold", (l.score ?? 0) >= 70 ? "text-ocean" : (l.score ?? 0) >= 40 ? "text-ember" : "text-danger")}>{l.score ?? "—"}</span></Td>
-                      <Td>{l.link_found == null ? "—" : l.link_found ? <span className="text-ocean">yes</span> : <span className="text-danger">no</span>}</Td>
+                      <Td>
+                        {l.score == null ? (
+                          <span className="text-xs font-medium text-muted" title={l.facts?.unverified ? "We couldn't read this page (blocked / CAPTCHA / JavaScript-only), so there's no evidence to score. Open it yourself to confirm." : "Not scored yet"}>
+                            Not scored
+                          </span>
+                        ) : (
+                          <span className={clsx("font-semibold", l.score >= 70 ? "text-success" : l.score >= 40 ? "text-ember" : "text-danger")}>{l.score}</span>
+                        )}
+                      </Td>
+                      <Td>{l.link_found == null ? (l.facts?.unverified ? <span className="text-ember" title="Couldn't read the page">couldn&apos;t check</span> : "—") : l.link_found ? <span className="text-success">yes</span> : <span className="text-danger">no</span>}</Td>
                       <Td>{l.http_status ?? "—"}</Td>
                       <Td>{l.current_rel || "—"}</Td>
                       <Td>{l.indexability || "—"}</Td>
@@ -17551,6 +17559,17 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                     {exp ? (
                       <tr className="bg-field/30">
                         <td colSpan={12} className="px-4 py-3">
+                          {l.facts?.unverified ? (
+                            <div className="mb-3 flex items-start gap-2 rounded-lg border border-ember/40 bg-ember/10 p-2.5 text-xs text-ember">
+                              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                              <span>
+                                <span className="font-semibold">Not scored — we couldn&apos;t read this page.</span>{" "}
+                                It blocked our checker (IP/bot block, CAPTCHA, or a JavaScript-only page), so there&apos;s
+                                no evidence to score or to confirm the link. This is <span className="font-semibold">not</span> a
+                                &ldquo;link missing&rdquo; result — open the URL in your own browser to verify it by hand.
+                              </span>
+                            </div>
+                          ) : null}
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1 text-xs">
                               <div><span className="text-muted">Target:</span> <span className="text-ink">{l.target_url || "—"}</span></div>
@@ -17559,22 +17578,46 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                               <div><span className="text-muted">Matched href:</span> <span className="break-all text-ink">{l.matched_href || "—"}</span></div>
                               <div><span className="text-muted">Anchor found:</span> <span className="text-ink">{l.current_anchor || "—"}</span></div>
                               <div><span className="text-muted">Final URL:</span> <span className="break-all text-ink">{String((l.facts?.final_url as string) || "—")}</span></div>
+                              <div><span className="text-muted">How we reached it:</span> <span className="text-ink">{l.facts?.rendered ? "rendered browser" : "direct fetch"}{l.facts?.egress === "proxy" ? " · via unblocker proxy" : ""}</span></div>
                               {l.error ? <div className="text-danger">Error: {l.error}</div> : null}
+                              {/* Score breakdown — same as the production Backlinks drawer. */}
+                              {l.score != null && Array.isArray(l.facts?.score_breakdown) && (l.facts.score_breakdown as unknown[]).length > 1 ? (
+                                <div className="pt-1">
+                                  <div className="mb-0.5 text-[11px] font-semibold uppercase text-muted">How the score was built</div>
+                                  <ul className="space-y-0.5">
+                                    {(l.facts.score_breakdown as Array<{ code?: string; delta?: number; note?: string }>).map((st, i) => (
+                                      <li key={i} className="flex items-center justify-between gap-2">
+                                        <span className="text-muted">{st.code === "START" ? "Baseline" : (st.note || st.code)}</span>
+                                        <span className={clsx("font-mono font-semibold", (st.delta || 0) < 0 ? "text-danger" : (st.delta || 0) > 0 ? "text-success" : "text-muted")}>
+                                          {st.code === "START" ? "100" : `${(st.delta || 0) > 0 ? "+" : ""}${st.delta ?? 0}`}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null}
                             </div>
                             <div>
-                              <div className="mb-1 text-[11px] font-semibold uppercase text-muted">Issues found</div>
+                              <div className="mb-1 text-[11px] font-semibold uppercase text-muted">QA checks — full detail</div>
                               {Array.isArray(l.facts?.issues) && (l.facts.issues as unknown[]).length ? (
                                 <ul className="space-y-1">
-                                  {(l.facts.issues as Array<{ label?: string; severity?: string; message?: string }>).map((iss, i) => (
+                                  {(l.facts.issues as Array<{ code?: string; label?: string; severity?: string; message?: string; recommendation?: string }>).map((iss, i) => (
                                     <li key={i} className="rounded-md border border-line bg-panel p-1.5 text-[11px]">
-                                      <span className={clsx("font-semibold", iss.severity === "critical" || iss.severity === "major" ? "text-danger" : "text-ember")}>
-                                        {(iss.label || "issue").replaceAll("_", " ")}
+                                      <span className="flex items-center gap-1.5">
+                                        <span className={clsx("rounded px-1 py-0.5 text-[9px] font-bold uppercase",
+                                          iss.severity === "critical" || iss.severity === "major" || iss.severity === "high" ? "bg-danger/15 text-danger"
+                                            : iss.severity === "medium" ? "bg-ember/15 text-ember"
+                                              : iss.severity === "info" ? "bg-ocean/10 text-ocean" : "bg-field text-muted")}>
+                                          {iss.severity || "info"}
+                                        </span>
+                                        <span className="font-semibold text-ink">{(iss.label && iss.label !== "NONE" ? iss.label : iss.code || "check").replaceAll("_", " ")}</span>
                                       </span>
-                                      {iss.message ? <span className="text-muted"> — {iss.message}</span> : null}
+                                      {iss.message ? <span className="mt-0.5 block text-muted">{iss.message}</span> : null}
+                                      {iss.recommendation ? <span className="mt-0.5 block text-ocean">→ {iss.recommendation}</span> : null}
                                     </li>
                                   ))}
                                 </ul>
-                              ) : <p className="text-[11px] text-muted">No blocking issues.</p>}
+                              ) : <p className="text-[11px] text-muted">No issues recorded.</p>}
                             </div>
                           </div>
                         </td>
