@@ -400,8 +400,32 @@ shared `downloadCsv`) + **spam consistency** (`domain_spam` via the per-page
 grid). NOTE: DA/PA/AS/Spam show "—" until a metrics check runs
 (`RAPIDAPI_KEY`/`SEMRUSH_RAPIDAPI_ENDPOINT`).
 
+**Delivery-polish batch shipped + deployed** (2026-07-22, migrations `0053`–
+`0055`, 239 tests, docs/DELIVERY-POLISH-PLAN.md): **T1** 8 UX fixes (viewer
+nav minus Plans&calendar, combined "New source domains" card, dropdown-clip
+fix, This-week-first + week nav, By-project View-all, planner edit MODAL,
+Needs-review=PLUM (.pill-review), filter type-ahead via FilterMultiSelect
+onSearch — facets are top-50 only). **T6 scoring**: global rule-set v2 zeroes
+anchor-changed/canonical-missing/all link-placements (0053); PQ-06 →
+_UNSCORED_CODES; classification is SCORE-ONLY past hard gates (≥80 = PASS even
+w/ sponsored −10); staging passes the ruleset; retro-rescored 44,278 links
+(WARNING→PASS 1,907; final PASS 14,575/WARN 9,899). **T3 batches**: children
+carry meta.parent_batch_id (0054 backfill), /batches hides children
+(top_level default; ?parent= lists a run's children), details page links
+parent↔children, Load more; stale bulk parents self-heal after 3h
+(_heal_stale_parents in auto_sync_tick — worker restarts mid-run used to
+strand them). **T4 competitors**: ?competitor= on /domains; domains grid
+hidden behind "Show →", per-competitor domains inline in the expanded row.
+**T2**: weekly overbooked/free/utilization ignore company non-working days
+(Saturday stays working — owner rule: only manually-off calendar days count);
+self-service My settings (avatar ≤300KB users.avatar_data_uri 0055 via
+PUT /auth/avatar; POST /auth/change-password keeps sessions). **T5 team**:
+members table → ⋯ actions menu + real modals (edit login, one-time temp
+password w/ copy) + avatars in rows.
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
-self-serve password reset, shared saved views. Demo rows from verification:
+self-serve password reset, shared saved views. Reports-builder facet selects
+still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:
 assignment (alex · Jul 2 · Limo Black) + approved leave (alex Jul 10–11) —
 removable in the Tasks desk. Temp account `qa-ui-test@linksentinel.local`
 (creds `/tmp/ls_qa_creds.txt`) — deactivate/remove when owners confirm. Open
