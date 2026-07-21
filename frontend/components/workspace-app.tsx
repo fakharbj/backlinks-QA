@@ -878,6 +878,10 @@ const DASH_SECTIONS: Array<[DashSection, string, NavIcon, string]> = [
   ["calendar", "Plans & calendar", CalendarDays, "Assignments & month view"],
   ["rates", "Rates & leave", Activity, "Productivity & time off"]
 ];
+// Viewers don't get "Plans & calendar" on their own dashboard — their plans
+// live in My Work / My calendar already (owner request: avoid the duplicate).
+const dashSectionsFor = (viewer: boolean) =>
+  viewer ? DASH_SECTIONS.filter(([sid]) => sid !== "calendar") : DASH_SECTIONS;
 
 // Every tab's human label (breadcrumb + palette) — derived from the nav
 // definitions so it can never drift from the sidebar.
@@ -1876,7 +1880,7 @@ function Sidebar({
                       the main nav — a large dashboard area, not an inner widget. */}
                   {(id === "mydash" && role === "viewer") || (active && dashSubFor === id) ? (
                     <div className="ml-3.5 mt-1 space-y-0.5 border-l-2 border-ocean/25 pl-2 pb-1">
-                      {DASH_SECTIONS.map(([sid, slabel, SIcon, sdesc]) => {
+                      {dashSectionsFor(role === "viewer").map(([sid, slabel, SIcon, sdesc]) => {
                         const son = dashSection === sid;
                         return (
                           <button
@@ -1947,7 +1951,7 @@ function MobileNav({
         </button>
         {/* Dashboard pages inline, right after the open dashboard tab. */}
         {activeTab === id && dashSubFor === id
-          ? DASH_SECTIONS.map(([sid, slabel, SIcon]) => (
+          ? dashSectionsFor(role === "viewer").map(([sid, slabel, SIcon]) => (
               <button
                 key={sid}
                 onClick={() => { onTab(id); onDashSection(sid); }}
@@ -2290,7 +2294,7 @@ function Overview({
     <section className="space-y-5">
       {projectId ? (
         // ── Project hero: unmistakably a single project's home ───────────
-        <div className="relative overflow-hidden rounded-2xl border border-plum/30 bg-gradient-to-r from-plum/15 via-panel to-ocean/10 p-5 shadow-soft">
+        <div className="relative rounded-2xl border border-plum/30 bg-gradient-to-r from-plum/15 via-panel to-ocean/10 p-5 shadow-soft">
           <div className="flex flex-wrap items-center gap-4">
             <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-plum to-ocean text-lg font-bold text-white shadow-soft">
               {(activeProject?.name || "P").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
@@ -2391,7 +2395,7 @@ function Overview({
             segments={[
               { name: "Qualified", cssVar: "--success", value: stats.totals.pass_count ?? 0 },
               { name: "Needs improvement", cssVar: "--ember", value: stats.totals.warning_count ?? 0 },
-              { name: "Needs review", cssVar: "--ember", value: stats.totals.review_count ?? 0 },
+              { name: "Needs review", cssVar: "--plum", value: stats.totals.review_count ?? 0 },
               { name: "Not qualified", cssVar: "--danger", value: stats.totals.fail_count ?? 0 },
               // Each bucket uses its OWN count — never a remainder (that wrongly
               // folded UNKNOWN links into "QA pending"). Zero buckets are hidden.
@@ -3522,7 +3526,13 @@ function Backlinks({
           <FilterMultiSelect
             label="User"
             withBlanks
-            options={facetOpts("user")}
+            // Facets only hold the top-50 users — merge the FULL label list so
+            // typing any person always finds them (facet counts kept where known).
+            options={(() => {
+              const facet = facetOpts("user");
+              const seen = new Set(facet.map((o) => o.value));
+              return [...facet, ...(bulkLabelsQ.data || []).filter((l) => !seen.has(l)).map((l) => ({ value: l }))];
+            })()}
             selected={toks(userF)}
             onChange={(v) => setUserF(v.join(","))}
           />
@@ -3532,6 +3542,14 @@ function Backlinks({
             options={facetOpts("source_domain")}
             selected={toks(domainF)}
             onChange={(v) => setDomainF(v.join(","))}
+            allowCustom
+            // Facets only hold the top-50 domains — search the full catalog live.
+            onSearch={(term) =>
+              api<{ items: Array<{ domain_key: string; backlink_count?: number }> }>(
+                `/source-domains?search=${encodeURIComponent(term)}&limit=50`,
+                { token }
+              ).then((r) => (r.items || []).map((i) => ({ value: i.domain_key, count: i.backlink_count })))
+            }
           />
           {/* Date-type axis + range: picks which date the grid shows/sorts and filters. */}
           <label className="flex items-center gap-1 rounded-xl border border-line bg-panel shadow-card px-2 text-xs text-muted">
@@ -7041,20 +7059,21 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
         <MyRecommendationsPanel token={token} userLabel={me.data.labels[0]} />
       ) : null}
 
+      {/* Week at a glance FIRST (owner order: "This week" before the month
+          calendar; the company working-days calendar stays EXCLUDED from the
+          viewer dashboard — it lives on the admin Tasks desk). */}
+      {showCal && me.data?.labels.length ? (
+        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
+          <UserWeekStrip token={token} userLabel={me.data.labels[0]} />
+        </section>
+      ) : null}
+
       {/* Full task calendar: past, current and upcoming months (day/week/month). */}
       {showCal ? <MyTaskCalendar token={token} /> : null}
 
       {/* Latest links with live QA verdicts — what happened to what I built. */}
       {showLinks && me.data?.labels.length ? (
         <MyRecentLinks token={token} userLabel={me.data.labels[0]} />
-      ) : null}
-
-      {/* Week at a glance (owner rule: the company working-days calendar is
-          EXCLUDED from the viewer dashboard — it lives on the admin Tasks desk). */}
-      {showCal && me.data?.labels.length ? (
-        <section className="rounded-xl border border-line bg-panel p-4 shadow-card">
-          <UserWeekStrip token={token} userLabel={me.data.labels[0]} />
-        </section>
       ) : null}
 
       {showLanding ? (
@@ -7331,7 +7350,6 @@ function TasksDesk({
   });
 
   // ── Add-assignment form ──────────────────────────────────────────────
-  const formRef = useRef<HTMLElement | null>(null);
   const [fDay, setFDay] = useState(todayIso);
   const [fUser, setFUser] = useState("");
   const [fProject, setFProject] = useState(projectId || "");
@@ -7387,7 +7405,6 @@ function TasksDesk({
       if (p.user) setFUser(p.user);
       if (p.day) setFDay(p.day);
     }
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const rateWording = (src: string | null, lph: number | null) => {
     if (src === "manual") return "manual target set by hand";
@@ -7445,6 +7462,7 @@ function TasksDesk({
       if (fRepeat) saveTemplateEntry.mutate(); // before the resets — the template reads the form
       setFNote("");
       setFTarget("");
+      setShowAssign(false); // modal closes — the planner refreshes right behind it
       queryClient.invalidateQueries({ queryKey: ["day-report"] });
     },
     onError: (e: Error) => onNotice(e.message)
@@ -7525,6 +7543,10 @@ function TasksDesk({
     ["By person", (r) => r.user_label, (k) => k],
     ["By project", (r) => r.project_id, (k) => projectName(k)]
   ];
+  // Per-card cap so "By project" (often 30+ rows) stays the same height as
+  // "By person" — expandable with View all / Show less.
+  const STAT_CAP = 8;
+  const [statOpen, setStatOpen] = useState<Record<string, boolean>>({});
   const statRangeLabel =
     rangeFrom === rangeTo ? formatDay(rangeFrom) : `${formatDay(rangeFrom)} – ${formatDay(rangeTo)}`;
 
@@ -7554,11 +7576,13 @@ function TasksDesk({
               agg.set(k, a);
             }
             const entries = [...agg.entries()].sort((x, y) => y[1].hours - x[1].hours);
+            const open = Boolean(statOpen[title]);
+            const shown = open ? entries : entries.slice(0, STAT_CAP);
             return (
               <section key={title} className="rounded-xl border border-line bg-panel shadow-card">
                 <SectionTitle title={`${title} — ${statRangeLabel}`} />
                 <div className="divide-y divide-line">
-                  {entries.map(([k, a]) => {
+                  {shown.map(([k, a]) => {
                     const pctDone = a.target > 0 ? Math.round((100 * a.done) / a.target) : null;
                     return (
                       <div key={k} className="flex items-center gap-3 px-3 py-2 text-sm">
@@ -7578,6 +7602,14 @@ function TasksDesk({
                       </div>
                     );
                   })}
+                  {entries.length > STAT_CAP ? (
+                    <button
+                      onClick={() => setStatOpen((s) => ({ ...s, [title]: !open }))}
+                      className="w-full px-3 py-2 text-center text-xs font-medium text-ocean hover:bg-field"
+                    >
+                      {open ? "Show less" : `View all (${entries.length})`}
+                    </button>
+                  ) : null}
                 </div>
               </section>
             );
@@ -8234,23 +8266,27 @@ function TasksDesk({
         )}
       </section>
 
-      {/* Assign — hidden by default; "+ Add" in the planner opens it prefilled */}
-      {!showAssign ? (
-        <div>
-          <button
-            onClick={() => setShowAssign(true)}
-            className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            Assign work
-          </button>
-        </div>
-      ) : (
-      <section ref={formRef} className="rounded-xl border border-line bg-panel p-4 shadow-card">
+      {/* Assign — a MODAL so clicking a planner chip edits in place without
+          losing sight of the calendar (the old below-the-page form was invisible). */}
+      <div>
+        <button
+          onClick={() => setShowAssign(true)}
+          className="flex h-10 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90"
+        >
+          <Plus className="h-4 w-4" />
+          Assign work
+        </button>
+      </div>
+      {showAssign ? (
+      <div
+        className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[8vh] backdrop-blur-sm"
+        onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAssign(false); }}
+      >
+      <section role="dialog" aria-modal="true" aria-label="Assign or edit a plan" className="w-full max-w-2xl rounded-xl border border-line bg-panel p-4 shadow-pop">
         <div className="flex items-center justify-between">
-          <SectionTitle title="Assign work" flush />
-          <button onClick={() => setShowAssign(false)} className="text-xs font-medium text-muted hover:text-ink hover:underline">
-            Hide
+          <SectionTitle title={fUser ? `Plan — ${fUser}${fDay ? ` · ${formatDay(fDay)}` : ""}` : "Assign work"} flush />
+          <button onClick={() => setShowAssign(false)} aria-label="Close" className="text-muted hover:text-ink">
+            <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex flex-wrap items-end gap-2 pt-3">
@@ -8328,7 +8364,8 @@ function TasksDesk({
           </span>
         </div>
       </section>
-      )}
+      </div>
+      ) : null}
 
       <div className="grid gap-5 lg:grid-cols-2">
         {/* Productivity settings */}
@@ -9456,11 +9493,20 @@ function UserWeekStrip({
 }) {
   const fmtIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const monday = (() => {
-    const x = new Date();
+  const mondayOf = (base: Date) => {
+    const x = new Date(base);
     x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
     return fmtIso(x);
-  })();
+  };
+  // ‹ › week navigation — the strip defaults to the current week but can walk
+  // back through history or ahead to planned weeks.
+  const [monday, setMonday] = useState(() => mondayOf(new Date()));
+  const shiftWeek = (dir: number) => {
+    const x = new Date(`${monday}T00:00:00`);
+    x.setDate(x.getDate() + dir * 7);
+    setMonday(fmtIso(x));
+  };
+  const isCurrentWeek = monday === mondayOf(new Date());
   const days = [...Array(7)].map((_, i) => {
     const d = new Date(`${monday}T00:00:00`);
     d.setDate(d.getDate() + i);
@@ -9493,12 +9539,27 @@ function UserWeekStrip({
   const done = rows.reduce((a, r) => a + (r.excused ? 0 : r.actual_links), 0);
   return (
     <div>
-      <div className="mb-1.5 flex items-center justify-between">
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-muted">
-          This week — {userLabel}
+          {isCurrentWeek ? "This week" : "Week"} — {userLabel}
         </span>
-        <span className="text-xs text-muted">
-          {done}/{target} links{target > 0 ? ` · ${Math.round((100 * done) / target)}%` : ""}
+        <span className="flex items-center gap-1.5">
+          <button onClick={() => shiftWeek(-1)} aria-label="Previous week"
+            className="grid h-6 w-6 place-items-center rounded-md border border-line text-muted hover:bg-field hover:text-ink">‹</button>
+          <span className="whitespace-nowrap text-xs font-semibold text-ink">
+            {new Date(`${days[0]}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })} – {new Date(`${days[6]}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+          </span>
+          <button onClick={() => shiftWeek(1)} aria-label="Next week"
+            className="grid h-6 w-6 place-items-center rounded-md border border-line text-muted hover:bg-field hover:text-ink">›</button>
+          {!isCurrentWeek ? (
+            <button onClick={() => setMonday(mondayOf(new Date()))}
+              className="rounded-md border border-ocean/40 bg-ocean/10 px-1.5 py-0.5 text-[11px] font-semibold text-ocean hover:bg-ocean/20">
+              Today
+            </button>
+          ) : null}
+          <span className="text-xs text-muted">
+            {done}/{target} links{target > 0 ? ` · ${Math.round((100 * done) / target)}%` : ""}
+          </span>
         </span>
       </div>
       <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-7">
@@ -9562,6 +9623,12 @@ function UserDashboard({
   selfView?: boolean;
 }) {
   const queryClient = useQueryClient();
+  // Viewers have no "Plans & calendar" page on their own dashboard (their plans
+  // live in My Work / My calendar) — coerce a stale/deep-linked section away.
+  useEffect(() => {
+    if (selfView && section === "calendar") onSectionChange("overview");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selfView, section]);
   // Default to All time — a person's dashboard should show their whole record,
   // not just the last month, until the viewer narrows the timeframe.
   const [days, setDays] = useState("3650");
@@ -9875,7 +9942,7 @@ function UserDashboard({
     <section className="space-y-4">
       {/* ── Premium hero: who this is + the numbers that matter, in one band.
           The dashboard's PAGES live in the main sidebar on the left. ── */}
-      <div className="relative overflow-hidden rounded-2xl border border-ocean/25 bg-gradient-to-r from-ocean/10 via-panel to-plum/10 p-5 shadow-soft">
+      <div className="relative rounded-2xl border border-ocean/25 bg-gradient-to-r from-ocean/10 via-panel to-plum/10 p-5 shadow-soft">
         <div className="flex flex-wrap items-center gap-4">
           {!selfView ? (
             <button
@@ -9993,7 +10060,7 @@ function UserDashboard({
         </div>
         <span className="ml-auto" />
         <div className="flex flex-wrap gap-1">
-          {DASH_SECTIONS.map(([sid, slabel]) => (
+          {dashSectionsFor(selfView).map(([sid, slabel]) => (
             <button
               key={sid}
               onClick={() => onSectionChange(sid)}
@@ -10043,16 +10110,29 @@ function UserDashboard({
           ) : null}
 
           {/* Link production — headline cards, each opens the exact rows */}
-          <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-7">
+          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
             <Metric label="Links created" value={num(d.links.links)} icon={Link2} tone="ink"
               sub={pv ? `prev: ${num(pv.links.links)}` : undefined}
               onClick={() => open({})} help="All links credited to this person in the period. Click to see them." />
-            <Metric label="New domains (project)" value={num(d.links.project_new_domains)} icon={Globe} tone="ocean"
-              sub={pv ? `prev: ${num(pv.links.project_new_domains)}` : undefined}
-              help="First-ever link from that domain inside its project." />
-            <Metric label="New domains (overall)" value={num(d.links.global_new_domains)} icon={Globe} tone="plum"
-              sub={pv ? `prev: ${num(pv.links.global_new_domains)}` : undefined}
-              help="First time the domain appears anywhere in the workspace." />
+            {/* One combined card: the two "new domains" numbers measure different
+                things (workspace-first vs first-in-each-project) and side-by-side
+                identical cards read as a contradiction. Spell both out. */}
+            <div className="rounded-xl border border-line bg-panel p-3 shadow-card">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-muted">
+                <Globe className="h-3.5 w-3.5" /> New source domains
+                <HelpTip text={"Two different measures:\n• Brand-new — the domain had never been used anywhere in the workspace before this person linked from it.\n• New to a project — the domain's first link inside a project; the same domain can be 'new' in several projects, so this number can be much larger."} />
+              </div>
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xl font-bold text-plum">{num(d.links.global_new_domains)}</span>
+                  <span className="min-w-0 text-[11px] leading-tight text-muted">brand-new to the workspace{pv ? ` · prev ${num(pv.links.global_new_domains)}` : ""}</span>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xl font-bold text-ocean">{num(d.links.project_new_domains)}</span>
+                  <span className="min-w-0 text-[11px] leading-tight text-muted">new to a project (counted per project){pv ? ` · prev ${num(pv.links.project_new_domains)}` : ""}</span>
+                </div>
+              </div>
+            </div>
             <Metric label="Qualified" value={num(d.links.pass)} icon={CheckCircle2} tone="success"
               sub={d.links.qualified_rate != null ? `${d.links.qualified_rate}% of created` : "pass QA"}
               onClick={() => open({ status: "PASS" })} help="Links that passed QA with no blocking issue. Click to see them." />
@@ -10072,9 +10152,9 @@ function UserDashboard({
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
             <StatBox label="Qualified" value={num(d.links.pass)} tone="success" onClick={() => open({ status: "PASS" })} help="Passed QA. Click to see them." />
             <StatBox label="Warning" value={num(d.links.warning)} tone="ember" onClick={() => open({ status: "WARNING" })} help="Passed with a minor issue. Click to see them." />
-            <StatBox label="Needs review" value={num(d.links.review)} tone="ember" onClick={() => open({ status: "NEEDS_MANUAL_REVIEW" })} help="A human needs to look (e.g. JS page / CAPTCHA). Click to see them." />
+            <StatBox label="Needs review" value={num(d.links.review)} tone="plum" onClick={() => open({ status: "NEEDS_MANUAL_REVIEW" })} help="A human needs to look (e.g. JS page / CAPTCHA). Click to see them." />
             <StatBox label="Unknown" value={num(d.links.unknown)} tone="ink" onClick={() => open({ status: "UNKNOWN" })} help="QA could not reach a verdict. Click to see them." />
-            <StatBox label="QA pending" value={num(d.links.qa_pending)} tone="ember" onClick={() => open({ status: "PENDING" })} help="Never QA-checked yet. Click to see them." />
+            <StatBox label="QA pending" value={num(d.links.qa_pending)} tone="ink" onClick={() => open({ status: "PENDING" })} help="Never QA-checked yet. Click to see them." />
             <StatBox label="Not indexed" value={num(d.links.not_indexed)} tone="danger" onClick={() => open({ index_status: "not_indexed" })} help="Google does not show these. Click to see them." />
             <StatBox label="Index unchecked" value={num(d.links.index_unchecked)} tone="ink" help="Indexing not checked yet (domain-level count)." />
             <StatBox label="Dofollow" value={num(d.links.dofollow)} tone="ocean" onClick={() => open({ rel: "dofollow" })} help="Links that pass SEO value. Click to see them." />
@@ -10683,7 +10763,7 @@ function ProjectEffort({
             <Metric label="Links created" value={d.totals.links} icon={Link2} tone="ocean"
               sub={d.totals.completion_pct != null ? `${d.totals.completion_pct}% of target` : undefined}
               onClick={() => open({})} help="Links created on this project in the period. Click to see them." />
-            <Metric label="QA pending" value={d.totals.qa_pending} icon={History} tone="ember"
+            <Metric label="QA pending" value={d.totals.qa_pending} icon={History} tone="ink"
               onClick={() => open({ status: "PENDING" })} help="Created in this period, never checked yet. Click to see them." />
             <Metric label="Not qualified" value={d.totals.fail} icon={XCircle} tone="danger"
               onClick={() => open({ status: "FAIL" })} help="Created in this period with a serious problem. Click to see them." />
@@ -17585,7 +17665,7 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
     }
     return (
       <section className="space-y-4">
-        <div className="relative overflow-hidden rounded-2xl border border-plum/25 bg-gradient-to-r from-plum/10 via-panel to-ocean/10 p-5 shadow-soft">
+        <div className="relative rounded-2xl border border-plum/25 bg-gradient-to-r from-plum/10 via-panel to-ocean/10 p-5 shadow-soft">
           <button onClick={() => setOpenId(null)} className="mb-3 flex h-8 items-center gap-1.5 rounded-lg border border-line bg-panel/70 px-3 text-sm font-medium text-ink hover:bg-field">
             <ArrowLeft className="h-4 w-4" /> All tests
           </button>
@@ -20448,8 +20528,9 @@ function QaWaitBadge({ reason }: { reason: string }) {
 
 function Status({ value, reason, compact }: { value: string; reason?: string | null; compact?: boolean }) {
   // Semantic status colors (owner rule): success/completed = solid GREEN,
-  // failures = solid red, warnings/review = solid amber — a clear standard
-  // fill, never a washed-out translucent tint, never violet.
+  // failures = solid red, warnings = solid amber, needs-review = solid PLUM —
+  // review must be visually distinct from "needs improvement" (owner request);
+  // always a clear standard fill, never a washed-out translucent tint.
   const tone =
     value === "PASS" || value === "completed"
       ? "pill-pass"
@@ -20458,7 +20539,7 @@ function Status({ value, reason, compact }: { value: string; reason?: string | n
         : value === "WARNING" || value === "partial" || value === "running"
           ? "pill-warn"
           : value === "NEEDS_MANUAL_REVIEW"
-            ? "pill-warn"
+            ? "pill-review"
             : "bg-field text-muted border-line";
   const help = STATUS_HELP[value];
   const label = compact
@@ -20686,7 +20767,8 @@ function FilterMultiSelect({
   selected,
   onChange,
   withBlanks = false,
-  allowCustom = false
+  allowCustom = false,
+  onSearch
 }: {
   label: string;
   options: Array<{ value: string; label?: string; count?: number }>;
@@ -20694,9 +20776,15 @@ function FilterMultiSelect({
   onChange: (vals: string[]) => void;
   withBlanks?: boolean;
   allowCustom?: boolean; // let the user type + Enter to add a free-form value
+  // Server type-ahead: the static option list is often a top-N facet (e.g. the
+  // 50 biggest source domains), so typing a rarer value finds nothing. When
+  // provided, the query is ALSO sent here (debounced) and the results merge in.
+  onSearch?: (q: string) => Promise<Array<{ value: string; label?: string; count?: number }>>;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [remote, setRemote] = useState<Array<{ value: string; label?: string; count?: number }>>([]);
+  const [searching, setSearching] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -20705,15 +20793,31 @@ function FilterMultiSelect({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
+  // Debounced server search; stale responses are dropped (query changed since).
+  useEffect(() => {
+    if (!onSearch || !open) return;
+    const term = q.trim();
+    if (term.length < 2) { setRemote([]); setSearching(false); return; }
+    setSearching(true);
+    const t = window.setTimeout(() => {
+      onSearch(term)
+        .then((rows) => { setRemote(rows || []); setSearching(false); })
+        .catch(() => { setRemote([]); setSearching(false); });
+    }, 300);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, open]);
 
   // Custom (typed) values that aren't in the option list but are selected.
   const customSelected = allowCustom
     ? selected.filter((v) => !options.some((o) => o.value === v) && v !== "(blanks)")
     : [];
   const baseAll = withBlanks ? [...options, { value: "(blanks)", label: "(Blanks)" }] : options;
+  const seen = new Set([...customSelected, ...baseAll.map((o) => o.value)]);
   const all: Array<{ value: string; label?: string; count?: number }> = [
     ...customSelected.map((v) => ({ value: v, label: v })),
     ...baseAll,
+    ...remote.filter((o) => !seen.has(o.value)),
   ];
   const shown = all.filter((o) =>
     (o.label || o.value).toLowerCase().includes(q.trim().toLowerCase())
@@ -20790,7 +20894,8 @@ function FilterMultiSelect({
                 {o.count != null ? <span className="text-xs text-muted">{o.count}</span> : null}
               </label>
             ))}
-            {!shown.length ? <div className="p-2 text-center text-xs text-muted">No matches</div> : null}
+            {searching ? <div className="p-2 text-center text-xs text-muted">Searching…</div> : null}
+            {!shown.length && !searching ? <div className="p-2 text-center text-xs text-muted">No matches</div> : null}
           </div>
         </div>
       ) : null}
@@ -22176,6 +22281,17 @@ function AnalyticsDesk({
                   }))}
                   selected={filters[key] ? filters[key].split(",") : []}
                   onChange={(vals) => setFilter(key, vals.join(","))}
+                  // Facets are top-50 buckets — long-tail values need type-ahead.
+                  allowCustom={dim === "source_domain" || dim === "user"}
+                  onSearch={
+                    dim === "source_domain"
+                      ? (term) =>
+                          api<{ items: Array<{ domain_key: string; backlink_count?: number }> }>(
+                            `/source-domains?search=${encodeURIComponent(term)}&limit=50`,
+                            { token }
+                          ).then((r) => (r.items || []).map((i) => ({ value: i.domain_key, count: i.backlink_count })))
+                      : undefined
+                  }
                 />
               );
             }

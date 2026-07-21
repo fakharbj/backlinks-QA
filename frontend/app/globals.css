@@ -103,7 +103,9 @@ textarea {
 .pill-pass { background-color: rgb(var(--success)); color: #ffffff; border-color: transparent; }
 .pill-fail { background-color: rgb(var(--danger)); color: #ffffff; border-color: transparent; }
 .pill-warn { background-color: rgb(var(--ember)); color: #ffffff; border-color: transparent; }
-.dark .pill-pass, .dark .pill-fail, .dark .pill-warn { color: rgb(12 14 20); }
+/* Needs-review gets its own colour (plum) so it never reads as "needs improvement". */
+.pill-review { background-color: rgb(var(--plum)); color: #ffffff; border-color: transparent; }
+.dark .pill-pass, .dark .pill-fail, .dark .pill-warn, .dark .pill-review { color: rgb(12 14 20); }
 
 /* Gradient hairline card — wrap a panel to give it a luminous edge. */
 .ring-gradient {
