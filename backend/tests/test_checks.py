@@ -90,13 +90,18 @@ def test_anchor_changed():
     assert "ANCHOR_CHANGED" in labels(result)
 
 
-def test_canonical_cross_domain_is_fail():
+def test_canonical_cross_domain_is_ignored():
+    # Owner rule (2026-07-22): canonical issues are fully ignored — the issue
+    # stays VISIBLE for context, but it neither deducts, caps, nor forces FAIL.
+    baseline = evaluate(clean()[0]).score
     art, _ = clean()
     art.canonical_url = "https://other.test/x"
     art.canonical_resolved = normalize_url("https://other.test/x").normalized
     art.canonical_count = 1
     result = evaluate(art)
-    assert result.status is OverallStatus.FAIL
+    assert result.status is OverallStatus.PASS
+    assert result.score == baseline  # canonical moved the score by exactly 0
+    assert all(s.code != "CAN-04" or not s.delta for s in result.score_breakdown)
     assert "CANONICAL_CROSS_DOMAIN" in labels(result)
 
 

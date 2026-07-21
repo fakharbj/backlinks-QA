@@ -138,6 +138,10 @@ async def finish(
             row = await s.get(Batch, batch_id)
             if row is None:
                 return
+            # "cancelled" is TERMINAL: a straggler child reporting in later
+            # (via _maybe_finish_parent) must never flip it back to completed.
+            if row.status == "cancelled" and status != "cancelled":
+                return
             if status is None:
                 t = row.totals or {}
                 if error:

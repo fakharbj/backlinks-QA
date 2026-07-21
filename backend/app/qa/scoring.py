@@ -37,7 +37,15 @@ _LABEL_CAPS: dict[IssueLabel, int] = {
 # It sits here (not in the rule set) because it has no parameter mapping — the
 # severity fallback would otherwise always apply, including on rescores of
 # stored issue snapshots.
-_UNSCORED_CODES: set[str] = {"RBT-03", "PQ-06"}
+# ALL canonical issues (CAN-*) are owner-excluded too (2026-07-22 "ignore all
+# Canonical issues"): they stay visible but never move the score — and being
+# here also disarms CAN-04's CRITICAL score-cap (the cap loop skips unscored
+# codes). Rule-set v3 zeroes their points as well so the Scoring desk shows
+# the truth; this set is what makes it hold for STORED issue snapshots.
+_UNSCORED_CODES: set[str] = {
+    "RBT-03", "PQ-06",
+    "CAN-02", "CAN-03", "CAN-04", "CAN-05", "CAN-09", "CAN-10",
+}
 
 
 def _issue_delta(iss: Issue, ruleset: ResolvedRuleset) -> tuple[int, tuple[str, str] | None, bool]:

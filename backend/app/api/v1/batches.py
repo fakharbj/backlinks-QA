@@ -153,6 +153,39 @@ async def rollback_preview(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -
     return await batch_rollback_service.preview(db, ctx, batch_id)
 
 
+@router.post("/{batch_id}/cancel", response_model=BatchOut)
+async def cancel_batch(
+    batch_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
+) -> BatchOut:
+    """Cancel a run that is still pending/running. The status flips to a
+    TERMINAL 'cancelled' (a straggler child can never re-complete it); a bulk
+    sheet run additionally stops before each not-yet-started project. Work
+    already in flight (a crawl mid-request) finishes its current step but the
+    batch stays cancelled. Audited."""
+    from app.core.errors import ValidationAppError
+
+    row = await db.get(Batch, batch_id)
+    if row is None or row.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Batch not found")
+    if row.status not in ("pending", "running"):
+        raise ValidationAppError(f"Only a pending/running batch can be cancelled (this one is {row.status}).")
+    seq, kind = row.seq, row.kind
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="batch", entity_id=batch_id,
+        summary=f"Cancelled batch #B-{seq} ({kind})",
+    )
+    await db.commit()
+    # finish() runs in its own session — do it after our commit so the audit
+    # row and the status change can't deadlock on the same batch row.
+    await batch_service.add_log(batch_id, f"Cancelled by {ctx.user.email}.", level="warning")
+    await batch_service.finish(batch_id, status="cancelled", error="cancelled by user")
+    db.expire_all()
+    fresh = await db.get(Batch, batch_id)
+    return _out(fresh or row)
+
+
 @router.delete("/{batch_id}")
 async def delete_batch(
     batch_id: uuid.UUID, db: DbSession,

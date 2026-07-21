@@ -425,6 +425,18 @@ async def sync_project(
             }},
         )
 
+    # A cancelled bulk run stops HERE: remaining queued children exit before
+    # doing any work (Celery can't safely kill an in-flight task, but every
+    # not-yet-started project checks its parent first).
+    if parent is not None:
+        from app.models.batch import Batch as _Batch
+
+        parent_row = await db.get(_Batch, parent)
+        if parent_row is not None and parent_row.status == "cancelled":
+            log.info("sheet_sync_child_skipped_parent_cancelled",
+                     sheet_source_id=str(sheet_source_id), parent=str(parent))
+            return {"skipped": "parent batch cancelled"}
+
     source = await db.get(SheetSource, sheet_source_id)
     if source is None:
         # Still report to the parent — otherwise the bulk batch waits forever.

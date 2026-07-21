@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require_role
@@ -13,7 +13,7 @@ from app.models.audit import AuditLog
 from app.models.enums import AuditAction
 from app.models.settings import Setting
 from app.schemas.common import Message
-from app.services import audit_service, qa_settings_service
+from app.services import audit_service, login_ip_service, qa_settings_service
 
 router = APIRouter(tags=["settings"])
 
@@ -84,6 +84,43 @@ async def upsert_setting(
 
 class QaSettingsIn(BaseModel):
     overrides: dict
+
+
+# ── Login IP whitelist (Settings → Security) ─────────────────────────────────
+class LoginIpRulesIn(BaseModel):
+    enabled: bool = False
+    ips: list[str] = Field(default_factory=list)
+    user_overrides: dict[str, str] = Field(default_factory=dict)
+    role_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get("/settings/login-ips")
+async def get_login_ips(
+    request: Request, db: ReadSession,
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Current login IP rules + the caller's own IP (so the UI can offer
+    'add my current IP' and warn about self-lockout)."""
+    rules = await login_ip_service.get_rules(db)
+    return {**rules, "caller_ip": login_ip_service.client_ip(request)}
+
+
+@router.put("/settings/login-ips")
+async def put_login_ips(
+    payload: LoginIpRulesIn, request: Request, db: DbSession,
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Save the login IP whitelist (admin, audited). Validation rejects bad
+    IPs/CIDRs and unknown override modes."""
+    rules = await login_ip_service.save_rules(db, ctx.workspace_id, payload.model_dump())
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="login_ip_rules", entity_id=ctx.workspace_id,
+        summary=f"Login IP whitelist updated (enabled={rules['enabled']}, {len(rules['ips'])} entries)",
+        after=rules,
+    )
+    await db.commit()
+    return {**rules, "caller_ip": login_ip_service.client_ip(request)}
 
 
 @router.get("/qa-settings")

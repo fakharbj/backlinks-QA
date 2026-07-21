@@ -50,6 +50,10 @@ def classify(
         i.severity is Severity.CRITICAL
         and i.label not in _REVIEW_LABELS
         and i.code not in _REVIEW_CODES
+        # Owner rule (2026-07-22): canonical issues are fully ignored — CAN-04
+        # (cross-domain canonical, CRITICAL) must not force a FAIL. Code-based
+        # so it also holds when re-classifying stored issue snapshots.
+        and not i.code.startswith("CAN-")
         for i in issues
     )
 

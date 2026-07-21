@@ -74,6 +74,34 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
 
         raise AuthenticationError("User has no workspace membership")
     ip, ua = _meta(request)
+    # ── Login IP whitelist (owner rule): only whitelisted networks may sign in,
+    # with per-user / per-role exemptions (precedence user > role > master).
+    # Enforced AFTER credential+membership checks so exemptions can resolve;
+    # blocked attempts are audited. Fail-open on internal errors — a broken
+    # rules row must never lock the whole company out.
+    from app.services import login_ip_service
+
+    real_ip = login_ip_service.client_ip(request) or ip
+    try:
+        rules = await login_ip_service.get_rules(db)
+        allowed, why = login_ip_service.is_allowed(rules, real_ip, user.id, membership.role.value)
+    except Exception:  # noqa: BLE001
+        allowed, why = True, "rules unavailable (fail-open)"
+    if not allowed:
+        await audit_service.record(
+            db, action=AuditAction.LOGIN_FAILED, actor_user_id=user.id,
+            workspace_id=membership.workspace_id,
+            summary=f"Login blocked by IP whitelist ({real_ip}: {why})",
+            ip_address=real_ip, user_agent=ua,
+        )
+        await db.commit()
+        from app.core.errors import PermissionDeniedError
+
+        raise PermissionDeniedError(
+            "Sign-in from this network isn't allowed. Ask your admin to whitelist your IP "
+            "(Settings → Security)."
+        )
+    ip = real_ip  # audit/token metadata records the REAL client IP, not the proxy's
     tokens = await auth_service.issue_tokens(
         db, user=user, workspace_id=membership.workspace_id, role=membership.role,
         user_agent=ua, ip_address=ip,

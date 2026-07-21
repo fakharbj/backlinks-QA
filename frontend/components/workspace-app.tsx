@@ -11606,7 +11606,8 @@ const BATCH_STATUS: Record<string, { label: string; cls: string }> = {
   pending: { label: "Queued", cls: "bg-field text-muted border-line" },
   completed: { label: "Completed", cls: "bg-success text-white border-success" },
   partial: { label: "Finished with problems", cls: "bg-ember/10 text-ember border-ember/30" },
-  failed: { label: "Failed", cls: "bg-danger/10 text-danger border-danger/30" }
+  failed: { label: "Failed", cls: "bg-danger/10 text-danger border-danger/30" },
+  cancelled: { label: "Cancelled", cls: "bg-field text-muted border-line" }
 };
 
 function BatchStatusChip({ value }: { value: string }) {
@@ -11829,6 +11830,15 @@ function BatchDetails({
       onNotice(r.message);
       queryClient.invalidateQueries({ queryKey: ["batches"] });
       onBack();
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const cancelBatch = useMutation({
+    mutationFn: () => api<Batch>(`/batches/${batchId}/cancel`, { token, method: "POST" }),
+    onSuccess: (r) => {
+      onNotice(`Batch #B-${r.seq} cancelled.`);
+      refreshAll();
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (e: Error) => onNotice(e.message)
   });
@@ -12130,6 +12140,20 @@ function BatchDetails({
               </span>
             ) : null}
           </div>
+          {b.status === "running" || b.status === "pending" ? (
+            <button
+              onClick={() => {
+                if (window.confirm(
+                  `Cancel batch #B-${b.seq}?\n\nThe run stops and is marked "Cancelled". A bulk sheet run skips every project that hasn't started yet; a step already in flight finishes but nothing new starts.`
+                )) cancelBatch.mutate();
+              }}
+              disabled={cancelBatch.isPending}
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-danger/40 px-3 text-sm font-semibold text-danger transition hover:bg-danger/10 disabled:opacity-50"
+            >
+              {cancelBatch.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+              Cancel run
+            </button>
+          ) : null}
           {b.status !== "running" ? (
             <div className="flex items-center gap-3">
               {isReview ? (() => {
@@ -12599,6 +12623,7 @@ function BatchesDesk({
   projectId: string;
   onNotice: (text: string) => void;
 }) {
+  const queryClient = useQueryClient();
   const [kind, setKind] = useState("");
   const [statusF, setStatusF] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -12633,6 +12658,14 @@ function BatchesDesk({
     // Live progress: poll while anything is running.
     refetchInterval: (q) =>
       (q.state.data || []).some((b) => b.status === "running" || b.status === "pending") ? 3000 : false
+  });
+  const cancelRow = useMutation({
+    mutationFn: (id: string) => api<Batch>(`/batches/${id}/cancel`, { token, method: "POST" }),
+    onSuccess: (r) => {
+      onNotice(`Batch #B-${r.seq} cancelled.`);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
   });
 
   if (openId) {
@@ -12754,6 +12787,19 @@ function BatchesDesk({
                           <span className="whitespace-nowrap rounded-full bg-plum/10 px-2 py-0.5 text-[11px] font-semibold text-plum" title="Items still awaiting your approve/reject decision">
                             {b.review_pending} to review
                           </span>
+                        ) : null}
+                        {b.status === "running" || b.status === "pending" ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Cancel batch #B-${b.seq}? The run stops and is marked "Cancelled".`))
+                                cancelRow.mutate(b.id);
+                            }}
+                            className="whitespace-nowrap rounded-full border border-danger/40 px-2 py-0.5 text-[11px] font-semibold text-danger transition hover:bg-danger/10"
+                            title="Stop this run"
+                          >
+                            Cancel
+                          </button>
                         ) : null}
                       </span>
                     </Td>
@@ -18985,6 +19031,194 @@ const QA_KNOB_META: Record<string, { label: string; help: string; group: string 
   render_wait_until: { label: "Render wait-until", help: "When the browser considers a page 'loaded' (networkidle is strictest).", group: "Rendering" }
 };
 
+// ── Settings → Security: login IP whitelist (multi IP/CIDR, per-user and
+// per-role overrides; precedence user > role > master switch) ────────────────
+function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  type Rules = {
+    enabled: boolean; ips: string[];
+    user_overrides: Record<string, string>; role_overrides: Record<string, string>;
+    caller_ip: string | null;
+  };
+  const q = useQuery({
+    queryKey: ["login-ips", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () => api<Rules>("/settings/login-ips", { token })
+  });
+  const membersQ = useQuery({
+    queryKey: ["team", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () => api<TeamMember[]>("/team/members", { token })
+  });
+  const [enabled, setEnabled] = useState(false);
+  const [ipsText, setIpsText] = useState("");
+  const [roleOv, setRoleOv] = useState<Record<string, string>>({});
+  const [userOv, setUserOv] = useState<Record<string, string>>({});
+  const [pickUser, setPickUser] = useState("");
+  const [pickMode, setPickMode] = useState("exempt");
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!q.data || loaded) return;
+    setEnabled(q.data.enabled);
+    setIpsText((q.data.ips || []).join("\n"));
+    setRoleOv(q.data.role_overrides || {});
+    setUserOv(q.data.user_overrides || {});
+    setLoaded(true);
+  }, [q.data, loaded]);
+  const save = useMutation({
+    mutationFn: () =>
+      api<Rules>("/settings/login-ips", {
+        token, method: "PUT",
+        body: JSON.stringify({
+          enabled,
+          ips: ipsText.split("\n").map((x) => x.trim()).filter(Boolean),
+          role_overrides: roleOv,
+          user_overrides: userOv
+        })
+      }),
+    onSuccess: () => {
+      onNotice("Login IP rules saved.");
+      queryClient.invalidateQueries({ queryKey: ["login-ips"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const memberName = (id: string) =>
+    (membersQ.data || []).find((m) => m.user_id === id)?.full_name || id.slice(0, 8);
+  const onSave = () => {
+    const list = ipsText.split("\n").map((x) => x.trim()).filter(Boolean);
+    const callerIp = q.data?.caller_ip || "";
+    // Best-effort self-lockout warning: enabling with a non-empty list that
+    // doesn't contain your IP (exact match check only — CIDR may still cover it).
+    if (enabled && list.length && callerIp && !list.includes(callerIp)) {
+      if (!window.confirm(
+        `Heads-up: your current IP (${callerIp}) is not in the list.\n\nIf your role/user isn't exempt you could lock yourself out of future sign-ins (your current session stays alive). Save anyway?`
+      )) return;
+    }
+    save.mutate();
+  };
+  if (q.isError) {
+    return (
+      <section className="rounded-xl border border-line bg-panel p-8 text-center shadow-card">
+        <p className="text-sm text-muted">Login IP rules are visible to admins only.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+        <div>
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+            <ShieldAlert className="h-4 w-4 text-ocean" /> Login IP whitelist
+            <HelpTip text={"Only sign-ins from listed IPs/networks are allowed. Precedence: a per-user setting beats a role setting, which beats the master switch. 'Exempt' = can sign in from anywhere (admins are exempt by default). 'Enforce' = whitelist applies even when the master switch is off. An EMPTY list never blocks anyone (lockout safety). Existing sessions are not cut off — this controls new sign-ins."} />
+          </h3>
+          <p className="text-xs text-muted">Controls new sign-ins only · your IP: <span className="font-mono text-ink">{q.data?.caller_ip || "…"}</span></p>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="h-4 w-4 rounded border-line accent-[rgb(var(--ocean))]" />
+          Whitelist enabled
+        </label>
+      </div>
+      <div className="grid gap-4 p-4 lg:grid-cols-2">
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Allowed IPs / networks</span>
+            {q.data?.caller_ip ? (
+              <button
+                onClick={() => {
+                  const ip = q.data?.caller_ip || "";
+                  if (ip && !ipsText.split("\n").map((x) => x.trim()).includes(ip)) setIpsText((t) => (t.trim() ? `${t.trim()}\n${ip}` : ip));
+                }}
+                className="text-xs font-medium text-ocean hover:underline"
+              >
+                + Add my IP ({q.data.caller_ip})
+              </button>
+            ) : null}
+          </div>
+          <textarea
+            value={ipsText}
+            onChange={(e) => setIpsText(e.target.value)}
+            rows={7}
+            placeholder={"One per line:\n203.0.113.7\n10.1.0.0/24"}
+            className="w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-xs"
+          />
+          <p className="mt-1 text-[11px] text-muted">Single IPs or CIDR networks (IPv4/IPv6). Office networks are easiest as a CIDR.</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Role rules</span>
+            <div className="mt-1.5 space-y-1.5">
+              {TEAM_ROLES.map((r) => (
+                <div key={r} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-field/40 px-2.5 py-1.5">
+                  <span className="text-sm font-medium text-ink">{ROLE_LABEL[r]}</span>
+                  <select
+                    value={roleOv[r] || ""}
+                    onChange={(e) => setRoleOv((o) => { const n = { ...o }; if (e.target.value) n[r] = e.target.value; else delete n[r]; return n; })}
+                    className="h-8 rounded-md border border-line bg-panel px-2 text-xs"
+                  >
+                    <option value="">Follow master switch</option>
+                    <option value="exempt">Exempt — any IP</option>
+                    <option value="enforce">Always enforce</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Per-user exceptions (beat role rules)</span>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <SearchSelect
+                value={pickUser}
+                onChange={setPickUser}
+                options={(membersQ.data || []).filter((m) => !(m.user_id in userOv)).map((m) => ({ value: m.user_id, label: `${m.full_name} (${ROLE_LABEL[m.role] || m.role})` }))}
+                placeholder="Pick a person…"
+                width="w-52"
+              />
+              <select value={pickMode} onChange={(e) => setPickMode(e.target.value)} className="h-9 rounded-md border border-line bg-panel px-2 text-xs">
+                <option value="exempt">Exempt — any IP</option>
+                <option value="enforce">Always enforce</option>
+              </select>
+              <button
+                onClick={() => { if (pickUser) { setUserOv((o) => ({ ...o, [pickUser]: pickMode })); setPickUser(""); } }}
+                disabled={!pickUser}
+                className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink hover:bg-field disabled:opacity-40"
+              >
+                Add
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {Object.entries(userOv).map(([uid, mode]) => (
+                <span key={uid} className={clsx(
+                  "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+                  mode === "exempt" ? "border-success/50 bg-success/10 text-success" : "border-ocean/40 bg-ocean/10 text-ocean"
+                )}>
+                  {memberName(uid)} · {mode === "exempt" ? "any IP" : "enforced"}
+                  <button onClick={() => setUserOv((o) => { const n = { ...o }; delete n[uid]; return n; })} className="text-muted hover:text-danger">×</button>
+                </span>
+              ))}
+              {!Object.keys(userOv).length ? <span className="text-xs text-muted">No per-user exceptions.</span> : null}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2 border-t border-line p-3">
+        <span className="text-xs text-muted">
+          Admins are exempt by default — keep at least one exempt path so nobody gets locked out. Blocked attempts appear in the audit log.
+        </span>
+        <button
+          onClick={onSave}
+          disabled={save.isPending || !loaded}
+          className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+        >
+          {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Save rules
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function QaSettingsCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   type QaMeta = { default: number | boolean | string; min: number | null; max: number | null; kind: string; overridden: boolean };
@@ -19275,6 +19509,7 @@ function SettingsDesk({
           ["linktypes", "Link types"],
           ["automation", "Automation & sync"],
           ["qa", "QA & rates"],
+          ["security", "Security"],
           ["datahealth", "Data health"]
         ] as Array<[string, string]>).map(([id, label]) => (
           <button
@@ -19310,6 +19545,7 @@ function SettingsDesk({
         <ProductivityCard token={token} onNotice={onNotice} />
         <QaSettingsCard token={token} onNotice={onNotice} />
       </>) : null}
+      {settingsTab === "security" ? <LoginIpCard token={token} onNotice={onNotice} /> : null}
       {settingsTab === "datahealth" ? <DataHealthCard token={token} /> : null}
       {settingsTab !== "projects" ? null : !projectId ? (
         <div className="rounded-xl border border-line bg-panel shadow-card">
