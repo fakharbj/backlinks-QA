@@ -141,12 +141,13 @@ async def list_domains(
     direction: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(500, ge=1, le=2000),
     offset: int = Query(0, ge=0),
+    competitor: str | None = Query(None, max_length=255),  # competitor_key → only that competitor's domains
 ) -> list[CompetitorDomainOut]:
     rows = await competitor_service.list_domains(
         db, ctx, project_id, category=category,
         include_dismissed=include_dismissed, exclude_guest_posts=exclude_guest_posts,
         search=search, status=status, sort=sort, direction=direction,
-        limit=limit, offset=offset,
+        limit=limit, offset=offset, competitor=competitor,
     )
     return [CompetitorDomainOut(**r) for r in rows]
 

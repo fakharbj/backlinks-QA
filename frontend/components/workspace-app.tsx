@@ -12883,6 +12883,19 @@ function CompetitorDesk({
   const [openCompetitor, setOpenCompetitor] = useState<string | null>(null);
   const [compQ, setCompQ] = useState("");
   const [parentSearch, setParentSearch] = useState("");
+  // The full workspace-wide domains grid is HIDDEN by default (owner request):
+  // domains live inside each competitor's expanded row; this reveals the grid.
+  const [showAllDomains, setShowAllDomains] = useState(false);
+  // The expanded competitor's own source domains (server-scoped via ?competitor=).
+  const compDomains = useQuery({
+    queryKey: ["competitor-domains-of", token, projectId, openCompetitor],
+    enabled: Boolean(token) && Boolean(projectId) && Boolean(openCompetitor),
+    queryFn: () =>
+      api<CompetitorDomain[]>(
+        `/competitors/domains?project_id=${projectId}&competitor=${encodeURIComponent(openCompetitor || "")}&limit=300`,
+        { token }
+      )
+  });
   const parents = useQuery({
     queryKey: ["competitor-parents", token, projectId],
     enabled: Boolean(token) && Boolean(projectId),
@@ -13216,6 +13229,64 @@ function CompetitorDesk({
                             ))}
                           </div>
                         </div>
+                        {/* This competitor's source domains — the domains grid,
+                            scoped to THIS competitor (server-filtered). */}
+                        <div>
+                          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                            Source domains {compDomains.data ? `(${compDomains.data.length})` : ""}
+                          </div>
+                          {compDomains.isLoading ? (
+                            <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                          ) : (
+                            <div className="max-h-72 overflow-y-auto rounded-lg border border-line bg-panel">
+                              <table className="w-full text-left text-xs">
+                                <thead className="sticky top-0 bg-field text-[10px] uppercase text-muted">
+                                  <tr>
+                                    <th className="px-2 py-1.5">Domain</th>
+                                    <th className="px-2 py-1.5">Their links</th>
+                                    <th className="px-2 py-1.5">DA</th>
+                                    <th className="px-2 py-1.5">PA</th>
+                                    <th className="px-2 py-1.5">We have</th>
+                                    <th className="px-2 py-1.5">Status</th>
+                                    <th className="px-2 py-1.5" />
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-line">
+                                  {(compDomains.data || []).map((d) => (
+                                    <tr key={d.domain_key} className="hover:bg-field/50">
+                                      <td className="px-2 py-1.5 font-medium text-ink">{d.domain_key}</td>
+                                      <td className="px-2 py-1.5 text-muted">{d.url_count}</td>
+                                      <td className="px-2 py-1.5"><MetricTag label="DA" value={d.da} /></td>
+                                      <td className="px-2 py-1.5"><MetricTag label="PA" value={d.pa} /></td>
+                                      <td className="px-2 py-1.5 text-muted">{d.our_link_count || 0}</td>
+                                      <td className="px-2 py-1.5">
+                                        {d.decision === "dismissed" ? (
+                                          <span className="rounded bg-field px-1.5 py-0.5 text-muted">Dismissed</span>
+                                        ) : d.category === "new_opportunity" ? (
+                                          <span className="rounded bg-ocean/10 px-1.5 py-0.5 font-semibold text-ocean">Opportunity</span>
+                                        ) : (
+                                          <span className="rounded bg-plum/10 px-1.5 py-0.5 text-plum">Already have</span>
+                                        )}
+                                      </td>
+                                      <td className="px-2 py-1.5 text-right">
+                                        <button
+                                          onClick={() => decide.mutate({ domain_key: d.domain_key, status: d.decision === "dismissed" ? "open" : "dismissed" })}
+                                          className="text-[11px] font-medium text-muted hover:text-ink hover:underline"
+                                          title={d.decision === "dismissed" ? "Bring this domain back into the opportunity list" : "Hide this domain from opportunities"}
+                                        >
+                                          {d.decision === "dismissed" ? "Re-open" : "Dismiss"}
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              {!(compDomains.data || []).length ? (
+                                <p className="p-3 text-center text-xs text-muted">No source domains recorded for this competitor.</p>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
                         <div>
                           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                             <span className="text-xs font-semibold uppercase tracking-wide text-muted">Backlinks</span>
@@ -13263,9 +13334,23 @@ function CompetitorDesk({
         </section>
       ) : null}
 
+      {/* The full domains grid is hidden by default — each competitor's row
+          shows ITS domains inline. This reveals the everything-together view. */}
+      {!showAllDomains ? (
+        <button
+          onClick={() => setShowAllDomains(true)}
+          className="flex w-full items-center justify-between rounded-xl border border-line bg-panel p-3 text-left text-sm shadow-card transition hover:bg-field/50"
+        >
+          <span className="font-medium text-ink">All competitor source domains</span>
+          <span className="text-xs text-ocean">Show →</span>
+        </button>
+      ) : (
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-3">
-          <h3 className="text-sm font-semibold text-ink">Competitor source domains</h3>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+            Competitor source domains
+            <button onClick={() => setShowAllDomains(false)} className="text-xs font-medium text-muted hover:text-ink hover:underline">Hide</button>
+          </h3>
           <div className="flex flex-wrap items-center gap-2">
             <input
               value={domSearch}
@@ -13450,6 +13535,7 @@ function CompetitorDesk({
           ) : null}
         </div>
       </section>
+      )}
     </section>
   );
 }

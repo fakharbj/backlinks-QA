@@ -395,14 +395,30 @@ async def list_domains(
     direction: str = "desc",
     limit: int = 500,
     offset: int = 0,
+    competitor: str | None = None,
 ) -> list[dict]:
     """Domain rows + manual decision + guest-post tag. 'Used' is derived live
     (category = existing); manual dismissals survive recomputes via the
     decisions table. Searchable, sortable (whitelist) and paginated.
     ``status`` narrows on the workflow status (comma list, whitelisted;
-    undecided rows read as 'open')."""
+    undecided rows read as 'open'). ``competitor`` (a competitor_key from
+    list_parents) narrows to domains seen in THAT competitor's uploads —
+    powers the expand-a-competitor view."""
     await _ensure_project(db, ctx, project_id)
     conds = ["d.workspace_id = :ws", "d.project_id = :pid"]
+    competitor_sheet_ids: list[uuid.UUID] = []
+    if competitor and competitor.strip():
+        sheets = await list_sheets(db, ctx, project_id)
+        competitor_sheet_ids = [
+            s.id for s in sheets if competitor_key(s) == competitor.strip()
+        ]
+        if not competitor_sheet_ids:
+            return []
+        conds.append(
+            "EXISTS (SELECT 1 FROM competitor_backlinks cbc "
+            "WHERE cbc.project_id = d.project_id AND cbc.source_domain = d.domain_key "
+            "AND cbc.sheet_id IN :competitor_sheets)"
+        )
     if category in ("existing", "new_opportunity"):
         conds.append("d.category = :cat")
     if not include_dismissed:
@@ -461,6 +477,9 @@ async def list_domains(
     if wanted_statuses:
         sql = sql.bindparams(bindparam("statuses", expanding=True))
         params["statuses"] = wanted_statuses
+    if competitor_sheet_ids:
+        sql = sql.bindparams(bindparam("competitor_sheets", expanding=True))
+        params["competitor_sheets"] = competitor_sheet_ids
     rows = (await db.execute(sql, params)).mappings().all()
     return [dict(r) for r in rows]
 
