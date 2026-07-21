@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import AuthContext
@@ -406,6 +406,9 @@ async def list_batches(db: AsyncSession, ctx: AuthContext) -> list[dict]:
                 func.count().filter(is_bl, QATestLink.state.in_(("pending", "checking"))),
                 func.count().filter(QATestLink.is_competitor.is_(True)),
                 func.count().filter(QATestLink.status == "NEEDS_MANUAL_REVIEW"),
+                # Distinct source HOSTS among the backlinks — low diversity (all
+                # links on one domain) is a candidate-quality red flag.
+                func.count(distinct(func.substring(QATestLink.source_url, "^https?://([^/]+)"))).filter(is_bl),
             )
             .where(QATestLink.workspace_id == ctx.workspace_id)
             .group_by(QATestLink.batch_id)
@@ -430,6 +433,7 @@ async def list_batches(db: AsyncSession, ctx: AuthContext) -> list[dict]:
             "in_flight": in_flight,
             "competitors": int(c[8]) if c else 0,
             "review": int(c[9]) if c else 0,
+            "distinct_domains": int(c[10]) if c and c[10] is not None else 0,
             # Authoritative completion: work remains only if a backlink is still
             # pending/checking. Draft batches (never run) are not "running".
             "running": b.status == "running" and in_flight > 0,

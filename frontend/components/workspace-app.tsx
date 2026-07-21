@@ -17392,6 +17392,9 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
   const [openId, setOpenId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // List controls: sort + progressive "load more" (10 at a time).
+  const [sortBy, setSortBy] = useState<"date" | "name" | "score" | "links">("date");
+  const [visible, setVisible] = useState(10);
   // New-test form.
   const [cName, setCName] = useState("");
   const [cEmail, setCEmail] = useState("");
@@ -17406,6 +17409,7 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
     notes: string | null; status: string; created_at: string | null;
     total: number; checked: number; passed: number; failed: number; avg_score: number | null;
     backlinks?: number; in_flight?: number; competitors?: number; review?: number; running?: boolean;
+    distinct_domains?: number;
   };
   type TestLink = {
     id: string; source_url: string; target_url: string | null; anchor_text: string | null;
@@ -17856,7 +17860,14 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
   }
 
   // ── List view ──
-  const tests = list.data?.tests || [];
+  const allTests = list.data?.tests || [];
+  const sortedTests = [...allTests].sort((a, b) => {
+    if (sortBy === "name") return a.candidate_name.localeCompare(b.candidate_name);
+    if (sortBy === "score") return (b.avg_score ?? -1) - (a.avg_score ?? -1);
+    if (sortBy === "links") return ((b.backlinks ?? b.total) || 0) - ((a.backlinks ?? a.total) || 0);
+    return (b.created_at || "").localeCompare(a.created_at || ""); // date, newest first
+  });
+  const tests = sortedTests.slice(0, visible);
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -17921,6 +17932,25 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
         </section>
       ) : null}
 
+      {allTests.length ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-muted">{allTests.length} test{allTests.length === 1 ? "" : "s"}</span>
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            Sort by
+            <select
+              value={sortBy}
+              onChange={(e) => { setSortBy(e.target.value as typeof sortBy); setVisible(10); }}
+              className="h-8 rounded-lg border border-line bg-panel px-2 text-sm text-ink"
+            >
+              <option value="date">Newest first</option>
+              <option value="name">Candidate name</option>
+              <option value="score">Avg score</option>
+              <option value="links">Most links</option>
+            </select>
+          </label>
+        </div>
+      ) : null}
+
       <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel shadow-card">
         {tests.map((t) => {
           // Authoritative: the server flags running only while a backlink is
@@ -17958,15 +17988,42 @@ function QaTestDesk({ token, onNotice }: { token: string | null; onNotice: (text
                 <span className="rounded bg-ember/10 px-1.5 py-0.5 text-[11px] font-semibold text-ember" title="Review">{t.review ?? 0}</span>
                 <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger" title="Fail">{t.failed}</span>
               </span>
+              {t.distinct_domains != null && backlinks > 0 ? (
+                (() => {
+                  const oneDomain = t.distinct_domains <= 1 && backlinks >= 2;
+                  const lowDiv = !oneDomain && t.distinct_domains < Math.max(2, Math.ceil(backlinks / 2));
+                  return (
+                    <span
+                      className={clsx("hidden shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold sm:inline-block",
+                        oneDomain ? "bg-danger/10 text-danger" : lowDiv ? "bg-ember/10 text-ember" : "bg-field text-muted")}
+                      title={oneDomain
+                        ? `All ${backlinks} links on ONE source domain — poor diversity`
+                        : `${t.distinct_domains} distinct source domains across ${backlinks} links`}
+                    >
+                      {oneDomain ? "⚠ 1 domain" : `${t.distinct_domains} domains`}
+                    </span>
+                  );
+                })()
+              ) : null}
               <span className="hidden shrink-0 text-[11px] text-muted lg:block">{t.created_at ? fmtChartLabel(t.created_at.slice(0, 10), true) : ""}</span>
               <ChevronRight className="h-4 w-4 shrink-0 text-muted" />
             </button>
           );
         })}
       </div>
+      {sortedTests.length > visible ? (
+        <div className="flex justify-center">
+          <button
+            onClick={() => setVisible((v) => v + 10)}
+            className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            Load more ({sortedTests.length - visible} more)
+          </button>
+        </div>
+      ) : null}
       {list.isLoading ? <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div> : null}
       {list.isError ? <Empty label="Temp QA is available to managers and admins." /> : null}
-      {!list.isLoading && !list.isError && !tests.length ? (
+      {!list.isLoading && !list.isError && !allTests.length ? (
         <Empty label="No candidate tests yet — click “New test”, paste their links, and QA runs automatically." />
       ) : null}
     </section>
