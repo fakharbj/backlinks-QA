@@ -34,6 +34,7 @@ def _out(member: WorkspaceMember, user: User) -> TeamMemberOut:
         password_set=bool(user.password_hash),
         failed_login_attempts=int(user.failed_login_attempts or 0),
         locked_until=user.locked_until,
+        avatar_data_uri=user.avatar_data_uri,
     )
 
 

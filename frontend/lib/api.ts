@@ -839,6 +839,7 @@ export type TeamMember = {
   is_active: boolean;
   last_login_at: string | null;
   member_since: string;
+  avatar_data_uri?: string | null;
 };
 
 export type Me = {

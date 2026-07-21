@@ -29,6 +29,7 @@ class TeamMemberOut(BaseModel):
     password_set: bool = True
     failed_login_attempts: int = 0
     locked_until: datetime | None = None
+    avatar_data_uri: str | None = None
 
 
 class TeamInvite(BaseModel):

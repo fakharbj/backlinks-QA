@@ -23765,18 +23765,21 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
     onError: (err: Error) => onNotice(err.message)
   });
 
+  // Proper dialogs instead of window.prompt (redesign): a temp-password modal
+  // with copy, and an edit-login modal with real inputs.
+  const [tempPw, setTempPw] = useState<{ email: string; pw: string } | null>(null);
+  const [editMember, setEditMember] = useState<TeamMember | null>(null);
+  const [editEmail, setEditEmail] = useState("");
+  const [editName, setEditName] = useState("");
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const resetPw = useMutation({
-    mutationFn: (userId: string) =>
-      api<{ temp_password: string }>(`/team/members/${userId}/reset-password`, {
+    mutationFn: (v: { userId: string; email: string }) =>
+      api<{ temp_password: string }>(`/team/members/${v.userId}/reset-password`, {
         token,
         method: "POST"
       }),
-    onSuccess: (r) => {
-      window.prompt(
-        "New temporary password (shown once — copy it and hand it to the user):",
-        r.temp_password
-      );
-      onNotice("Password reset — temporary password shown.");
+    onSuccess: (r, v) => {
+      setTempPw({ email: v.email, pw: r.temp_password });
     },
     onError: (err: Error) => onNotice(err.message)
   });
@@ -23791,21 +23794,22 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
       }),
     onSuccess: (r) => {
       onNotice(r.message || "Account updated.");
+      setEditMember(null);
       invalidate();
     },
     onError: (err: Error) => onNotice(err.message)
   });
-  const editLogin = (m: { user_id: string; email: string; full_name: string }) => {
-    const email = window.prompt(
-      "Login email / username for this user (they sign in with this):", m.email
-    );
-    if (email === null) return;
-    const full_name = window.prompt("Display name:", m.full_name);
-    if (full_name === null) return;
-    const changes: { userId: string; email?: string; full_name?: string } = { userId: m.user_id };
-    if (email.trim() && email.trim().toLowerCase() !== m.email.toLowerCase()) changes.email = email.trim();
-    if (full_name.trim() && full_name.trim() !== m.full_name) changes.full_name = full_name.trim();
-    if (!changes.email && !changes.full_name) { onNotice("Nothing changed."); return; }
+  const editLogin = (m: TeamMember) => {
+    setEditMember(m);
+    setEditEmail(m.email);
+    setEditName(m.full_name);
+  };
+  const saveEditLogin = () => {
+    if (!editMember) return;
+    const changes: { userId: string; email?: string; full_name?: string } = { userId: editMember.user_id };
+    if (editEmail.trim() && editEmail.trim().toLowerCase() !== editMember.email.toLowerCase()) changes.email = editEmail.trim();
+    if (editName.trim() && editName.trim() !== editMember.full_name) changes.full_name = editName.trim();
+    if (!changes.email && !changes.full_name) { setEditMember(null); return; }
     updateAccount.mutate(changes);
   };
   const leads = useQuery({
@@ -23937,6 +23941,54 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           </div>
           <Users className="h-5 w-5 text-ocean" />
         </div>
+        {/* Edit-login modal (replaces the old window.prompt pair). */}
+        {editMember ? (
+          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[15vh] backdrop-blur-sm"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) setEditMember(null); }}>
+            <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-xl border border-line bg-panel p-4 shadow-pop">
+              <h3 className="text-sm font-semibold text-ink">Edit login — {editMember.full_name}</h3>
+              <p className="mt-0.5 text-xs text-muted">Passwords are never viewable — use Reset password to issue a new one.</p>
+              <label className="mt-3 block text-sm">
+                <span className="mb-1 block text-xs font-semibold text-muted">Login email / username</span>
+                <input value={editEmail} onChange={(e) => setEditEmail(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" />
+              </label>
+              <label className="mt-2 block text-sm">
+                <span className="mb-1 block text-xs font-semibold text-muted">Display name</span>
+                <input value={editName} onChange={(e) => setEditName(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-line bg-panel px-2 text-sm" />
+              </label>
+              <div className="mt-4 flex justify-end gap-2">
+                <button onClick={() => setEditMember(null)} className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-ink hover:bg-field">Cancel</button>
+                <button onClick={saveEditLogin} disabled={updateAccount.isPending}
+                  className="rounded-lg bg-ocean px-3 py-1.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50">
+                  {updateAccount.isPending ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {/* Temp-password modal: shown ONCE, copyable (replaces window.prompt). */}
+        {tempPw ? (
+          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[15vh] backdrop-blur-sm">
+            <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-xl border border-line bg-panel p-4 shadow-pop">
+              <h3 className="text-sm font-semibold text-ink">Temporary password — {tempPw.email}</h3>
+              <p className="mt-0.5 text-xs text-muted">Shown once. Copy it and hand it to the user; they should change it after signing in (My Work → My settings).</p>
+              <div className="mt-3 flex items-center gap-2">
+                <code className="flex-1 truncate rounded-lg border border-line bg-field px-3 py-2 font-mono text-sm text-ink">{tempPw.pw}</code>
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(tempPw.pw).then(() => onNotice("Password copied.")); }}
+                  className="flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink hover:bg-field"
+                >
+                  <ClipboardCopy className="h-4 w-4" /> Copy
+                </button>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button onClick={() => setTempPw(null)} className="rounded-lg bg-ocean px-3 py-1.5 text-sm font-semibold text-white transition hover:opacity-90">Done</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[920px] text-left text-sm">
             <thead className="border-b border-line bg-field text-xs uppercase text-muted">
@@ -23958,8 +24010,20 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
               {(members.data || []).map((m) => (
                 <tr key={m.user_id} className={clsx(!m.is_active && "opacity-60")}>
                   <Td>
-                    <div className="font-medium text-ink">{m.full_name}</div>
-                    <div className="text-xs text-muted">{m.email}</div>
+                    <div className="flex items-center gap-2.5">
+                      {m.avatar_data_uri ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={m.avatar_data_uri} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
+                      ) : (
+                        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-ocean/10 text-xs font-bold text-ocean">
+                          {m.full_name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
+                        </span>
+                      )}
+                      <div className="min-w-0">
+                        <div className="truncate font-medium text-ink">{m.full_name}</div>
+                        <div className="truncate text-xs text-muted">{m.email}</div>
+                      </div>
+                    </div>
                   </Td>
                   <Td>
                     <select
@@ -24005,38 +24069,54 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                     <span className="whitespace-nowrap text-muted">{formatDay(m.member_since)}</span>
                   </Td>
                   <Td>
-                    <div className="flex items-center justify-end gap-2">
+                    {/* One actions menu instead of four buttons per row. */}
+                    <div className="relative flex justify-end">
                       <button
-                        onClick={() => editLogin(m)}
-                        title="Change this user's login email / display name. Passwords are never viewable — use Reset password to issue a new one."
-                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field"
+                        onClick={() => setMenuFor(menuFor === m.user_id ? null : m.user_id)}
+                        className={clsx(
+                          "grid h-8 w-8 place-items-center rounded-md border text-ink transition",
+                          menuFor === m.user_id ? "border-ocean/50 bg-ocean/10" : "border-line hover:bg-field"
+                        )}
+                        aria-label={`Actions for ${m.full_name}`}
+                        title="Account actions"
                       >
-                        Edit login
+                        ⋯
                       </button>
-                      <button
-                        onClick={() => resetPw.mutate(m.user_id)}
-                        title="Set a new temporary password for this user"
-                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field"
-                      >
-                        Reset password
-                      </button>
-                      <button
-                        onClick={() => toggleActive.mutate({ userId: m.user_id, active: !m.is_active })}
-                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field"
-                      >
-                        {m.is_active ? "Deactivate" : "Activate"}
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`Remove ${m.email} from this workspace?`)) {
-                            remove.mutate(m.user_id);
-                          }
-                        }}
-                        className="grid h-8 w-8 place-items-center rounded-md border border-line text-danger hover:bg-danger/10"
-                        aria-label="Remove member"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {menuFor === m.user_id ? (
+                        <>
+                          <div className="fixed inset-0 z-30" onClick={() => setMenuFor(null)} />
+                          <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-line bg-panel p-1 shadow-pop">
+                            <button
+                              onClick={() => { setMenuFor(null); editLogin(m); }}
+                              className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-ink hover:bg-field"
+                            >
+                              Edit login…
+                            </button>
+                            <button
+                              onClick={() => { setMenuFor(null); resetPw.mutate({ userId: m.user_id, email: m.email }); }}
+                              className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-ink hover:bg-field"
+                            >
+                              Reset password…
+                            </button>
+                            <button
+                              onClick={() => { setMenuFor(null); toggleActive.mutate({ userId: m.user_id, active: !m.is_active }); }}
+                              className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-ink hover:bg-field"
+                            >
+                              {m.is_active ? "Deactivate" : "Activate"}
+                            </button>
+                            <div className="my-1 border-t border-line" />
+                            <button
+                              onClick={() => {
+                                setMenuFor(null);
+                                if (window.confirm(`Remove ${m.email} from this workspace?`)) remove.mutate(m.user_id);
+                              }}
+                              className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-danger hover:bg-danger/10"
+                            >
+                              Remove from workspace…
+                            </button>
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                   </Td>
                 </tr>
