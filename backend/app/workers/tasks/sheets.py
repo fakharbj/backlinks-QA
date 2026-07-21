@@ -181,6 +181,41 @@ async def _is_working_day(db, workspace_id, day) -> bool:
     return override if override is not None else _default_working(day)
 
 
+async def _heal_stale_parents(s, ws) -> int:
+    """Close bulk parents that can never finish. A worker restart mid-run drops
+    the queued child syncs, so the parent waits at status=running forever — the
+    Batches list and the SheetsDesk progress card then show a phantom run. Any
+    sheet_sync_all parent still open after 3 hours is closed as 'partial' with
+    an honest note. Runs every tick, cheap (indexed status filter)."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.models.batch import Batch
+    from app.services import batch_service
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
+    stale = (
+        await s.execute(
+            select(Batch.id).where(
+                Batch.workspace_id == ws,
+                Batch.kind == "sheet_sync_all",
+                Batch.status.in_(("pending", "running")),
+                Batch.started_at < cutoff,
+            )
+        )
+    ).scalars().all()
+    for bid in stale:
+        await batch_service.add_log(
+            bid,
+            "Run never finished (the worker restarted mid-run and the remaining "
+            "project syncs were lost) — closed automatically as finished-with-problems.",
+            level="warning",
+        )
+        await batch_service.finish(bid, status="partial", error="interrupted — worker restarted mid-run")
+    return len(stale)
+
+
 async def _auto_sync_tick_async() -> dict:
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -195,6 +230,14 @@ async def _auto_sync_tick_async() -> dict:
             await s.execute(select(SheetSource.workspace_id).distinct())
         ).scalars().all()
         for ws in ws_ids:
+            # Self-heal BEFORE the office-hours gates so stuck runs clear even
+            # on non-working days / disabled auto-sync.
+            try:
+                healed = await _heal_stale_parents(s, ws)
+                if healed:
+                    log.info("sheets_stale_parents_healed", workspace_id=str(ws), count=healed)
+            except Exception as exc:  # noqa: BLE001 — healing must never block the tick
+                log.warning("sheets_stale_parent_heal_failed", workspace_id=str(ws), error=repr(exc))
             cfg = await _office_cfg(s, ws)
             if not cfg.get("auto_sync"):
                 out[str(ws)] = "disabled"

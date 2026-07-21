@@ -196,7 +196,13 @@ async def list_batches(
     status: str | None = None,
     project_id: uuid.UUID | None = None,
     limit: int = 100,
+    offset: int = 0,
+    parent_id: uuid.UUID | None = None,
+    top_level: bool = False,
 ) -> list[Batch]:
+    """``parent_id`` lists one bulk run's children; ``top_level`` hides children
+    from the main list (a bulk run shows as ONE row — its children live inside
+    the parent's details page). Both key off ``meta->>'parent_batch_id'``."""
     stmt = select(Batch).where(Batch.workspace_id == workspace_id)
     if kind:
         stmt = stmt.where(Batch.kind == kind)
@@ -204,7 +210,15 @@ async def list_batches(
         stmt = stmt.where(Batch.status == status)
     if project_id:
         stmt = stmt.where(Batch.project_id == project_id)
-    stmt = stmt.order_by(Batch.started_at.desc()).limit(max(1, min(limit, 300)))
+    if parent_id is not None:
+        stmt = stmt.where(Batch.meta["parent_batch_id"].astext == str(parent_id))
+    elif top_level:
+        stmt = stmt.where(Batch.meta["parent_batch_id"].astext.is_(None))
+    stmt = (
+        stmt.order_by(Batch.started_at.desc())
+        .offset(max(0, offset))
+        .limit(max(1, min(limit, 300)))
+    )
     return list((await db.execute(stmt)).scalars().all())
 
 

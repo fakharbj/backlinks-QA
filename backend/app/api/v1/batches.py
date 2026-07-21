@@ -112,11 +112,18 @@ async def list_batches(
     status: str | None = Query(None),
     project_id: uuid.UUID | None = Query(None),
     limit: int = Query(100),
+    offset: int = Query(0, ge=0),
+    # A bulk run lists as ONE row: children are hidden unless explicitly asked
+    # for (parent=<bulk batch id>) or top_level=false (legacy flat view).
+    parent: uuid.UUID | None = Query(None),
+    top_level: bool = Query(True),
 ) -> list[BatchOut]:
     if project_id is not None:
         ctx.assert_project(project_id)
     rows = await batch_service.list_batches(
-        db, ctx.workspace_id, kind=kind, status=status, project_id=project_id, limit=limit
+        db, ctx.workspace_id, kind=kind, status=status, project_id=project_id,
+        limit=limit, offset=offset, parent_id=parent,
+        top_level=top_level and parent is None,
     )
     review_ids = [b.id for b in rows if b.kind in batch_review_service.REVIEW_KINDS]
     pending = await _pending_by_batch(db, review_ids)

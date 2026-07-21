@@ -447,7 +447,10 @@ async def sync_project(
     batch_id = await batch_service.start(
         "sheet_sync", source.workspace_id, project_id=source.project_id,
         label=f"Sheet sync — {source.project_name}",
-        meta={"sheet_source_id": str(source.id)},
+        # parent_batch_id links this child to its bulk run: the Batches list
+        # hides children by default and the parent's details page lists them.
+        meta={"sheet_source_id": str(source.id),
+              **({"parent_batch_id": str(parent)} if parent else {})},
     )
 
     try:

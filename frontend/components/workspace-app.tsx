@@ -11556,13 +11556,15 @@ function BatchDetails({
   batchId,
   onNotice,
   onBack,
-  onOpenBacklinks
+  onOpenBacklinks,
+  onOpenBatch
 }: {
   token: string | null;
   batchId: string;
   onNotice: (text: string) => void;
   onBack: () => void;
   onOpenBacklinks?: (filters: Record<string, string>) => void;
+  onOpenBatch?: (batchId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [stateF, setStateF] = useState<string[]>([]);
@@ -11589,13 +11591,14 @@ function BatchDetails({
   const isReview = b?.kind === "link_review" || b?.kind === "domain_import" || b?.kind === "competitor_import";
   const isLinks = b?.kind === "link_review";
   const isDomains = b?.kind === "domain_import" || b?.kind === "competitor_import";
-  // Bulk parent only: the child sheet_sync batches, so the CURRENTLY-syncing
-  // project shows its live row-progress ratio inside the per-project panel.
+  // Bulk parent only: THIS run's child sheet_sync batches (exact, via the
+  // parent pointer) — live row-progress for the syncing project + a clickable
+  // per-project sync list with statuses/errors.
   const bulkChildren = useQuery({
     queryKey: ["bulk-children", token, batchId],
     enabled: Boolean(token) && b?.kind === "sheet_sync_all",
     refetchInterval: b?.status === "running" || b?.status === "pending" ? 2500 : false,
-    queryFn: () => api<Batch[]>("/batches?kind=sheet_sync&limit=50", { token })
+    queryFn: () => api<Batch[]>(`/batches?parent=${batchId}&limit=300`, { token })
   });
   // Threshold query params shared by the item list + export (only set ones sent).
   const thrParams = (p: URLSearchParams) => {
@@ -12001,6 +12004,16 @@ function BatchDetails({
               Batch #B-{b.seq} — {BATCH_KIND_LABEL[b.kind] || b.kind}
             </h2>
             <BatchStatusChip value={b.status} />
+            {/* Child of a bulk run → jump up to the parent batch. */}
+            {b.meta && (b.meta as Record<string, unknown>).parent_batch_id && onOpenBatch ? (
+              <button
+                onClick={() => onOpenBatch(String((b.meta as Record<string, unknown>).parent_batch_id))}
+                className="rounded-full border border-ocean/40 bg-ocean/10 px-2 py-0.5 text-[11px] font-semibold text-ocean hover:bg-ocean/20"
+                title="This sync ran as part of a bulk run — open the bulk batch"
+              >
+                Part of a bulk run ↗
+              </button>
+            ) : null}
             {isReview && openCount > 0 ? (
               <span className="rounded-full bg-plum/10 px-2 py-0.5 text-[11px] font-semibold text-plum">
                 {openCount} awaiting decision
@@ -12114,27 +12127,42 @@ function BatchDetails({
             <div className="mt-3 divide-y divide-line rounded-lg border border-line">
               {projs.map((pr) => {
                 const m = rowCls(pr.status);
-                // Currently-syncing project: pull its child batch for the live
-                // row-progress ratio ("312/2077 rows · Tab X").
-                const child =
-                  pr.status === "running"
-                    ? (bulkChildren.data || []).find(
-                        (c) =>
-                          (c.status === "running" || c.status === "pending") &&
-                          String((c.meta as Record<string, unknown>)?.sheet_source_id || "") === pr.id
-                      )
-                    : undefined;
-                return (
-                  <div key={pr.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+                // Each project's own child sync batch (exact, via parent
+                // pointer): live progress while running, and a click-through
+                // to its full details (tabs, per-row errors, logs) after.
+                const child = (bulkChildren.data || []).find(
+                  (c) => String((c.meta as Record<string, unknown>)?.sheet_source_id || "") === pr.id
+                );
+                const live = child && (child.status === "running" || child.status === "pending");
+                const row = (
+                  <>
                     <span className="font-medium text-ink">{pr.name || pr.id}</span>
                     <span className={clsx("rounded-full border px-2 py-0.5 text-[11px] font-semibold", m.chip)}>{m.label}</span>
-                    {child ? (
+                    {child ? <span className="text-[11px] text-muted">#B-{child.seq}</span> : null}
+                    {live ? (
                       <span className="flex items-center gap-2 text-xs text-ocean">
                         <BatchProgress totals={child.totals || {}} />
                         {child.meta?.current_step ? <span>{String(child.meta.current_step)}</span> : null}
                       </span>
                     ) : null}
                     {pr.note ? <span className="text-xs text-muted">{pr.note}</span> : null}
+                    {child && onOpenBatch ? (
+                      <span className="ml-auto shrink-0 text-xs font-medium text-ocean">Open sync →</span>
+                    ) : null}
+                  </>
+                );
+                return child && onOpenBatch ? (
+                  <button
+                    key={pr.id}
+                    onClick={() => onOpenBatch(child.id)}
+                    title="Open this project's sync — rows, per-tab progress, errors and logs"
+                    className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left text-sm transition hover:bg-field/60"
+                  >
+                    {row}
+                  </button>
+                ) : (
+                  <div key={pr.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+                    {row}
                   </div>
                 );
               })}
@@ -12464,6 +12492,7 @@ function BatchesDesk({
   const [kind, setKind] = useState("");
   const [statusF, setStatusF] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [listLimit, setListLimit] = useState(50); // Load more grows by 50 (server caps 300)
 
   // Deep link: "Open review batch" from Imports / Import Domains lands here
   // with ?f_batch=<id> (mirrors the Backlinks f_* pattern).
@@ -12482,12 +12511,14 @@ function BatchesDesk({
     if (kind) p.set("kind", kind);
     if (statusF) p.set("status", statusF);
     if (projectId) p.set("project_id", projectId);
+    p.set("limit", String(listLimit)); // pagination: Load more grows the window
     const s = p.toString();
     return s ? `?${s}` : "";
   };
   const batches = useQuery({
-    queryKey: ["batches", token, kind, statusF, projectId],
+    queryKey: ["batches", token, kind, statusF, projectId, listLimit],
     enabled: Boolean(token) && !openId,
+    placeholderData: (prev) => prev, // keep rows while a bigger page loads
     queryFn: () => api<Batch[]>(`/batches${qs()}`, { token }),
     // Live progress: poll while anything is running.
     refetchInterval: (q) =>
@@ -12495,7 +12526,7 @@ function BatchesDesk({
   });
 
   if (openId) {
-    return <BatchDetails token={token} batchId={openId} onNotice={onNotice} onBack={() => setOpenId(null)} />;
+    return <BatchDetails token={token} batchId={openId} onNotice={onNotice} onBack={() => setOpenId(null)} onOpenBatch={setOpenId} />;
   }
 
   return (
@@ -12634,6 +12665,17 @@ function BatchesDesk({
           ) : null}
           {!batches.isLoading && !(batches.data || []).length ? (
             <Empty label="No runs yet — imports, syncs and checks will appear here." />
+          ) : null}
+          {/* Pagination: a full page means there is probably more history. */}
+          {(batches.data || []).length >= listLimit && listLimit < 300 ? (
+            <div className="border-t border-line p-2 text-center">
+              <button
+                onClick={() => setListLimit((l) => Math.min(300, l + 50))}
+                className="rounded-lg border border-line px-4 py-1.5 text-sm font-medium text-ink transition hover:bg-field"
+              >
+                Load more
+              </button>
+            </div>
           ) : null}
         </div>
       </div>
