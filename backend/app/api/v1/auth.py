@@ -238,3 +238,59 @@ async def reset_password(payload: ResetPasswordRequest, db: DbSession) -> Messag
     )
     await db.commit()
     return Message(message="Password updated — you can sign in now.")
+
+
+# ── Self-service account settings (delivery-polish T2): photo + password ─────
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password", response_model=Message)
+async def change_password(payload: ChangePasswordRequest, ctx: AuthCtx, db: DbSession) -> Message:
+    """Logged-in password change: proves the CURRENT password, then swaps the
+    hash. Sessions stay valid (the user just proved ownership) — unlike the
+    emailed-code reset, which revokes everything."""
+    import asyncio
+
+    from app.core.errors import ValidationAppError
+    from app.core.security import hash_password, verify_password
+    from app.models.user import User
+
+    if len(payload.new_password) < 8:
+        raise ValidationAppError("The new password must be at least 8 characters.")
+    ok = await asyncio.to_thread(verify_password, payload.current_password, ctx.user.password_hash)
+    if not ok:
+        raise ValidationAppError("Current password is incorrect.")
+    user = await db.get(User, ctx.user.id)
+    user.password_hash = await asyncio.to_thread(hash_password, payload.new_password)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, workspace_id=ctx.workspace_id, actor_user_id=ctx.user.id,
+        entity_type="user", entity_id=ctx.user.id, summary="Password changed (self-service)",
+    )
+    await db.commit()
+    return Message(message="Password changed.")
+
+
+class AvatarRequest(BaseModel):
+    # data:image/... URI or null to remove. ~300KB binary ≈ 400k chars base64.
+    avatar_data_uri: str | None = None
+
+
+@router.put("/avatar", response_model=Message)
+async def set_avatar(payload: AvatarRequest, ctx: AuthCtx, db: DbSession) -> Message:
+    """Set or clear the signed-in user's profile photo (small data-URI, same
+    pattern as the branding logo — no file storage involved)."""
+    from app.core.errors import ValidationAppError
+    from app.models.user import User
+
+    uri = (payload.avatar_data_uri or "").strip() or None
+    if uri is not None:
+        if not uri.startswith("data:image/"):
+            raise ValidationAppError("The photo must be an image (data:image/... URI).")
+        if len(uri) > 400_000:
+            raise ValidationAppError("The photo is too large — keep it under ~300 KB.")
+    user = await db.get(User, ctx.user.id)
+    user.avatar_data_uri = uri
+    await db.commit()
+    return Message(message="Photo updated." if uri else "Photo removed.")

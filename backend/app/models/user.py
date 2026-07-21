@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -37,6 +38,10 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Self-service profile photo (0055): a small data:image/... URI (≤ ~300KB),
+    # shown in My Work / Team. Same storage pattern as the branding logo.
+    avatar_data_uri: Mapped[str | None] = mapped_column(Text)
 
     # Per-user notification preferences (0052): {category: {enabled, channel,
     # cadence}}. Absent keys = the category defaults; security is mandatory.

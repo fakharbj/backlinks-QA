@@ -44,6 +44,7 @@ class UserOut(ORMModel):
     email: str
     full_name: str
     is_active: bool
+    avatar_data_uri: str | None = None
 
 
 class MeResponse(BaseModel):

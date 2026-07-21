@@ -592,6 +592,12 @@ async def weekly_capacity(
                 "over": a > c and c > 0,
             })
         wk_a = round(sum(x["assigned"] for x in day_cells), 1)
+        # Owner rule: hours planned on a company NON-WORKING day are excused —
+        # they must not create phantom weekly overbooking, eat "free" hours or
+        # inflate utilisation. week_assigned stays the full factual total.
+        wk_a_workable = round(
+            sum(x["assigned"] for x, d in zip(day_cells, days) if working[d.isoformat()]), 1
+        )
         wk_c = round(sum(x["capacity"] for x in day_cells), 1)
         people.append({
             "user_label": lbl,
@@ -599,9 +605,9 @@ async def weekly_capacity(
             "day_hours": [_cap_for(cfg_val, i) for i in range(7)] if per_day else None,
             "days": day_cells,
             "week_assigned": wk_a, "week_capacity": wk_c,
-            "week_free": round(max(0.0, wk_c - wk_a), 1),
-            "week_over": round(max(0.0, wk_a - wk_c), 1),
-            "utilization_pct": round(100 * wk_a / wk_c) if wk_c else None,
+            "week_free": round(max(0.0, wk_c - wk_a_workable), 1),
+            "week_over": round(max(0.0, wk_a_workable - wk_c), 1),
+            "utilization_pct": round(100 * wk_a_workable / wk_c) if wk_c else None,
         })
     # Per-day totals across everyone (the "how many hours are free each day" row).
     day_totals = []

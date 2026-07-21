@@ -293,7 +293,7 @@ export function WorkspaceApp() {
     // Never let the role flicker to undefined mid-refetch — a null role unmounts
     // the entire workspace (the security gate below) and wipes every desk filter.
     placeholderData: (prev) => prev,
-    queryFn: () => api<{ role: string; user: { full_name: string; email: string } }>("/auth/me", { token })
+    queryFn: () => api<{ role: string; user: { full_name: string; email: string; avatar_data_uri?: string | null } }>("/auth/me", { token })
   });
   const role = me.data?.role ?? null;
   useEffect(() => {
@@ -6489,6 +6489,108 @@ function MyRecommendationsPanel({ token, userLabel }: { token: string | null; us
   );
 }
 
+// ── My settings (delivery-polish T2): photo + password, self-service only ────
+function MySettingsCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const queryClient = useQueryClient();
+  const whoami = useQuery({
+    queryKey: ["me", token],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => api<{ role: string; user: { full_name: string; email: string; avatar_data_uri?: string | null } }>("/auth/me", { token })
+  });
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const setAvatar = useMutation({
+    mutationFn: (uri: string | null) =>
+      api<{ message: string }>("/auth/avatar", { token, method: "PUT", body: JSON.stringify({ avatar_data_uri: uri }) }),
+    onSuccess: (r) => {
+      onNotice(r.message);
+      queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const changePw = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/auth/change-password", {
+        token, method: "POST",
+        body: JSON.stringify({ current_password: curPw, new_password: newPw })
+      }),
+    onSuccess: () => {
+      onNotice("Password changed.");
+      setCurPw("");
+      setNewPw("");
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const onFile = (f: File | undefined) => {
+    if (!f) return;
+    if (f.size > 300 * 1024) {
+      onNotice("Photo too large — keep it under 300 KB.");
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => setAvatar.mutate(String(r.result));
+    r.readAsDataURL(f);
+  };
+  const avatar = whoami.data?.user.avatar_data_uri || null;
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <SectionTitle title="My settings" />
+      <div className="grid gap-4 p-3 md:grid-cols-2">
+        <div className="flex items-center gap-3">
+          {avatar ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={avatar} alt="Profile photo" className="h-14 w-14 rounded-xl object-cover shadow-card" />
+          ) : (
+            <span className="grid h-14 w-14 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white">
+              {(whoami.data?.user.full_name || "?").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
+            </span>
+          )}
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-ink">Profile photo</div>
+            <p className="text-xs text-muted">Shown on your dashboard and to your team. Max 300 KB.</p>
+            <div className="mt-1.5 flex items-center gap-2">
+              <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+              <button onClick={() => fileRef.current?.click()} disabled={setAvatar.isPending}
+                className="rounded-lg border border-line px-2.5 py-1 text-xs font-medium text-ink transition hover:bg-field disabled:opacity-50">
+                {setAvatar.isPending ? "Saving…" : avatar ? "Change photo" : "Upload photo"}
+              </button>
+              {avatar ? (
+                <button onClick={() => setAvatar.mutate(null)} disabled={setAvatar.isPending}
+                  className="text-xs font-medium text-muted hover:text-danger hover:underline">
+                  Remove
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        <div>
+          <div className="text-sm font-semibold text-ink">Change password</div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <input type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)}
+              placeholder="Current password" autoComplete="current-password"
+              className="h-9 w-44 rounded-lg border border-line bg-panel px-2 text-sm" />
+            <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)}
+              placeholder="New password (min 8)" autoComplete="new-password"
+              className="h-9 w-44 rounded-lg border border-line bg-panel px-2 text-sm" />
+            <button
+              onClick={() => changePw.mutate()}
+              disabled={changePw.isPending || !curPw || newPw.length < 8}
+              className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+            >
+              {changePw.isPending ? "Saving…" : "Update"}
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-muted">You stay signed in on this device after the change.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function MyWorkDesk({ token, onNotice, focus, onNav }: {
   token: string | null; onNotice: (text: string) => void;
   // Single-section pages: the sidebar's Today / This week / My calendar /
@@ -6554,7 +6656,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
     enabled: Boolean(token),
     retry: false,
     placeholderData: (prev) => prev,
-    queryFn: () => api<{ role: string; user: { full_name: string; email: string } }>("/auth/me", { token })
+    queryFn: () => api<{ role: string; user: { full_name: string; email: string; avatar_data_uri?: string | null } }>("/auth/me", { token })
   });
   // Personal capacity for the chosen week — the SAME self-scoped endpoint the
   // Tasks desk uses (viewers only ever receive their own row). Fails soft:
@@ -6698,9 +6800,14 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           every line answers a question. */}
       <header className="rounded-xl border border-line bg-panel p-4 shadow-card">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-sm font-bold text-white">
-            {(me.data?.labels[0] || whoami.data?.user.full_name || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
-          </span>
+          {whoami.data?.user.avatar_data_uri ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={whoami.data.user.avatar_data_uri} alt="" className="h-10 w-10 shrink-0 rounded-xl object-cover shadow-card" />
+          ) : (
+            <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-sm font-bold text-white">
+              {(me.data?.labels[0] || whoami.data?.user.full_name || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
+            </span>
+          )}
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 truncate text-lg font-bold capitalize tracking-tight text-ink">
               {me.data?.labels.length ? me.data.labels.join(", ") : whoami.data?.user.full_name || "My Work"}
@@ -7106,6 +7213,9 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
         </div>
       </section>
       ) : null}
+
+      {/* Self-service account settings: photo + password (owner-scoped ask). */}
+      {showLanding ? <MySettingsCard token={token} onNotice={onNotice} /> : null}
     </section>
   );
 }
