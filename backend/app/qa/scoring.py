@@ -32,7 +32,12 @@ _LABEL_CAPS: dict[IssueLabel, int] = {
 # score against. These route to NEEDS_MANUAL_REVIEW (see classification) and keep
 # a neutral score rather than a penalising one — an unchecked link is not a bad
 # link. (Bot/WAF/CAPTCHA keep their existing review + cap behaviour.)
-_UNSCORED_CODES: set[str] = {"RBT-03"}
+# PQ-06 (page contains adult/gambling/pharma/spam keywords) is owner-excluded
+# from scoring (2026-07-22): it stays visible as an issue but deducts nothing.
+# It sits here (not in the rule set) because it has no parameter mapping — the
+# severity fallback would otherwise always apply, including on rescores of
+# stored issue snapshots.
+_UNSCORED_CODES: set[str] = {"RBT-03", "PQ-06"}
 
 
 def _issue_delta(iss: Issue, ruleset: ResolvedRuleset) -> tuple[int, tuple[str, str] | None, bool]:

@@ -105,11 +105,12 @@ Verified prod state: ONE global rule-set v1 (0037 reseed), bands {fail<30,
 warn<80}, no overrides; 45,306 records (12,687 PASS / 11,829 WARNING / 8,600
 FAIL / 8,025 REVIEW / 3,128 UNKNOWN / 1,037 PENDING).
 
-1. **Zero the five deductions** — new global rule-set **v2** (idempotent alembic
-   data migration calling the same insert path as save_version): copy v1 rules,
-   set `anchor_match.changed=0`, `canonical.missing=0`,
-   `link_placement.{header,footer,sidebar,nav}=0`, `link_rel.sponsored=0`
-   (covers REL-03 + LNK-15). Bands unchanged.
+1. **Zero the removed deductions** — new global rule-set **v2** (idempotent
+   alembic data migration): copy v1 rules, set `anchor_match.changed=0`,
+   `canonical.missing=0`, `link_placement.{header,footer,sidebar,nav}=0`.
+   Bands unchanged. NOTE: `link_rel.sponsored` KEEPS its −10 — the owner's
+   brief lists sponsored only as the status example (90 ≥ 80 → PASS), not in
+   the remove list.
 2. **PQ-06 (spam keywords)**: NOT rule-mapped → zero via code:
    add "PQ-06" to `_UNSCORED_CODES` (qa/scoring.py:35). (Severity stays MEDIUM
    for display; delta = 0. Works retroactively because rescore replays stored

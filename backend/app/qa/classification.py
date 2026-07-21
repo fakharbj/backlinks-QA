@@ -6,7 +6,7 @@ Precedence (important):
   2. Otherwise, an unanswerable core question (CAPTCHA/WAF/JS-inconclusive/
      conflicting directives/non-HTML) → **NEEDS_MANUAL_REVIEW** (overrides PASS/WARNING).
   3. Otherwise, a purely transient failure (timeout/429/503/504/conn-reset) → **UNKNOWN**.
-  4. Otherwise band by score and remaining severities.
+  4. Otherwise band by score alone (fail_below / warn_below).
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ def classify(
             warn_below = int(bands.get("warn_below", 80))
         except (TypeError, ValueError):
             fail_below, warn_below = 30, 80
-    severities = {i.severity for i in issues}
     labels = {i.label for i in issues}
     det = artifact.detection
 
@@ -93,6 +92,11 @@ def classify(
         return OverallStatus.UNKNOWN
     if score < fail_below:
         return OverallStatus.FAIL
-    if Severity.HIGH in severities or Severity.MEDIUM in severities or score < warn_below:
+    # Owner rule (2026-07-22): WARNING is decided by the SCORE ALONE. A link at
+    # or above ``warn_below`` (default 80) is PASS even when medium/high issues
+    # deducted points on the way (e.g. rel=sponsored −10 → 90 = still PASS).
+    # Severity no longer force-demotes a good score; deductions already priced
+    # the issue into the number.
+    if score < warn_below:
         return OverallStatus.WARNING
     return OverallStatus.PASS

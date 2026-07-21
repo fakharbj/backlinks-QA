@@ -25,7 +25,7 @@ from app.db.session import session_scope
 from app.models.batch import Batch, BatchItem
 from app.qa import evaluate
 from app.qa.types import QAPolicy
-from app.services import batch_service, qa_settings_service
+from app.services import batch_service, qa_settings_service, scoring_config_service
 from app.workers.celery_app import celery_app
 from app.workers.runtime import RedisRobotsCache, get_browser, make_rate_limiter, run_async
 
@@ -180,6 +180,19 @@ async def _check_staged_links_async(batch_id_str: str, item_ids: list[str]) -> d
                 await s.execute(select(BatchItem).where(BatchItem.id.in_(uuids)))
             ).scalars().all()
         }
+        # Ruleset parity with production crawls: without it, staged previews use
+        # the legacy severity deductions and their scores diverge from what the
+        # same links get after approve. Resolved once per batch (project scope;
+        # link-type-scoped overrides are rare enough to ignore here). Fail-open.
+        stage_batch = await s.get(Batch, batch_id)
+        ruleset = None
+        if stage_batch is not None:
+            try:
+                ruleset = await scoring_config_service.resolve(
+                    s, stage_batch.workspace_id, stage_batch.project_id, None
+                )
+            except Exception:  # noqa: BLE001 — preview must not die on config
+                ruleset = None
         for item, artifact in zip(items, artifacts):
             row = rows.get(item.id)
             if row is None:
@@ -192,7 +205,7 @@ async def _check_staged_links_async(batch_id_str: str, item_ids: list[str]) -> d
                 continue
             try:
                 artifact.raw_html = artifact.rendered_html = None  # free memory
-                result = evaluate(artifact, policy=policy)
+                result = evaluate(artifact, policy=policy, ruleset=ruleset)
                 payload = dict(row.payload or {})
                 payload["qa"] = _qa_payload(artifact, result)
                 row.payload = payload
