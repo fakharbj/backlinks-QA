@@ -7,6 +7,14 @@ const tok = (v: string) => `rgb(var(${v}) / <alpha-value>)`;
 const config: Config = {
   darkMode: "class",
   content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./lib/**/*.{ts,tsx}"],
+  // The `success` (green) colour utilities were being dropped by the Next build's
+  // content scan even though they are used literally throughout the UI (every
+  // other colour generated fine). Force-generate the full set — solid + every
+  // opacity modifier + hover — so completion/done/OK states actually render green
+  // instead of collapsing to white/transparent (invisible `text-white` pills).
+  safelist: [
+    { pattern: /(bg|text|border)-success(\/(5|10|15|20|25|30|40|50|60|70|80|90))?/, variants: ["hover"] }
+  ],
   theme: {
     extend: {
       colors: {
