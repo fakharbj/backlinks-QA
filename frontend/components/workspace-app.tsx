@@ -127,7 +127,7 @@ export function WorkspaceApp() {
   // Users desk reports which person is open so admin nav shows the sections too.
   const [dashSection, setDashSection] = useState<DashSection>("overview");
   const [dashPerson, setDashPerson] = useState<string | null>(null);
-  const [tasksSection, setTasksSection] = useState<TasksSection>("planner");
+  const [tasksSection, setTasksSection] = usePersistentState<TasksSection>("ls_tasks_section", "planner");
   // Toast stack: EVERY onNotice(text) becomes its OWN stacked popup with a
   // timestamp — two rapid notifications are two visibly separate panels, never
   // one panel whose text morphs. Up to 6 stack; each auto-dismisses on its own
@@ -2938,6 +2938,8 @@ function Backlinks({
   // by the top-left picker, so this select hides there).
   const [projF, setProjF] = useState(() => fParam("project"));
   const [showScoreGuide, setShowScoreGuide] = useState(false);
+  // Grid density — compact fits more rows, comfortable is easier to scan.
+  const [density, setDensity] = usePersistentState<"compact" | "comfortable">("ls_bl_density", "compact");
   const [liveBatch, setLiveBatch] = useState<string | null>(null);
   const [sort, setSort] = useState("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -3521,6 +3523,13 @@ function Backlinks({
         <div className="mt-3 rounded-xl border border-line/70 bg-field/40 p-2.5">
         <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-muted">
           <Filter className="h-3 w-3" /> Filters
+          <button
+            onClick={() => setDensity((d) => (d === "compact" ? "comfortable" : "compact"))}
+            className="ml-auto rounded-md border border-line bg-panel px-2 py-0.5 font-medium normal-case tracking-normal text-muted transition hover:text-ink"
+            title="Row density — compact fits more rows, comfortable is easier to scan"
+          >
+            {density === "compact" ? "Comfortable rows" : "Compact rows"}
+          </button>
         </div>
         {/* One-click QA presets */}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -3689,7 +3698,10 @@ function Backlinks({
       </div>
       <div className="max-h-[70vh] overflow-auto scrollbar-thin">
         {/* Dense grid: slim one-line rows ([&_td] overrides the shared cell padding). */}
-        <table className="min-w-[1240px] w-full border-collapse text-left text-sm [&_td]:px-2 [&_td]:py-1 [&_td]:align-middle [&_th]:px-2">
+        <table className={clsx(
+          "min-w-[1240px] w-full border-collapse text-left text-sm [&_td]:px-2 [&_td]:align-middle [&_th]:px-2",
+          density === "comfortable" ? "[&_td]:py-2" : "[&_td]:py-1"
+        )}>
           <thead className="sticky top-0 z-10 bg-field text-xs uppercase text-muted">
             <tr>
               <Th>
@@ -6754,6 +6766,27 @@ function MyRecommendationsPanel({ token, userLabel }: { token: string | null; us
 }
 
 // ── My settings (delivery-polish T2): photo + password, self-service only ────
+// Remembered preference: state that survives reloads (localStorage), hydrated
+// in an effect so the static prerender stays clean. Used for view modes,
+// densities and filter defaults — the UI keeps working the way you left it.
+function usePersistentState<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) => void] {
+  const [val, setVal] = useState<T>(initial);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw != null) setVal(JSON.parse(raw) as T);
+    } catch { /* fresh default */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const set = (v: T | ((p: T) => T)) =>
+    setVal((prev) => {
+      const next = typeof v === "function" ? (v as (p: T) => T)(prev) : v;
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  return [val, set];
+}
+
 // Global display preference: show/hide profile photos everywhere (Settings →
 // Company & branding). Reads the already-cached /auth/me — zero extra requests.
 function useShowAvatars(token: string | null): boolean {
@@ -11226,8 +11259,8 @@ function UserDashboardsDesk({
   const [q, setQ] = useState("");
   // White-label rules (owner): active people only by default, a neutral
   // "Show all" reveals everyone; no employment-status wording in the default view.
-  const [showAll, setShowAll] = useState(false);
-  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [showAll, setShowAll] = usePersistentState<boolean>("ls_users_showall", false);
+  const [viewMode, setViewMode] = usePersistentState<"list" | "grid">("ls_users_view", "list");
   useEffect(() => {
     onPersonChange?.(person || null);
     // Reports open/close only — deliberately not reactive to the callback identity.
@@ -12975,8 +13008,8 @@ function BatchesDesk({
   // the same rule — this just hides controls that would 403).
   const canModerate = role !== "intern";
   const queryClient = useQueryClient();
-  const [kind, setKind] = useState("");
-  const [statusF, setStatusF] = useState("");
+  const [kind, setKind] = usePersistentState<string>("ls_batches_kind", "");
+  const [statusF, setStatusF] = usePersistentState<string>("ls_batches_status", "");
   const [openId, setOpenId] = useState<string | null>(null);
   const [listLimit, setListLimit] = useState(50); // Load more grows by 50 (server caps 300)
 
@@ -14705,19 +14738,28 @@ function ReportsDesk({
                 {REPORT_FACETS.map(([dim, key, label]) => {
                   const opts = facets.data?.facets?.[dim] || [];
                   return (
-                    <select
+                    <FilterMultiSelect
                       key={dim}
-                      className="h-9 rounded-md border border-line bg-panel px-2 text-sm"
-                      value={filters[key] || ""}
-                      onChange={(e) => setFilter(key, e.target.value)}
-                    >
-                      <option value="">{label}: all</option>
-                      {opts.map((o) => (
-                        <option key={String(o.value)} value={String(o.value)}>
-                          {String(o.label || o.value)} ({o.count})
-                        </option>
-                      ))}
-                    </select>
+                      label={label}
+                      withBlanks
+                      options={opts.map((o) => ({
+                        value: String(o.value),
+                        label: String(o.label || o.value),
+                        count: Number(o.count) || 0
+                      }))}
+                      selected={filters[key] ? filters[key].split(",") : []}
+                      onChange={(vals) => setFilter(key, vals.join(","))}
+                      allowCustom={dim === "source_domain" || dim === "user"}
+                      onSearch={
+                        dim === "source_domain"
+                          ? (term) =>
+                              api<{ items: Array<{ domain_key: string; backlink_count?: number }> }>(
+                                `/source-domains?search=${encodeURIComponent(term)}&limit=50`,
+                                { token }
+                              ).then((r) => (r.items || []).map((i) => ({ value: i.domain_key, count: i.backlink_count })))
+                          : undefined
+                      }
+                    />
                   );
                 })}
                 <label className="flex items-center gap-1 text-xs text-muted">

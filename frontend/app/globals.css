@@ -175,3 +175,14 @@ textarea {
 .desk-enter {
   animation: deskIn 0.22s ease-out;
 }
+
+/* ── Precision & micro-interaction layer (final polish) ──────────────────────
+   Tabular numerals: every KPI, table cell and counter aligns digit-for-digit —
+   the whole app reads more precise. Gentle transitions make hover/focus feel
+   deliberate instead of abrupt. */
+body { font-variant-numeric: tabular-nums; }
+button, select, input, textarea, a {
+  transition: background-color .15s ease, border-color .15s ease,
+              color .15s ease, box-shadow .15s ease, opacity .15s ease;
+}
+tbody tr { transition: background-color .12s ease; }
