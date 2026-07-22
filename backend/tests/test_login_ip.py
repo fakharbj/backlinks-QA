@@ -87,6 +87,34 @@ def test_team_mode_precedence():
     assert is_allowed(rules(), "8.8.8.8", UID, "viewer", team_mode="exempt")[0]
 
 
+def test_blocked_list_wins_over_allow():
+    r = rules(blocked_ips=["203.0.113.7"])  # also in the allow list
+    ok, why = is_allowed(r, "203.0.113.7", UID, "viewer")
+    assert not ok and "blocked" in why
+    # Other allowed entries still pass.
+    assert is_allowed(r, "10.1.0.99", UID, "viewer")[0]
+    # Exempt users bypass the block list entirely (exempt means exempt).
+    r2 = rules(blocked_ips=["203.0.113.7"], user_overrides={UID: "exempt"})
+    assert is_allowed(r2, "203.0.113.7", UID, "viewer")[0]
+
+
+def test_explain_reports_the_deciding_layer():
+    from app.services.login_ip_service import explain
+
+    assert explain(rules(), UID, "viewer") == {"layer": "master", "mode": "enforce"}
+    assert explain(rules(role_overrides={"viewer": "exempt"}), UID, "viewer") == {"layer": "role", "mode": "exempt"}
+    assert explain(rules(), UID, "viewer", team_mode="enforce") == {"layer": "team", "mode": "enforce"}
+    assert explain(rules(user_overrides={UID: "exempt"}), UID, "viewer", team_mode="enforce") == {"layer": "user", "mode": "exempt"}
+
+
+def test_rules_can_enforce_short_circuit():
+    from app.services.login_ip_service import defaults, rules_can_enforce
+
+    assert not rules_can_enforce(defaults())  # master off, no enforce overrides
+    assert rules_can_enforce({**defaults(), "enabled": True})
+    assert rules_can_enforce({**defaults(), "user_overrides": {UID: "enforce"}})
+
+
 def test_clean_keeps_notes_only_for_existing_normalized_entries():
     from app.services.login_ip_service import _clean
 

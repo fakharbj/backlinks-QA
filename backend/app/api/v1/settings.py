@@ -91,10 +91,45 @@ class LoginIpRulesIn(BaseModel):
     enabled: bool = False
     ips: list[str] = Field(default_factory=list)
     ip_notes: dict[str, str] = Field(default_factory=dict)
+    blocked_ips: list[str] = Field(default_factory=list)
+    blocked_notes: dict[str, str] = Field(default_factory=dict)
     user_overrides: dict[str, str] = Field(default_factory=dict)
     role_overrides: dict[str, str] = Field(default_factory=dict)
     team_overrides: dict[str, str] = Field(default_factory=dict)
     bind_sessions: bool = False
+
+
+@router.get("/settings/login-ips/effective")
+async def login_ip_effective(
+    db: ReadSession,
+    user_id: str = Query(..., max_length=64),
+    ip: str | None = Query(None, max_length=64),
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Which IP rule affects a given user — and would a given IP pass? Powers
+    the Settings → Security tester (precedence: user > team > role > master)."""
+    import uuid as _uuid
+
+    from app.models.user import WorkspaceMember
+
+    uid = _uuid.UUID(user_id)
+    member = (
+        await db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.user_id == uid,
+                WorkspaceMember.workspace_id == ctx.workspace_id,
+            )
+        )
+    ).scalar_one_or_none()
+    role = member.role.value if member else "viewer"
+    rules = await login_ip_service.get_rules(db)
+    team_mode = await login_ip_service.resolve_team_mode(db, rules, uid)
+    verdict = login_ip_service.explain(rules, uid, role, team_mode=team_mode)
+    out = {**verdict, "role": role}
+    if ip:
+        allowed, why = login_ip_service.is_allowed(rules, ip.strip(), uid, role, team_mode=team_mode)
+        out.update({"ip": ip.strip(), "allowed": allowed, "why": why})
+    return out
 
 
 @router.get("/settings/login-ips")

@@ -13782,6 +13782,13 @@ function CompetitorDesk({
                           </div>
                           {compDomains.isLoading ? (
                             <div className="flex justify-center p-3"><Loader2 className="h-4 w-4 animate-spin text-muted" /></div>
+                          ) : compDomains.isError ? (
+                            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-danger/40 bg-danger/5 p-3 text-xs text-danger">
+                              Couldn&apos;t load this competitor&apos;s domains — {(compDomains.error as Error)?.message}
+                              <button onClick={() => void compDomains.refetch()} className="rounded border border-danger/40 px-2 py-0.5 font-medium hover:bg-danger/10">
+                                Retry
+                              </button>
+                            </div>
                           ) : (
                             <div className="max-h-72 overflow-y-auto rounded-lg border border-line bg-panel">
                               <table className="w-full text-left text-xs">
@@ -13827,7 +13834,10 @@ function CompetitorDesk({
                                 </tbody>
                               </table>
                               {!(compDomains.data || []).length ? (
-                                <p className="p-3 text-center text-xs text-muted">No source domains recorded for this competitor.</p>
+                                <p className="p-3 text-center text-xs text-muted">
+                                  No source domains recorded for this competitor yet — they appear after its uploads are processed
+                                  (each upload recomputes the domain catalog).
+                                </p>
                               ) : null}
                             </div>
                           )}
@@ -19559,6 +19569,8 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
   type Rules = {
     enabled: boolean; ips: string[];
     ip_notes?: Record<string, string>;
+    blocked_ips?: string[];
+    blocked_notes?: Record<string, string>;
     user_overrides: Record<string, string>; role_overrides: Record<string, string>;
     team_overrides?: Record<string, string>;
     bind_sessions?: boolean;
@@ -19579,6 +19591,25 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
   const [enabled, setEnabled] = useState(false);
   const [bindSessions, setBindSessions] = useState(false);
   const [ipsText, setIpsText] = useState("");
+  const [blockedText, setBlockedText] = useState("");
+  // Effective-rule tester ("which rule affects this user?").
+  const [testUser, setTestUser] = useState("");
+  const [testIp, setTestIp] = useState("");
+  const [testResult, setTestResult] = useState<{ layer: string; mode: string; role: string; ip?: string; allowed?: boolean; why?: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+  const runTest = async () => {
+    if (!testUser) return;
+    setTesting(true);
+    try {
+      const p = new URLSearchParams({ user_id: testUser });
+      if (testIp.trim()) p.set("ip", testIp.trim());
+      setTestResult(await api(`/settings/login-ips/effective?${p.toString()}`, { token }));
+    } catch (e) {
+      onNotice((e as Error).message);
+    } finally {
+      setTesting(false);
+    }
+  };
   const [roleOv, setRoleOv] = useState<Record<string, string>>({});
   const [userOv, setUserOv] = useState<Record<string, string>>({});
   const [teamOv, setTeamOv] = useState<Record<string, string>>({});
@@ -19615,6 +19646,10 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
       const note = (q.data?.ip_notes || {})[ip];
       return note ? `${ip} | ${note}` : ip;
     }).join("\n"));
+    setBlockedText((q.data.blocked_ips || []).map((ip) => {
+      const note = (q.data?.blocked_notes || {})[ip];
+      return note ? `${ip} | ${note}` : ip;
+    }).join("\n"));
     setRoleOv(q.data.role_overrides || {});
     setUserOv(q.data.user_overrides || {});
     setTeamOv(q.data.team_overrides || {});
@@ -19626,11 +19661,14 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
         token, method: "PUT",
         body: JSON.stringify((() => {
           const { ips, notes } = parseIpLines(ipsText);
+          const blocked = parseIpLines(blockedText);
           return {
             enabled,
             bind_sessions: bindSessions,
             ips,
             ip_notes: notes,
+            blocked_ips: blocked.ips,
+            blocked_notes: blocked.notes,
             role_overrides: roleOv,
             user_overrides: userOv,
             team_overrides: teamOv
@@ -19709,6 +19747,23 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
             className="w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-xs"
           />
           <p className="mt-1 text-[11px] text-muted">Single IPs or CIDR networks (IPv4/IPv6). Add a remark after a pipe: <span className="font-mono">1.2.3.4 | office</span>.</p>
+          <div className="mt-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-danger">Blocked IPs / networks</span>
+            <textarea
+              value={blockedText}
+              onChange={(e) => setBlockedText(e.target.value)}
+              rows={3}
+              placeholder={"Explicit deny — wins over the allow list:\n5.6.7.8 | shared VPN exit"}
+              className="mt-1 w-full rounded-lg border border-danger/30 bg-panel px-3 py-2 font-mono text-xs"
+            />
+            <p className="mt-1 text-[11px] text-muted">An enforced user from a blocked IP is rejected even if an allow entry also covers it.</p>
+          </div>
+          <p className="mt-3 rounded-lg border border-ocean/25 bg-ocean/5 p-2.5 text-[11px] text-ink">
+            <b>Live sessions are protected too:</b> every request re-checks the user&apos;s
+            current IP. If someone&apos;s network changes to a non-allowed IP mid-session,
+            the session dies immediately (all their sign-ins are revoked and the event
+            is recorded in the security log) — not just at the next sign-in.
+          </p>
         </div>
         <div className="space-y-4">
           <div>
@@ -19789,6 +19844,47 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
               {!Object.keys(userOv).length ? <span className="text-xs text-muted">No per-user exceptions.</span> : null}
             </div>
           </div>
+        </div>
+      </div>
+      {/* Which rule affects a user? Priority: user > team > role > master. */}
+      <div className="border-t border-line p-3">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted">Check a user (priority: user &gt; team &gt; role &gt; master)</span>
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <SearchSelect
+            value={testUser}
+            onChange={setTestUser}
+            options={(membersQ.data || []).map((m) => ({ value: m.user_id, label: `${m.full_name} (${ROLE_LABEL[m.role] || m.role})` }))}
+            placeholder="Pick a person…"
+            width="w-52"
+          />
+          <input
+            value={testIp}
+            onChange={(e) => setTestIp(e.target.value)}
+            placeholder="Test IP (optional)"
+            className="h-9 w-40 rounded-lg border border-line bg-panel px-2 font-mono text-xs"
+          />
+          <button
+            onClick={() => void runTest()}
+            disabled={!testUser || testing}
+            className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink hover:bg-field disabled:opacity-40"
+          >
+            {testing ? "Checking…" : "Check"}
+          </button>
+          {testResult ? (
+            <span className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className={clsx("rounded-full px-2 py-0.5 font-semibold",
+                testResult.mode === "exempt" ? "bg-success/20 text-success" : "bg-ocean/10 text-ocean")}>
+                {testResult.mode === "exempt" ? "Exempt — any IP" : "Enforced"}
+              </span>
+              <span className="text-muted">decided by the <b className="text-ink">{testResult.layer}</b> rule</span>
+              {testResult.ip ? (
+                <span className={clsx("rounded-full px-2 py-0.5 font-semibold",
+                  testResult.allowed ? "bg-success/20 text-success" : "bg-danger/10 text-danger")}>
+                  {testResult.ip}: {testResult.allowed ? "allowed" : "blocked"}{testResult.why ? ` (${testResult.why})` : ""}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
         </div>
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-line p-3">

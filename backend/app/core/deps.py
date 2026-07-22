@@ -96,6 +96,38 @@ async def get_auth_context(
         raise PermissionDeniedError("You are not a member of this workspace")
 
     role = membership.role
+
+    # ── Per-request IP enforcement (owner rule): a session whose CURRENT IP is
+    # no longer allowed dies IMMEDIATELY — on normal pages, API calls and
+    # background requests alike, not just at the next token refresh. Cached
+    # rules (~20s TTL) keep the hot path cheap; a violation revokes every
+    # refresh token the user holds (own session/commit — this dependency runs
+    # read-only) and is audited once per (user, ip). Fail-open on internal
+    # errors: a broken rules row must never take the whole API down.
+    try:
+        from app.services import login_ip_service
+
+        _rules = await login_ip_service.get_rules_cached(db)
+        if login_ip_service.rules_can_enforce(_rules):
+            _ip = login_ip_service.client_ip(request)
+            _tm = await login_ip_service.team_mode_cached(db, _rules, user_id)
+            _ok, _why = login_ip_service.is_allowed(
+                _rules, _ip, user_id, role.value, team_mode=_tm
+            )
+            if not _ok:
+                await login_ip_service.kill_sessions(
+                    user_id, ip=_ip, why=_why,
+                    user_agent=request.headers.get("user-agent"),
+                )
+                raise AuthenticationError(
+                    "Your session ended because this network isn't allowed. "
+                    "Sign in again from an approved IP."
+                )
+    except AuthenticationError:
+        raise
+    except Exception:  # noqa: BLE001 — enforcement must never 500 the API
+        pass
+
     allowed_projects: set[uuid.UUID] | None = None
     if is_project_scoped(role):
         rows = (

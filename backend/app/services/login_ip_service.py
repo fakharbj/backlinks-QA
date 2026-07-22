@@ -25,6 +25,7 @@ working; the rule is about new sign-ins, per the owner brief.
 from __future__ import annotations
 
 import ipaddress
+import time
 import uuid
 
 from fastapi import Request
@@ -48,6 +49,10 @@ def defaults() -> dict:
         # Optional remark per whitelist entry, keyed by the NORMALIZED entry
         # (normalize_ips output) so notes never silently detach.
         "ip_notes": {},
+        # Explicit DENY list: an enforced user from a blocked IP/network is
+        # rejected even if an allow entry also covers it (block wins).
+        "blocked_ips": [],
+        "blocked_notes": {},
         "user_overrides": {},
         "role_overrides": {"admin": "exempt"},
         # Keyed by a TeamLead's user id — applies to everyone on that lead's
@@ -96,6 +101,7 @@ def _clean(payload: dict) -> dict:
     rules["enabled"] = bool(payload.get("enabled", False))
     rules["bind_sessions"] = bool(payload.get("bind_sessions", False))
     rules["ips"] = normalize_ips(list(payload.get("ips") or []))
+    rules["blocked_ips"] = normalize_ips(list(payload.get("blocked_ips") or []))
     # Notes survive only for entries that still exist, keyed by normalized form.
     notes_in = dict(payload.get("ip_notes") or {})
     normalized_notes: dict[str, str] = {}
@@ -110,6 +116,18 @@ def _clean(payload: dict) -> dict:
         if key in rules["ips"]:
             normalized_notes[key] = note
     rules["ip_notes"] = normalized_notes
+    blocked_notes: dict[str, str] = {}
+    for k, v in dict(payload.get("blocked_notes") or {}).items():
+        note = str(v or "").strip()[:120]
+        if not note:
+            continue
+        try:
+            key = normalize_ips([str(k)])[0]
+        except (ValidationAppError, IndexError):
+            continue
+        if key in rules["blocked_ips"]:
+            blocked_notes[key] = note
+    rules["blocked_notes"] = blocked_notes
     for field in ("user_overrides", "role_overrides", "team_overrides"):
         cleaned: dict[str, str] = {}
         for k, v in dict(payload.get(field) or {}).items():
@@ -139,15 +157,22 @@ def is_allowed(
         mode = "enforce" if rules.get("enabled") else "exempt"
     if mode == "exempt":
         return True, "exempt"
-    ips = rules.get("ips") or []
-    if not ips:
-        return True, "whitelist empty — nothing to enforce"
     if not ip:
         return False, "client IP could not be determined"
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False, f"unparseable client IP '{ip}'"
+    # Explicit block list wins over everything for an enforced user.
+    for entry in rules.get("blocked_ips") or []:
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return False, f"IP is blocked ({entry})"
+        except ValueError:
+            continue
+    ips = rules.get("ips") or []
+    if not ips:
+        return True, "whitelist empty — nothing to enforce"
     for entry in ips:
         try:
             if addr in ipaddress.ip_network(entry, strict=False):
@@ -155,6 +180,86 @@ def is_allowed(
         except ValueError:
             continue  # a bad stored entry never blocks evaluation of the rest
     return False, "IP not in the whitelist"
+
+
+def explain(rules: dict, user_id, role: str, team_mode: str | None = None) -> dict:
+    """Which layer decides for this user, and what mode results — powers the
+    Settings tester ("which rule affects this user?"). Pure."""
+    if str(user_id) in (rules.get("user_overrides") or {}):
+        return {"layer": "user", "mode": rules["user_overrides"][str(user_id)]}
+    if team_mode is not None:
+        return {"layer": "team", "mode": team_mode}
+    if str(role or "").lower() in (rules.get("role_overrides") or {}):
+        return {"layer": "role", "mode": rules["role_overrides"][str(role or "").lower()]}
+    return {"layer": "master", "mode": "enforce" if rules.get("enabled") else "exempt"}
+
+
+def rules_can_enforce(rules: dict) -> bool:
+    """Cheap short-circuit for the per-request hot path: can these rules
+    possibly enforce for anyone? False = skip all work."""
+    if rules.get("enabled"):
+        return True
+    for field in ("user_overrides", "role_overrides", "team_overrides"):
+        if "enforce" in (rules.get(field) or {}).values():
+            return True
+    return False
+
+
+# ── Per-request enforcement plumbing (hot path — cached, fail-open) ─────────
+_RULES_CACHE: dict = {"rules": None, "ts": 0.0}
+_TEAM_CACHE: dict[str, tuple[str | None, float]] = {}
+_AUDIT_THROTTLE: dict[str, float] = {}
+_CACHE_TTL = 20.0        # seconds — a settings save takes effect within this
+_AUDIT_TTL = 300.0       # one audit row per (user, ip) per 5 min, not per request
+
+
+def clear_rules_cache() -> None:
+    _RULES_CACHE["rules"] = None
+    _RULES_CACHE["ts"] = 0.0
+    _TEAM_CACHE.clear()
+
+
+async def get_rules_cached(db: AsyncSession) -> dict:
+    now = time.monotonic()
+    if _RULES_CACHE["rules"] is not None and now - _RULES_CACHE["ts"] < _CACHE_TTL:
+        return _RULES_CACHE["rules"]
+    rules = await get_rules(db)
+    _RULES_CACHE["rules"] = rules
+    _RULES_CACHE["ts"] = now
+    return rules
+
+
+async def team_mode_cached(db: AsyncSession, rules: dict, user_id) -> str | None:
+    key = str(user_id)
+    now = time.monotonic()
+    hit = _TEAM_CACHE.get(key)
+    if hit is not None and now - hit[1] < _CACHE_TTL:
+        return hit[0]
+    mode = await resolve_team_mode(db, rules, user_id)
+    _TEAM_CACHE[key] = (mode, now)
+    return mode
+
+
+async def kill_sessions(user_id, *, ip: str | None, why: str, user_agent: str | None) -> None:
+    """Session-death on IP violation: revoke EVERY refresh token the user
+    holds (the old session can never renew) + one throttled audit row. Runs in
+    its OWN session/commit — callable from read-only request dependencies."""
+    throttle_key = f"{user_id}:{ip}"
+    now = time.monotonic()
+    if now - _AUDIT_THROTTLE.get(throttle_key, 0.0) < _AUDIT_TTL:
+        return
+    _AUDIT_THROTTLE[throttle_key] = now
+    from app.db.session import session_scope
+    from app.models.enums import AuditAction
+    from app.services import audit_service, auth_service
+
+    async with session_scope() as s:
+        await auth_service._revoke_user_tokens(s, user_id)
+        await audit_service.record(
+            s, action=AuditAction.LOGOUT, actor_user_id=user_id,
+            summary=f"Session revoked — IP no longer allowed ({ip}: {why})",
+            ip_address=ip, user_agent=user_agent,
+        )
 
 
 async def resolve_team_mode(
@@ -245,4 +350,5 @@ async def save_rules(db: AsyncSession, workspace_id: uuid.UUID, payload: dict) -
     else:
         setting.value = rules
     await db.flush()
+    clear_rules_cache()  # per-request enforcement picks the change up at once
     return rules

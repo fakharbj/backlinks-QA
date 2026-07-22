@@ -417,7 +417,7 @@ async def list_domains(
         conds.append(
             "EXISTS (SELECT 1 FROM competitor_backlinks cbc "
             "WHERE cbc.project_id = d.project_id AND cbc.source_domain = d.domain_key "
-            "AND cbc.sheet_id IN :competitor_sheets)"
+            "AND cbc.competitor_sheet_id IN :competitor_sheets)"
         )
     if category in ("existing", "new_opportunity"):
         conds.append("d.category = :cat")

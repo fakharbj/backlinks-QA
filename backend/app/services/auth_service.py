@@ -233,6 +233,38 @@ async def rotate_refresh(
     if membership is None:
         raise AuthenticationError("No workspace membership for refresh")
 
+    # Full IP-allowed check at refresh (owner rule): an enforced user whose
+    # CURRENT network is not allowed cannot renew — the lineage is revoked and
+    # the event audited. Complements the per-request check in deps and the
+    # optional bind_sessions equality check below. Fail-open on internal error.
+    if ip_address:
+        try:
+            from app.services import login_ip_service
+
+            _rules = await login_ip_service.get_rules_cached(db)
+            if login_ip_service.rules_can_enforce(_rules):
+                _tm = await login_ip_service.team_mode_cached(db, _rules, user_id)
+                _ok, _why = login_ip_service.is_allowed(
+                    _rules, ip_address, user_id, membership.role.value, team_mode=_tm
+                )
+                if not _ok:
+                    stored.revoked = True
+                    await revoke_jti(jti, _ttl(stored.expires_at))
+                    await audit_service.record(
+                        db, action=AuditAction.LOGOUT, actor_user_id=user_id,
+                        summary=f"Refresh denied — IP not allowed ({ip_address}: {_why})",
+                        ip_address=ip_address, user_agent=user_agent,
+                    )
+                    await db.commit()
+                    raise AuthenticationError(
+                        "Your session ended because this network isn't allowed. "
+                        "Sign in again from an approved IP."
+                    )
+        except AuthenticationError:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+
     # Rotate: mark old revoked, mint new, link lineage.
     new_access, _, _ = create_token(
         subject=user.id, token_type="access",
