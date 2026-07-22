@@ -617,8 +617,31 @@ async def all_people(
     scope = await visible_labels(db, ctx)
     if scope is not None:
         labels &= {s.strip().lower() for s in scope}
+
+    # Profile photos: labels resolve to accounts via the employee mapping —
+    # one query, keyed case-insensitively (labels above are lowercased).
+    from sqlalchemy import func as _f
+
+    from app.models.user import User
+
+    avatars: dict[str, str] = {
+        (lbl or "").strip().lower(): uri
+        for lbl, uri in (
+            await db.execute(
+                select(_f.lower(UserEmployeeMapping.sheet_user_label), User.avatar_data_uri)
+                .join(User, User.id == UserEmployeeMapping.user_id)
+                .where(
+                    UserEmployeeMapping.workspace_id == ctx.workspace_id,
+                    UserEmployeeMapping.canonical_label.is_(None),
+                    UserEmployeeMapping.user_id.is_not(None),
+                    User.avatar_data_uri.is_not(None),
+                )
+            )
+        ).all()
+        if lbl
+    }
     return [
-        {"user_label": lbl, "active": lbl not in inactive}
+        {"user_label": lbl, "active": lbl not in inactive, "avatar_data_uri": avatars.get(lbl)}
         for lbl in sorted(labels, key=str.lower)
     ]
 

@@ -3216,7 +3216,17 @@ function Backlinks({
       <div className="border-b border-line p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-base font-semibold text-ink">Backlinks</h2>
+            <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+              Backlinks
+              <button
+                onClick={() => setShowScoreGuide(true)}
+                aria-label="How the 0-100 score works"
+                title="Plain-English guide: how the 0-100 score is calculated and how to improve it"
+                className="grid h-6 w-6 place-items-center rounded-full text-muted transition hover:bg-field hover:text-ocean"
+              >
+                <Info className="h-4 w-4" />
+              </button>
+            </h2>
             <p className="text-sm text-muted">
               {totalCount} records
               {activeFilterCount ? ` · ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""}` : ""}
@@ -3359,14 +3369,6 @@ function Backlinks({
               <History className="h-4 w-4" />
               Retry failed QA
             </button>
-            <button
-              onClick={() => setShowScoreGuide(true)}
-              className="flex h-9 items-center gap-2 rounded-lg border border-line px-3 text-sm font-medium text-muted transition hover:bg-field hover:text-ink"
-              title="Plain-English guide: how the 0-100 score is calculated and how to improve it"
-            >
-              <Info className="h-4 w-4" />
-              Scoring guide
-            </button>
             {showScoreGuide ? <ScoringGuideModal onClose={() => setShowScoreGuide(false)} /> : null}
             {liveBatch ? (
               <QaLiveProgress
@@ -3422,8 +3424,13 @@ function Backlinks({
           </div>
         </div>
 
+        {/* FILTERS — visually separate from the action buttons above. */}
+        <div className="mt-3 rounded-xl border border-line/70 bg-field/40 p-2.5">
+        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-muted">
+          <Filter className="h-3 w-3" /> Filters
+        </div>
         {/* One-click QA presets */}
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {chips.map(([label, active, toggle]) => (
             <button
               key={label}
@@ -3446,7 +3453,7 @@ function Backlinks({
         </div>
 
         {/* Full filter row */}
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-2.5 flex flex-wrap gap-2">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -3584,6 +3591,7 @@ function Backlinks({
               onChange={(f, t) => { setDateFrom(f); setDateTo(t); }}
             />
           </label>
+        </div>
         </div>
       </div>
       <div className="max-h-[70vh] overflow-auto scrollbar-thin">
@@ -5326,6 +5334,33 @@ function MyOpportunitiesDesk({ token }: { token: string | null }) {
         </h2>
         <p className="text-sm text-muted">The 15 best available websites, ranked — refreshed as domains get used or assigned.</p>
       </div>
+
+      {/* How-it-works explainer (owner ask): collapsible, remembered per browser. */}
+      <details className="rounded-xl border border-ocean/25 bg-ocean/5 open:bg-panel">
+        <summary className="flex cursor-pointer items-center gap-2 p-3 text-sm font-medium text-ink">
+          <Info className="h-4 w-4 shrink-0 text-ocean" />
+          How opportunity domains work
+          <span className="ml-auto text-xs text-muted">click to expand</span>
+        </summary>
+        <div className="grid gap-3 border-t border-line p-4 text-sm text-ink md:grid-cols-2">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">What they are</div>
+            <p className="mt-1 text-muted">Websites from the company&apos;s source-domain catalog that are <b className="text-ink">good and still available</b> — nobody is using or assigned to them yet. They come from past link-building, imports and competitor research; the list refreshes automatically as domains get used.</p>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">How they&apos;re ranked</div>
+            <p className="mt-1 text-muted">The score blends <b className="text-ink">Domain Authority</b> (35%), a <b className="text-ink">proven track record</b> here (25%), a <b className="text-ink">low spam score</b> (20%), how well its pages <b className="text-ink">get indexed</b> (10%) and whether robots.txt allows crawling (10%). Domains that are spammy or blocked never appear.</p>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">How to use them</div>
+            <p className="mt-1 text-muted">Copy a domain and build your link there — the &quot;why&quot; bullets on each card tell you what makes it good. Your <b className="text-ink">task cards</b> also suggest domains matched to that task&apos;s link type, with Accept / Skip buttons.</p>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">How it connects</div>
+            <p className="mt-1 text-muted">Once a link from a domain is imported or synced, the domain counts as <b className="text-ink">used</b> and leaves this list. Managers can hand-pick domains for you — those arrive on My Work as <b className="text-ink">Manager picks</b>. Skipping a suggestion frees the domain for someone else.</p>
+          </div>
+        </div>
+      </details>
       {list.isLoading ? (
         <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
       ) : !rows.length ? (
@@ -6490,6 +6525,19 @@ function MyRecommendationsPanel({ token, userLabel }: { token: string | null; us
 }
 
 // ── My settings (delivery-polish T2): photo + password, self-service only ────
+// Global display preference: show/hide profile photos everywhere (Settings →
+// Company & branding). Reads the already-cached /auth/me — zero extra requests.
+function useShowAvatars(token: string | null): boolean {
+  const q = useQuery({
+    queryKey: ["me", token],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => api<{ prefs?: { show_avatars?: boolean } }>("/auth/me", { token })
+  });
+  return q.data?.prefs?.show_avatars !== false;
+}
+
 function MySettingsCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   const whoami = useQuery({
@@ -6600,6 +6648,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
   onNav?: (tab: Tab) => void;
 }) {
   const queryClient = useQueryClient();
+  const showAvatars = useShowAvatars(token);
   const fmtIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const today = fmtIso(new Date());
@@ -6800,7 +6849,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           every line answers a question. */}
       <header className="rounded-xl border border-line bg-panel p-4 shadow-card">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {whoami.data?.user.avatar_data_uri ? (
+          {showAvatars && whoami.data?.user.avatar_data_uri ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={whoami.data.user.avatar_data_uri} alt="" className="h-10 w-10 shrink-0 rounded-xl object-cover shadow-card" />
           ) : (
@@ -6911,15 +6960,21 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
               </div>
             </div>
             <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
-              <h3 className="text-sm font-semibold text-ink">Daily production</h3>
-              <p className="text-xs text-muted">Links built each day this week.</p>
-              <div className="mt-3 flex items-end gap-1.5" style={{ height: 96 }}>
+              <h3 className="text-sm font-semibold text-ink">Target vs done</h3>
+              <p className="text-xs text-muted">Each day this week — the gray bar is your target, the colored bar what you built (same reading as the dashboard chart).</p>
+              <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-line" /> Target</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-ocean" /> Done</span>
+              </div>
+              <div className="mt-2 flex items-end gap-1.5" style={{ height: 88 }}>
                 {dayAgg.map((d) => (
                   <div key={d.day} className="flex flex-1 flex-col items-center justify-end gap-1" style={{ height: "100%" }}
-                    title={`${d.day}: ${d.done}/${d.target} links`}>
-                    <span className="flex w-full flex-1 items-end justify-center">
-                      <span className={clsx("w-full max-w-[26px] rounded-t", d.done >= d.target && d.target > 0 ? "bg-success" : "bg-ocean")}
-                        style={{ height: `${(d.done / maxDay) * 100}%`, minHeight: d.done ? 4 : 0 }} />
+                    title={`${d.day}: ${d.done} done of ${d.target} targeted`}>
+                    <span className="flex w-full flex-1 items-end justify-center gap-0.5">
+                      <span className="w-full max-w-[14px] rounded-t bg-line"
+                        style={{ height: `${(d.target / maxDay) * 100}%`, minHeight: d.target ? 3 : 0 }} />
+                      <span className={clsx("w-full max-w-[14px] rounded-t", d.done >= d.target && d.target > 0 ? "bg-success" : "bg-ocean")}
+                        style={{ height: `${(d.done / maxDay) * 100}%`, minHeight: d.done ? 3 : 0 }} />
                     </span>
                     <span className={clsx("text-[9px]", d.day === today ? "font-bold text-ocean" : "text-muted")}>
                       {dow[(new Date(`${d.day}T00:00:00`).getDay() + 6) % 7]}
@@ -9739,9 +9794,9 @@ function UserDashboard({
     if (selfView && section === "calendar") onSectionChange("overview");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selfView, section]);
-  // Default to All time — a person's dashboard should show their whole record,
-  // not just the last month, until the viewer narrows the timeframe.
-  const [days, setDays] = useState("3650");
+  // Admins default to All time (a person's whole record); a viewer's OWN
+  // dashboard defaults to the last 30 days (owner rule).
+  const [days, setDays] = useState(selfView ? "30" : "3650");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [projFilter, setProjFilter] = useState(initialProjectId || "");
@@ -10401,20 +10456,23 @@ function UserDashboard({
                 Projects — this person, side by side
                 <HelpTip text="Every project this person worked on (or was planned for) in the window. Click a row to focus the whole dashboard on that project; click a header to sort." />
               </h3>
-              <ExportButton
-                disabled={!d.projects.length}
-                onClick={() =>
-                  downloadCsv(
-                    `${userLabel}-projects.csv`,
-                    ["Project", "Hours", "Target", "Links", "Completion %", "Indexed", "Not qualified", "New domains"],
-                    d.projects.map((p) => [
-                      projectName(p.project_id), p.hours, p.target, p.links,
-                      p.target > 0 ? Math.round((100 * p.links) / p.target) : "",
-                      p.indexed, p.fail, p.project_new_domains
-                    ])
-                  )
-                }
-              />
+              {/* Owner rule: viewers can never export — admin-only control. */}
+              {!selfView ? (
+                <ExportButton
+                  disabled={!d.projects.length}
+                  onClick={() =>
+                    downloadCsv(
+                      `${userLabel}-projects.csv`,
+                      ["Project", "Hours", "Target", "Links", "Completion %", "Indexed", "Not qualified", "New domains"],
+                      d.projects.map((p) => [
+                        projectName(p.project_id), p.hours, p.target, p.links,
+                        p.target > 0 ? Math.round((100 * p.links) / p.target) : "",
+                        p.indexed, p.fail, p.project_new_domains
+                      ])
+                    )
+                  }
+                />
+              ) : null}
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -11010,7 +11068,10 @@ function UserDashboardsDesk({
   });
   // List controls: filter text + whether laid-off people are shown (active-only default).
   const [q, setQ] = useState("");
-  const [showLaidOff, setShowLaidOff] = useState(false);
+  // White-label rules (owner): active people only by default, a neutral
+  // "Show all" reveals everyone; no employment-status wording in the default view.
+  const [showAll, setShowAll] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   useEffect(() => {
     onPersonChange?.(person || null);
     // Reports open/close only — deliberately not reactive to the callback identity.
@@ -11035,7 +11096,7 @@ function UserDashboardsDesk({
   const people = useQuery({
     queryKey: ["workforce-people", token, projectId],
     enabled: Boolean(token),
-    queryFn: () => api<Array<{ user_label: string; active: boolean }>>(
+    queryFn: () => api<Array<{ user_label: string; active: boolean; avatar_data_uri?: string | null }>>(
       `/workforce/people${projectId ? `?project_id=${projectId}` : ""}`,
       { token }
     )
@@ -11074,9 +11135,12 @@ function UserDashboardsDesk({
 
   // List EVERY known person (not just recently active) — activity is a stat, not a
   // filter. Merge the full label list with windowed activity so people with no
-  // recent links still appear (0 links). Active-only by default; laid-off behind a toggle.
+  // recent links still appear (0 links). WHITE-LABEL view: active only by default,
+  // "Show all" reveals everyone, no employment-status wording anywhere.
   const activity = new Map((team.data?.users || []).map((u) => [u.user_label, u]));
   const activeMap = new Map((people.data || []).map((p) => [p.user_label, p.active]));
+  const avatarMap = new Map((people.data || []).map((p) => [p.user_label, p.avatar_data_uri || null]));
+  const showAvatars = useShowAvatars(token);
   const labelSet = Array.from(
     new Set([...(people.data || []).map((p) => p.user_label), ...(team.data?.users || []).map((u) => u.user_label)])
   );
@@ -11089,22 +11153,32 @@ function UserDashboardsDesk({
         }
     )
     .sort((a, b) => b.links - a.links || a.user_label.localeCompare(b.user_label));
-  const laidOffCount = allUsers.filter((u) => activeMap.get(u.user_label) === false).length;
-  const activeCount = allUsers.length - laidOffCount;
   const needle = q.trim().toLowerCase();
   const users = allUsers.filter(
     (u) =>
-      (showLaidOff || activeMap.get(u.user_label) !== false) &&
+      (showAll || activeMap.get(u.user_label) !== false) &&
       (!needle || u.user_label.toLowerCase().includes(needle))
   );
+  const hiddenCount = allUsers.length - allUsers.filter((u) => activeMap.get(u.user_label) !== false).length;
   const loading = team.isLoading || people.isLoading;
+  const personAvatar = (label: string, size: string) => {
+    const uri = showAvatars ? avatarMap.get(label) : null;
+    return uri ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={uri} alt="" className={clsx(size, "shrink-0 rounded-full object-cover")} />
+    ) : (
+      <span className={clsx(size, "flex shrink-0 items-center justify-center rounded-full bg-ocean/10 text-ocean")}>
+        <Users className="h-4 w-4" />
+      </span>
+    );
+  };
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
             User Dashboards
-            <HelpTip text="Open any person's full dashboard — hours, targets, production, quality, calendar and trends. Pick a name or click a row." />
+            <HelpTip text="Open any person's full dashboard — hours, targets, production, quality, calendar and trends. Pick a name or click a card." />
           </h2>
           <p className="text-sm text-muted">
             {projectId ? "This project only." : "All people across the workspace."} Choose someone to see their full dashboard.
@@ -11113,13 +11187,15 @@ function UserDashboardsDesk({
         <SearchSelect
           value={person}
           onChange={setPerson}
-          options={(people.data || []).map((p) => ({ value: p.user_label, label: p.active ? p.user_label : `${p.user_label} (laid off)` }))}
+          options={(people.data || [])
+            .filter((p) => showAll || p.active)
+            .map((p) => ({ value: p.user_label }))}
           placeholder="Jump to a person…"
           width="w-64"
         />
       </div>
 
-      {/* Toolbar: filter the list · toggle laid-off · headcount */}
+      {/* Toolbar: search · Show all · list/grid view */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
@@ -11130,18 +11206,32 @@ function UserDashboardsDesk({
             className="w-56 rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-sm text-ink placeholder:text-muted focus:border-ocean/50 focus:outline-none"
           />
         </div>
-        <button
-          onClick={() => setShowLaidOff((v) => !v)}
-          className={clsx(
-            "rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition",
-            showLaidOff ? "border-ocean/50 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:text-ink"
-          )}
-          title="Laid-off people keep all history but are hidden from planning pickers"
-        >
-          {showLaidOff ? "Showing laid-off" : "Show laid-off"}{laidOffCount ? ` (${laidOffCount})` : ""}
-        </button>
-        <span className="text-xs text-muted">
-          {activeCount} active{laidOffCount ? ` · ${laidOffCount} laid off` : ""}{needle ? ` · ${users.length} shown` : ""}
+        {hiddenCount > 0 || showAll ? (
+          <button
+            onClick={() => setShowAll((v) => !v)}
+            className={clsx(
+              "rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition",
+              showAll ? "border-ocean/50 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:text-ink"
+            )}
+            title="Include people who are no longer active"
+          >
+            {showAll ? "Showing all" : "Show all"}
+          </button>
+        ) : null}
+        <span className="text-xs text-muted">{users.length} {users.length === 1 ? "person" : "people"}</span>
+        <span className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel p-0.5">
+          {(["list", "grid"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              className={clsx(
+                "rounded-md px-2.5 py-1 text-xs font-semibold capitalize transition",
+                viewMode === m ? "bg-ocean/10 text-ocean" : "text-muted hover:text-ink"
+              )}
+            >
+              {m}
+            </button>
+          ))}
         </span>
       </div>
 
@@ -11155,31 +11245,50 @@ function UserDashboardsDesk({
       ) : null}
 
       {!loading && !team.isError ? (
-        users.length ? (
-          <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+        !users.length ? (
+          <Empty label={needle ? `No people match “${q}”.` : "No people to show yet."} />
+        ) : viewMode === "grid" ? (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {users.map((u) => {
               const rate = u.links > 0 ? Math.round((100 * u.indexed) / u.links) : null;
-              const laid = activeMap.get(u.user_label) === false;
               return (
                 <button
                   key={u.user_label}
                   onClick={() => setPerson(u.user_label)}
                   title={`Open ${u.user_label}'s dashboard`}
-                  className={clsx(
-                    "flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-field/50",
-                    laid && "opacity-70"
-                  )}
+                  className="flex flex-col gap-2 rounded-xl border border-line bg-panel p-4 text-left shadow-card transition hover:border-ocean/40 hover:bg-field/40"
                 >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ocean/10 text-ocean">
-                    <Users className="h-4 w-4" />
+                  <span className="flex items-center gap-2.5">
+                    {personAvatar(u.user_label, "h-10 w-10")}
+                    <span className="min-w-0 flex-1 truncate font-semibold capitalize text-ink">{u.user_label}</span>
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="truncate font-semibold text-ink">{u.user_label}</span>
-                      {laid ? (
-                        <span className="shrink-0 rounded-full bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted" title="Laid off — history kept, hidden from planning pickers">laid off</span>
-                      ) : null}
+                  <span className="text-xs text-muted">
+                    {u.links.toLocaleString()} links{u.avg_score != null ? ` · avg score ${Math.round(u.avg_score)}` : ""}
+                  </span>
+                  {rate != null ? (
+                    <span className={clsx("w-fit rounded px-2 py-0.5 text-[11px] font-semibold",
+                      rate >= 80 ? "bg-success/20 text-success" : rate >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}>
+                      {rate}% indexed
                     </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+            {users.map((u) => {
+              const rate = u.links > 0 ? Math.round((100 * u.indexed) / u.links) : null;
+              return (
+                <button
+                  key={u.user_label}
+                  onClick={() => setPerson(u.user_label)}
+                  title={`Open ${u.user_label}'s dashboard`}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-field/50"
+                >
+                  {personAvatar(u.user_label, "h-8 w-8")}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-semibold capitalize text-ink">{u.user_label}</span>
                     <span className="block truncate text-xs text-muted">
                       {u.links.toLocaleString()} links · all time{u.avg_score != null ? ` · avg score ${Math.round(u.avg_score)}` : ""}
                     </span>
@@ -11201,8 +11310,6 @@ function UserDashboardsDesk({
               );
             })}
           </div>
-        ) : (
-          <Empty label={needle ? `No people match “${q}”.` : showLaidOff ? "No people yet." : "No active people. Toggle “Show laid-off” to see former staff."} />
         )
       ) : null}
     </section>
@@ -18826,6 +18933,7 @@ function BrandingCard({
   const [companyDomain, setCompanyDomain] = useState("");
   const [logoDataUri, setLogoDataUri] = useState("");
   const [announcement, setAnnouncement] = useState("");
+  const [showAvatars, setShowAvatars] = useState(true);
 
   const settings = useQuery({
     queryKey: ["workspace-settings", token],
@@ -18838,13 +18946,14 @@ function BrandingCard({
   // Prefill the form from the stored "branding" setting once it loads.
   useEffect(() => {
     const branding = settings.data?.find((s) => s.key === "branding")?.value as
-      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null; announcement?: string | null }
+      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null; announcement?: string | null; show_avatars?: boolean }
       | undefined;
     if (branding) {
       setCompanyName(branding.company_name || "");
       setCompanyDomain(branding.company_domain || "");
       setLogoDataUri(branding.logo_data_uri || "");
       setAnnouncement(branding.announcement || "");
+      setShowAvatars(branding.show_avatars !== false);
     }
   }, [settings.data]);
 
@@ -18876,7 +18985,8 @@ function BrandingCard({
             company_name: companyName.trim() || null,
             company_domain: companyDomain.trim() || null,
             logo_data_uri: logoDataUri || null,
-            announcement: announcement.trim() || null
+            announcement: announcement.trim() || null,
+            show_avatars: showAvatars
           },
           is_secret: false
         })
@@ -18885,6 +18995,7 @@ function BrandingCard({
       onNotice("Branding saved");
       queryClient.invalidateQueries({ queryKey: ["branding"] });
       queryClient.invalidateQueries({ queryKey: ["workspace-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["me"] }); // display prefs ride /auth/me
     },
     onError: (e: Error) => onNotice(e.message)
   });
@@ -18943,6 +19054,16 @@ function BrandingCard({
             />
           </label>
         </div>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            checked={showAvatars}
+            onChange={(e) => setShowAvatars(e.target.checked)}
+            className="h-4 w-4 rounded border-line accent-[rgb(var(--ocean))]"
+          />
+          Show profile photos across the system
+          <HelpTip text="When off, every user-profile area (dashboards, Team, headers) shows neutral initials instead of uploaded photos — useful for client-facing/white-label viewing. Saved with Branding." />
+        </label>
         <div className="flex flex-wrap items-end gap-3">
           <label className="block">
             <span className="mb-1 block text-xs font-semibold uppercase text-muted">
@@ -23933,6 +24054,7 @@ function EmailUsersCard({
 }
 
 function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  const showAvatars = useShowAvatars(token);
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -24247,7 +24369,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                 <tr key={m.user_id} className={clsx(!m.is_active && "opacity-60")}>
                   <Td>
                     <div className="flex items-center gap-2.5">
-                      {m.avatar_data_uri ? (
+                      {showAvatars && m.avatar_data_uri ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={m.avatar_data_uri} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
                       ) : (

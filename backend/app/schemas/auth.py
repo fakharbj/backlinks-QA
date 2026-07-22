@@ -52,3 +52,5 @@ class MeResponse(BaseModel):
     workspaces: list[WorkspaceSummary]
     active_workspace_id: uuid.UUID | None = None
     role: str | None = None
+    # Workspace display preferences (branding Setting): e.g. show_avatars.
+    prefs: dict = {}

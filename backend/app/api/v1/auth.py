@@ -141,11 +141,15 @@ async def me(ctx: AuthCtx, db: ReadSession) -> MeResponse:
         WorkspaceSummary(id=ws.id, name=ws.name, slug=ws.slug, role=member.role.value)
         for member, ws in rows
     ]
+    # Display preferences ride the branding Setting (admin-managed) — the whole
+    # UI reads them from the already-cached /auth/me, zero extra requests.
+    branding = await branding_service.get_branding(db, ctx.workspace_id) if ctx.workspace_id else {}
     return MeResponse(
         user=UserOut.model_validate(ctx.user),
         workspaces=workspaces,
         active_workspace_id=ctx.workspace_id,
         role=ctx.role.value,
+        prefs={"show_avatars": bool(branding.get("show_avatars", True))},
     )
 
 
