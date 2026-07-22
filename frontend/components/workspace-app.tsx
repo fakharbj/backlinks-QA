@@ -6521,20 +6521,40 @@ function MyRecentLinks({ token, userLabel }: { token: string | null; userLabel: 
 function MyRecommendationsPanel({ token, userLabel }: { token: string | null; userLabel: string }) {
   const queryClient = useQueryClient();
   type Reco = {
-    id: string; domain_key: string; project_id: string | null; link_type_name: string | null;
-    source: string; status: string; reason: string | null; priority: string | null;
-    due_date: string | null; note: string | null;
+    id: string; domain_key: string; project_id: string | null; assignment_id: string | null;
+    link_type_name: string | null; source: string; status: string; reason: string | null;
+    priority: string | null; due_date: string | null; note: string | null;
+    created_at?: string | null; updated_at?: string | null;
   };
+  // Suggestion manager (owner #13): search, filters, sort, multi-select, bulk
+  // use/dismiss, similar-type drill, CSV + plain-text export ONLY.
+  const [statusF, setStatusF] = useState<"open" | "used" | "dismissed" | "all">("open");
+  const [q, setQ] = useState("");
+  const [prioF, setPrioF] = useState("");
+  const [projF, setProjF] = useState("");
+  const [similarType, setSimilarType] = useState("");
+  const [sortBy, setSortBy] = useState<"newest" | "priority" | "due" | "domain">("newest");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const statusParam =
+    statusF === "open" ? "suggested,viewed" : statusF === "used" ? "accepted"
+      : statusF === "dismissed" ? "skipped" : "suggested,viewed,accepted,skipped";
   const recos = useQuery({
-    queryKey: ["my-recos", token, userLabel],
+    queryKey: ["my-recos", token, userLabel, statusParam],
     enabled: Boolean(token && userLabel),
     retry: false,
+    placeholderData: (prev) => prev,
     queryFn: () =>
       api<Reco[]>(
-        `/source-domains/recommendations?user_label=${encodeURIComponent(userLabel)}&status_filter=suggested,viewed&limit=20`,
+        `/source-domains/recommendations?user_label=${encodeURIComponent(userLabel)}&status_filter=${statusParam}&limit=500`,
         { token }
       )
   });
+  const projectsQ = useQuery({
+    queryKey: ["projects", token],
+    enabled: Boolean(token),
+    queryFn: () => api<Project[]>("/projects", { token })
+  });
+  const pName = (id: string | null) => (projectsQ.data || []).find((x) => x.id === id)?.name || "";
   const act = useMutation({
     mutationFn: (v: { r: Reco; status: "accepted" | "skipped" }) =>
       api("/source-domains/recommendations/action", {
@@ -6546,45 +6566,161 @@ function MyRecommendationsPanel({ token, userLabel }: { token: string | null; us
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["my-recos"] })
   });
-  const rows = recos.data || [];
-  if (!rows.length) return null;
+  const bulkAct = async (status: "accepted" | "skipped") => {
+    const targets = rows.filter((r) => picked.has(r.id));
+    for (const r of targets) await act.mutateAsync({ r, status });
+    setPicked(new Set());
+  };
+  const all = recos.data || [];
+  const needle = q.trim().toLowerCase();
+  const rows = all
+    .filter((r) =>
+      (!needle || r.domain_key.toLowerCase().includes(needle) || (r.reason || "").toLowerCase().includes(needle) || (r.note || "").toLowerCase().includes(needle)) &&
+      (!prioF || (r.priority || "medium") === prioF) &&
+      (!projF || r.project_id === projF) &&
+      (!similarType || r.link_type_name === similarType)
+    )
+    .sort((a, b) => {
+      if (sortBy === "domain") return a.domain_key.localeCompare(b.domain_key);
+      if (sortBy === "priority") {
+        const w = (x: Reco) => (x.priority === "high" ? 0 : x.priority === "low" ? 2 : 1);
+        return w(a) - w(b) || a.domain_key.localeCompare(b.domain_key);
+      }
+      if (sortBy === "due") return (a.due_date || "9999").localeCompare(b.due_date || "9999");
+      return (b.created_at || "").localeCompare(a.created_at || "");
+    });
+  const filtersActive = Boolean(needle || prioF || projF || similarType) || statusF !== "open";
+  if (!all.length && !filtersActive) return null; // keep My Work clean when there is nothing
+  const exportHeaders = ["Domain", "Status", "Priority", "Link type", "Project", "Due", "Reason"];
+  const exportRows = rows.map((r) => [
+    r.domain_key, r.status, r.priority || "medium", r.link_type_name || "", pName(r.project_id),
+    r.due_date || "", r.reason || r.note || ""
+  ]);
+  const downloadTxt = () => {
+    const lines = rows.map((r) => `${r.domain_key}${r.link_type_name ? `\t${linkTypeLabel(r.link_type_name)}` : ""}${r.reason || r.note ? `\t${r.reason || r.note}` : ""}`);
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "my-suggestions.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const statusChip = (st: string) =>
+    st === "accepted" ? <span className="rounded bg-success/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-success">Used</span>
+      : st === "skipped" ? <span className="rounded bg-field px-1.5 py-0.5 text-[10px] font-bold uppercase text-muted">Dismissed</span>
+        : null;
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
-      <div className="flex items-center gap-1.5 border-b border-line p-3">
-        <h3 className="text-sm font-semibold text-ink">Recommended for you</h3>
-        <HelpTip text="Source domains your manager picked for you (or the system queued) — use them for your link-building tasks. Accept when you'll use one, Skip to dismiss it." />
-        <span className="ml-auto rounded-full bg-ocean/10 px-2 py-0.5 text-xs font-semibold text-ocean">{rows.length}</span>
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line p-3">
+        <h3 className="text-sm font-semibold text-ink">Suggested domains for your tasks</h3>
+        <HelpTip text="Source domains queued for you — manager hand-picks and system suggestions matched to your work. Mark one Used when you build a link there; Dismiss what doesn't fit (it frees the domain for someone else). Each row shows WHY it was suggested." />
+        <span className="rounded-full bg-ocean/10 px-2 py-0.5 text-xs font-semibold text-ocean">{rows.length}</span>
+        <span className="ml-auto flex items-center gap-1.5">
+          <button onClick={() => downloadCsv("my-suggestions.csv", exportHeaders, exportRows)} disabled={!rows.length}
+            className="rounded-lg border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field disabled:opacity-40" title="Download as a spreadsheet (CSV)">
+            CSV
+          </button>
+          <button onClick={downloadTxt} disabled={!rows.length}
+            className="rounded-lg border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-field disabled:opacity-40" title="Download as a plain text list">
+            TXT
+          </button>
+        </span>
       </div>
-      <div className="divide-y divide-line">
-        {rows.map((r) => (
-          <div key={r.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
-            {r.source === "manual" ? (
-              <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-plum" title="Hand-picked by your manager">Manager pick</span>
-            ) : null}
-            {r.priority === "high" ? (
-              <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-danger">High priority</span>
-            ) : null}
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{r.domain_key}</span>
-            {r.link_type_name ? <span className="text-xs text-muted">{linkTypeLabel(r.link_type_name)}</span> : null}
-            {r.due_date ? <span className="text-xs text-muted">due {formatDay(r.due_date)}</span> : null}
-            <CopyButton text={r.domain_key} title="Copy domain" />
-            <button
-              onClick={() => act.mutate({ r, status: "accepted" })}
-              className="rounded border border-ocean/40 px-1.5 py-0.5 text-[11px] font-medium text-ocean hover:bg-ocean/10"
-            >
-              Accept
-            </button>
-            <button
-              onClick={() => act.mutate({ r, status: "skipped" })}
-              className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
-            >
-              Skip
-            </button>
-            {(r.reason || r.note) ? (
-              <p className="w-full text-[11px] text-muted">{r.reason || r.note}</p>
-            ) : null}
-          </div>
+      <div className="flex flex-wrap items-center gap-2 border-b border-line p-2.5">
+        {([["open", "Open"], ["used", "Used"], ["dismissed", "Dismissed"], ["all", "All"]] as Array<[typeof statusF, string]>).map(([v, l]) => (
+          <button key={v} onClick={() => { setStatusF(v); setPicked(new Set()); }}
+            className={clsx("rounded-full border px-2.5 py-1 text-xs font-medium transition",
+              statusF === v ? "border-ocean bg-ocean/10 font-semibold text-ocean" : "border-line text-muted hover:text-ink")}>
+            {l}
+          </button>
         ))}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search domain or reason…"
+          className="h-8 w-48 rounded-lg border border-line bg-panel px-2 text-xs" />
+        <select value={prioF} onChange={(e) => setPrioF(e.target.value)} className="h-8 rounded-lg border border-line bg-panel px-2 text-xs">
+          <option value="">Priority: all</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <select value={projF} onChange={(e) => setProjF(e.target.value)} className="h-8 max-w-[160px] rounded-lg border border-line bg-panel px-2 text-xs">
+          <option value="">Project: all</option>
+          {(projectsQ.data || []).map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+        </select>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} className="h-8 rounded-lg border border-line bg-panel px-2 text-xs">
+          <option value="newest">Newest first</option>
+          <option value="priority">Priority</option>
+          <option value="due">Due date</option>
+          <option value="domain">Domain A–Z</option>
+        </select>
+        {similarType ? (
+          <span className="flex items-center gap-1 rounded-full border border-plum/40 bg-plum/10 px-2 py-0.5 text-xs font-medium text-plum">
+            Similar: {linkTypeLabel(similarType)}
+            <button onClick={() => setSimilarType("")} className="hover:text-danger">×</button>
+          </span>
+        ) : null}
+        {picked.size ? (
+          <span className="flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-ink">{picked.size} selected</span>
+            <button onClick={() => void bulkAct("accepted")} className="rounded border border-success/50 px-2 py-0.5 text-[11px] font-medium text-success hover:bg-success/10">Mark used</button>
+            <button onClick={() => void bulkAct("skipped")} className="rounded border border-line px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-field">Dismiss</button>
+          </span>
+        ) : null}
+      </div>
+      <div className="max-h-[420px] divide-y divide-line overflow-y-auto">
+        {rows.map((r) => {
+          const open = r.status === "suggested" || r.status === "viewed";
+          return (
+            <div key={r.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+              {open ? (
+                <input type="checkbox" checked={picked.has(r.id)}
+                  onChange={() => setPicked((pk) => { const nx = new Set(pk); if (nx.has(r.id)) nx.delete(r.id); else nx.add(r.id); return nx; })}
+                  className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]" />
+              ) : null}
+              {r.source === "manual" ? (
+                <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-plum" title="Hand-picked by your manager">Manager pick</span>
+              ) : null}
+              {r.priority === "high" ? (
+                <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-danger">High priority</span>
+              ) : null}
+              {statusChip(r.status)}
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{r.domain_key}</span>
+              {r.link_type_name ? (
+                <button onClick={() => setSimilarType(r.link_type_name || "")}
+                  title="Show similar suggestions (same link type)"
+                  className="rounded bg-field px-1.5 py-0.5 text-xs text-muted hover:text-ocean">
+                  {linkTypeLabel(r.link_type_name)}
+                </button>
+              ) : null}
+              {r.project_id && pName(r.project_id) ? <span className="text-xs text-muted">{pName(r.project_id)}</span> : null}
+              {r.assignment_id ? <span className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold text-ocean" title="Suggested for a specific task on your plan">Task</span> : null}
+              {r.due_date ? <span className="text-xs text-muted">due {formatDay(r.due_date)}</span> : null}
+              <CopyButton text={r.domain_key} title="Copy domain" />
+              {open ? (
+                <>
+                  <button
+                    onClick={() => act.mutate({ r, status: "accepted" })}
+                    title="I'll build a link on this domain"
+                    className="rounded border border-success/50 px-1.5 py-0.5 text-[11px] font-medium text-success hover:bg-success/10"
+                  >
+                    Use
+                  </button>
+                  <button
+                    onClick={() => act.mutate({ r, status: "skipped" })}
+                    title="Not relevant — frees the domain for someone else"
+                    className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-field"
+                  >
+                    Dismiss
+                  </button>
+                </>
+              ) : null}
+              {(r.reason || r.note) ? (
+                <p className="w-full text-[11px] text-muted">Why: {r.reason || r.note}</p>
+              ) : null}
+            </div>
+          );
+        })}
+        {!rows.length ? <Empty label="No suggestions match these filters." /> : null}
       </div>
     </section>
   );
