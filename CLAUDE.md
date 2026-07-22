@@ -446,6 +446,34 @@ QA+ (`_require_reviewer` — the keep/partial/full transfer gate), INTERN_NAV,
 promotion = role change. **F6** My Work suggestion manager (status pages,
 search/filters/sort, bulk use/dismiss, similar-type drill, CSV+TXT only).
 
+**System-improvement program G1–G3 shipped + deployed** (2026-07-23, no new
+migration, 257 tests): **G1 security** — per-request IP enforcement in
+`get_auth_context` (cached rules 20s TTL + `rules_can_enforce` short-circuit +
+fail-open; `kill_sessions` revokes via its own session_scope, audit-throttled
+5min) so changing IP off an approved network ends the session on the very next
+request; blocked-IP list (wins over allow) w/ remarks; `GET
+/settings/login-ips/effective` rule tester (which layer decides: user > team >
+role > master) + tester UI in LoginIpCard; refresh-path full re-check. **G2**
+— competitor expanded-view fix (`cbc.competitor_sheet_id` typo → SQL error →
+silent empty panel; + error/retry/empty states), `AvatarBubble` +
+`useLabelAvatars` avatars everywhere (TopBar profile, login, UserDashboard
+hero, team benchmark, leave rows, completion-by-user, Team rows/grid — all
+honoring branding `show_avatars`), dual light/dark workspace logos
+(`logo_dark_data_uri`, CSS `dark:` swap + cross-fallback, BrandingCard two
+upload cards), load-more sweep (Team members 25, leaves 30, User Dashboards
+36 w/ "Showing X of Y"). **G3** — `/interns` router (manager+): per-intern
+live analytics from review batches (items/approved/rejected/open/failed/
+QA-pass/avg score/rates) + reviewer feedback + ready-to-promote flag (Setting
+`intern_reviews`, append-only notes, audited); **InternsDesk** (WORKSPACE_NAV
+"interns"): KPI row, active/inactive filter, expandable intern rows → stat
+cards, submissions list (Review → opens batch), feedback history + composer,
+Mark-ready toggle, admin Promote (role change; data transfer stays the
+approve pipeline). **Team page v2**: members toolbar (search, role filter,
+active-only default + Show all, sort name/role/last-sign-in, list⇄grid w/
+member cards, persisted prefs) + **Team settings hub** tab (live avatar
+toggle writing branding + where-it-lives descriptions for IP rules/security
+log/working days/rates/roles/scoping/branding).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:

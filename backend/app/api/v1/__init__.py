@@ -14,6 +14,7 @@ from app.api.v1 import (
     crawl,
     dashboard,
     emails,
+    interns,
     employees,
     gmail,
     imports,
@@ -41,6 +42,7 @@ api_router.include_router(batches.router)
 api_router.include_router(competitors.router)
 api_router.include_router(conflicts.router)
 api_router.include_router(emails.router)
+api_router.include_router(interns.router)
 api_router.include_router(employees.router)
 api_router.include_router(gmail.router)
 api_router.include_router(link_types.router)

@@ -110,7 +110,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest" | "interns";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -515,6 +515,7 @@ export function WorkspaceApp() {
             <ReportsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "interns" ? <InternsDesk token={token} onNotice={setNotice} onOpenBatch={openBatch} role={role} /> : null}
           {tab === "qatest" ? <QaTestDesk token={token} onNotice={setNotice} /> : null}
           {tab === "scoring" ? (
             <ScoringDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
@@ -808,6 +809,7 @@ const WORKSPACE_NAV: NavGroup[] = [
     label: "Workspace",
     items: [
       ["tasks", "Tasks & Calendar", CalendarDays],
+      ["interns", "Interns", UserPlus],
       ["team", "Team", Users],
       ["qatest", "Temp QA (tests)", ShieldAlert],
       ["scoring", "Scoring", SlidersHorizontal],
@@ -942,6 +944,7 @@ const NAV_HELP: Partial<Record<Tab, string>> = {
   performance: "Team output per person — links built, new domains, quality",
   users: "One full dashboard per person — KPIs, projects, plans, rates & leave",
   apiusage: "Metric-provider API quota and usage",
+  interns: "Intern submissions, quality analysis, feedback & promotion",
   backlinks: "Every link with its live QA verdict",
   conflicts: "The same link submitted more than once — compare and resolve",
   domains: "Source-domain catalog — quality metrics, usage, rules",
@@ -1001,7 +1004,7 @@ const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
   const hidden = new Set<Tab>(
     role === "manager"
       ? ["team", "settings"]
-      : ["team", "settings", "sheets", "scoring", "apiusage"] // qa
+      : ["team", "settings", "sheets", "scoring", "apiusage", "interns"] // qa
   );
   return groups
     .map((g) => ({ ...g, items: g.items.filter(([id]) => !hidden.has(id)) }))
@@ -24823,6 +24826,375 @@ function EmailUsersCard({
   );
 }
 
+// ── Interns desk (owner #7/#8): the dedicated review & analysis surface ─────
+function InternsDesk({ token, onNotice, onOpenBatch, role }: {
+  token: string | null;
+  onNotice: (text: string) => void;
+  onOpenBatch: (batchId: string) => void;
+  role: string | null;
+}) {
+  const queryClient = useQueryClient();
+  const showAvatars = useShowAvatars(token);
+  type Intern = {
+    user_id: string; full_name: string; email: string; active: boolean;
+    avatar_data_uri: string | null; joined: string | null; last_login_at: string | null;
+    batches: number; items: number; approved: number; rejected: number;
+    open_items: number; failed_checks: number; qa_pass: number;
+    avg_score: number | null; approval_rate: number | null; qa_pass_rate: number | null;
+    last_submission_at: string | null; ready: boolean;
+    notes: Array<{ note: string; by: string; at: string }>;
+  };
+  const q = useQuery({
+    queryKey: ["interns", token],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => api<{ items: Intern[]; totals: { interns: number; active: number; items: number; approved: number; open_items: number; ready: number } }>("/interns", { token })
+  });
+  const batchesQ = useQuery({
+    queryKey: ["intern-batches", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () => api<Batch[]>("/batches?kind=link_review&limit=300", { token })
+  });
+  const [statusF, setStatusF] = useState<"active" | "inactive" | "all">("active");
+  const [search, setSearch] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const feedback = useMutation({
+    mutationFn: (v: { user_id: string; note?: string; ready?: boolean }) =>
+      api<{ ok: boolean }>(`/interns/${v.user_id}/feedback`, {
+        token, method: "POST", body: JSON.stringify({ note: v.note, ready: v.ready })
+      }),
+    onSuccess: () => {
+      onNotice("Saved.");
+      setNote("");
+      queryClient.invalidateQueries({ queryKey: ["interns"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const promote = useMutation({
+    mutationFn: (v: { user_id: string }) =>
+      api(`/team/members/${v.user_id}`, { token, method: "PATCH", body: JSON.stringify({ role: "viewer" }) }),
+    onSuccess: () => {
+      onNotice("Promoted to the main team (Viewer). Their staged submissions stay put until a reviewer approves them.");
+      queryClient.invalidateQueries({ queryKey: ["interns"] });
+      queryClient.invalidateQueries({ queryKey: ["team"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const t = q.data?.totals;
+  const needle = search.trim().toLowerCase();
+  const rows = (q.data?.items || []).filter((r) =>
+    (statusF === "all" || (statusF === "active" ? r.active : !r.active)) &&
+    (!needle || r.full_name.toLowerCase().includes(needle) || r.email.toLowerCase().includes(needle))
+  );
+  const internBatches = (uid: string) =>
+    (batchesQ.data || []).filter((b) => b.started_by === uid);
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+            Interns
+            <HelpTip text="The intern pipeline end to end: interns submit links into isolated review batches (nothing reaches production data); you check quality here, leave feedback, mark readiness, approve/reject their submissions, and promote them when they're ready. Create interns from Team → Invite member with the Intern role." />
+          </h2>
+          <p className="text-sm text-muted">Submissions · quality analysis · feedback · promotion</p>
+        </div>
+        <span className="text-xs text-muted">New interns are invited from the Team page with the Intern role.</span>
+      </div>
+
+      {t ? (
+        <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <Metric label="Interns" value={t.interns} icon={Users} tone="ink" sub={`${t.active} active`} />
+          <Metric label="Links submitted" value={t.items} icon={Upload} tone="ocean" sub="staged, isolated from production" />
+          <Metric label="Approved" value={t.approved} icon={CheckCircle2} tone="success" sub="transferred into production" />
+          <Metric label="Awaiting review" value={t.open_items} icon={History} tone="plum" sub="pending / checked, undecided" />
+          <Metric label="Ready to promote" value={t.ready} icon={Star} tone="ember" sub="marked by reviewers" />
+          <Metric label="Approval rate" value={t.approved + t.items > 0 && t.items ? `${Math.round((100 * t.approved) / Math.max(1, t.items))}%` : "—"} icon={Gauge} tone="ink" sub="approved of submitted" />
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {([["active", "Active"], ["inactive", "Inactive"], ["all", "All"]] as Array<["active" | "inactive" | "all", string]>).map(([v, l]) => (
+          <button key={v} onClick={() => setStatusF(v)}
+            className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+              statusF === v ? "border-ocean bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:text-ink")}>
+            {l}
+          </button>
+        ))}
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search interns…"
+            className="w-52 rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-sm" />
+        </div>
+        <span className="text-xs text-muted">{rows.length} shown</span>
+      </div>
+
+      {q.isLoading ? (
+        <div className="flex justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+      ) : q.isError ? (
+        <p className="rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
+          Could not load interns — {(q.error as Error)?.message}
+        </p>
+      ) : !rows.length ? (
+        <section className="rounded-xl border border-line bg-panel p-10 text-center shadow-card">
+          <UserPlus className="mx-auto mb-3 h-8 w-8 text-muted" />
+          <h3 className="text-base font-semibold text-ink">No interns {statusF !== "all" ? statusF : "yet"}</h3>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted">
+            Invite one from the Team page with the <b>Intern</b> role — they get their own isolated
+            submission area, and everything they submit lands here for review.
+          </p>
+        </section>
+      ) : (
+        <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel shadow-card">
+          {rows.map((r) => {
+            const open = openId === r.user_id;
+            const myBatches = open ? internBatches(r.user_id) : [];
+            return (
+              <div key={r.user_id}>
+                <button
+                  onClick={() => setOpenId(open ? null : r.user_id)}
+                  className={clsx("flex w-full flex-wrap items-center gap-3 px-3 py-2.5 text-left transition hover:bg-field/50", open && "bg-ocean/5")}
+                >
+                  <AvatarBubble uri={r.avatar_data_uri} name={r.full_name} className="h-9 w-9" show={showAvatars} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-semibold text-ink">{r.full_name}</span>
+                      {r.ready ? <span className="rounded-full bg-success/20 px-2 py-0.5 text-[10px] font-bold uppercase text-success">Ready to promote</span> : null}
+                      {!r.active ? <span className="rounded-full bg-field px-1.5 py-0.5 text-[10px] font-semibold text-muted">Inactive</span> : null}
+                    </span>
+                    <span className="block truncate text-xs text-muted">
+                      {r.email} · {r.batches} submission{r.batches === 1 ? "" : "s"}
+                      {r.last_submission_at ? ` · last ${formatDay(r.last_submission_at)}` : " · nothing submitted yet"}
+                    </span>
+                  </span>
+                  <span className="hidden shrink-0 items-center gap-1.5 md:flex">
+                    <span className="rounded bg-field px-1.5 py-0.5 text-[11px] font-semibold text-ink" title="Links submitted">{r.items}</span>
+                    <span className="rounded bg-success/15 px-1.5 py-0.5 text-[11px] font-semibold text-success" title="Approved into production">{r.approved}</span>
+                    <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger" title="Rejected">{r.rejected}</span>
+                    <span className="rounded bg-plum/10 px-1.5 py-0.5 text-[11px] font-semibold text-plum" title="Awaiting a reviewer's decision">{r.open_items} open</span>
+                  </span>
+                  {r.avg_score != null ? (
+                    <span className={clsx("shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold",
+                      r.avg_score >= 80 ? "bg-success/20 text-success" : r.avg_score >= 50 ? "bg-ember/10 text-ember" : "bg-danger/10 text-danger")}
+                      title="Average staged QA score">
+                      QA {r.avg_score}
+                    </span>
+                  ) : null}
+                  <ChevronRight className={clsx("h-4 w-4 shrink-0 text-muted transition", open && "rotate-90")} />
+                </button>
+                {open ? (
+                  <div className="space-y-3 border-t border-line bg-field/40 p-3">
+                    <div className="grid gap-2 text-center sm:grid-cols-3 xl:grid-cols-6">
+                      {([
+                        ["Submitted", r.items, ""],
+                        ["Approved", r.approved, r.approval_rate != null ? `${r.approval_rate}% of decided` : ""],
+                        ["Rejected", r.rejected, ""],
+                        ["Awaiting review", r.open_items, ""],
+                        ["QA passed", r.qa_pass, r.qa_pass_rate != null ? `${r.qa_pass_rate}%` : ""],
+                        ["Failed checks", r.failed_checks, "errors while checking"]
+                      ] as Array<[string, number, string]>).map(([lab, val, sub]) => (
+                        <div key={lab} className="rounded-lg border border-line bg-panel p-2">
+                          <div className="text-lg font-bold text-ink">{val}</div>
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">{lab}</div>
+                          {sub ? <div className="text-[10px] text-muted">{sub}</div> : null}
+                        </div>
+                      ))}
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Submissions — review &amp; transfer decisions happen inside each batch</div>
+                      <div className="space-y-1">
+                        {myBatches.slice(0, 8).map((b) => (
+                          <button key={b.id} onClick={() => onOpenBatch(b.id)}
+                            className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-left text-xs transition hover:border-ocean/40">
+                            <span className="font-semibold text-ink">#B-{b.seq}</span>
+                            <span className="min-w-0 flex-1 truncate text-muted">{b.label || "Submission"}</span>
+                            <BatchStatusChip value={b.status} />
+                            {b.review_pending ? <span className="rounded-full bg-plum/10 px-2 py-0.5 font-semibold text-plum">{b.review_pending} to review</span> : null}
+                            <span className="text-ocean">Review →</span>
+                          </button>
+                        ))}
+                        {batchesQ.isLoading ? <p className="text-xs text-muted">Loading submissions…</p> : null}
+                        {!batchesQ.isLoading && !myBatches.length ? <p className="text-xs text-muted">No submissions yet.</p> : null}
+                      </div>
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <div>
+                        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Reviewer feedback</div>
+                        <div className="max-h-36 space-y-1 overflow-y-auto">
+                          {(r.notes || []).slice().reverse().map((nt, i) => (
+                            <div key={i} className="rounded-lg border border-line bg-panel p-2 text-xs">
+                              <span className="text-ink">{nt.note}</span>
+                              <span className="block text-[10px] text-muted">{nt.by} · {formatDate(nt.at)}</span>
+                            </div>
+                          ))}
+                          {!(r.notes || []).length ? <p className="text-xs text-muted">No feedback yet.</p> : null}
+                        </div>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add feedback / correction request…"
+                            className="h-8 flex-1 rounded-lg border border-line bg-panel px-2 text-xs" />
+                          <button onClick={() => note.trim() && feedback.mutate({ user_id: r.user_id, note: note.trim() })}
+                            disabled={feedback.isPending || !note.trim()}
+                            className="h-8 rounded-lg border border-line px-2.5 text-xs font-medium text-ink hover:bg-field disabled:opacity-40">
+                            Add
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Promotion</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => feedback.mutate({ user_id: r.user_id, ready: !r.ready })}
+                            className={clsx("rounded-lg border px-3 py-1.5 text-xs font-semibold transition",
+                              r.ready ? "border-success/50 bg-success/10 text-success" : "border-line text-muted hover:text-ink")}
+                          >
+                            {r.ready ? "✓ Marked ready" : "Mark ready for promotion"}
+                          </button>
+                          {role === "admin" ? (
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`Promote ${r.full_name} to the main team (Viewer)?\n\nTheir staged submissions are NOT transferred automatically — approve them per batch (keep separate / partial / full), whenever you decide.`))
+                                  promote.mutate({ user_id: r.user_id });
+                              }}
+                              disabled={promote.isPending}
+                              className="rounded-lg bg-ocean px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                            >
+                              Promote to main team
+                            </button>
+                          ) : (
+                            <span className="text-xs text-muted">An admin performs the promotion (Team page).</span>
+                          )}
+                        </div>
+                        <p className="mt-1.5 text-[11px] text-muted">
+                          Data transfer is a separate, deliberate step: open a submission above and
+                          Approve what should enter production — everything else stays isolated.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TeamSettingsHub({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+  // One place that explains every team-wide setting and where it lives
+  // (owner brief #10). The avatar toggle is live; the rest deep-describes
+  // the dedicated pages so admins don't hunt through the app.
+  const queryClient = useQueryClient();
+  const settingsQ = useQuery({
+    queryKey: ["workspace-settings", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () => api<Array<{ key: string; value: Record<string, unknown> }>>("/settings", { token })
+  });
+  const branding = (settingsQ.data?.find((s) => s.key === "branding")?.value || {}) as {
+    show_avatars?: boolean;
+    [k: string]: unknown;
+  };
+  const avatarsOn = branding.show_avatars !== false;
+  const toggleAvatars = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/settings", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({ key: "branding", value: { ...branding, show_avatars: !avatarsOn }, is_secret: false })
+      }),
+    onSuccess: () => {
+      onNotice(avatarsOn ? "Profile photos hidden everywhere" : "Profile photos shown everywhere");
+      queryClient.invalidateQueries({ queryKey: ["workspace-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["me"] });
+      queryClient.invalidateQueries({ queryKey: ["branding"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const rows: Array<{ title: string; where: string; what: string }> = [
+    {
+      title: "Sign-in IP rules",
+      where: "Settings → Security",
+      what: "Allowed and blocked IPs (single, comma lists or CIDR ranges) with remarks. Per-user, per-team and per-role overrides; a tester shows exactly which rule decides for any user + IP. Active sessions are re-checked on every request — changing IP off an approved network ends the session immediately and is recorded in the security log."
+    },
+    {
+      title: "Security activity log",
+      where: "Settings → Security",
+      what: "Sign-ins, failures, revoked sessions and credential changes with the real IP and device for each event."
+    },
+    {
+      title: "Working days & leave",
+      where: "Tasks & Calendar → Working days / Leave",
+      what: "Company calendar (days off), Mon–Sat schedule, and the leave request + approval flow. Approved leave excuses plan-vs-done automatically."
+    },
+    {
+      title: "Productivity rates",
+      where: "Settings → Productivity",
+      what: "Global links-per-hour default plus per-person overrides — these drive daily targets and the planner's capacity warnings."
+    },
+    {
+      title: "Roles & permissions",
+      where: "This page → Members & roles",
+      what: "Admin: everything incl. deletes & settings. Manager (Team Lead): reviews, approvals, their scoped people. QA: checks + approve/reject staged work. Member (viewer): own work only — My Work, own leave, no exports. Intern: submits into isolated review batches only; nothing reaches a project until a reviewer approves."
+    },
+    {
+      title: "Team scoping",
+      where: "This page → Members & roles (bottom card)",
+      what: "Limit a Team Lead or QA to specific people — they then only see those people's projects, tasks, performance and leave."
+    },
+    {
+      title: "Company & branding",
+      where: "Settings → Company & branding",
+      what: "Company name/domain, light + dark logos (used on the sign-in page, top bar and sidebar), announcement bar and per-project logos."
+    }
+  ];
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="border-b border-line p-4">
+        <h2 className="text-base font-semibold text-ink">Team settings</h2>
+        <p className="text-sm text-muted">Everything that shapes how the team sees and uses the system — and where to change it.</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">
+        <div>
+          <div className="text-sm font-semibold text-ink">Profile photos</div>
+          <p className="text-xs text-muted">
+            Show avatars across dashboards, tables, leave requests and menus. When off, everyone sees neutral initials instead.
+          </p>
+        </div>
+        <button
+          onClick={() => toggleAvatars.mutate()}
+          disabled={toggleAvatars.isPending || settingsQ.isLoading}
+          className={clsx(
+            "rounded-lg border px-3.5 py-1.5 text-sm font-semibold transition disabled:opacity-50",
+            avatarsOn ? "border-success/50 bg-success/10 text-success" : "border-line bg-panel text-muted hover:text-ink"
+          )}
+        >
+          {avatarsOn ? "Shown everywhere" : "Hidden — click to show"}
+        </button>
+      </div>
+      {settingsQ.isError ? (
+        <div className="p-4 text-sm text-muted">
+          Only admins can view workspace settings.
+        </div>
+      ) : null}
+      <div className="divide-y divide-line">
+        {rows.map((r) => (
+          <div key={r.title} className="flex flex-wrap items-start gap-2 p-4">
+            <div className="w-48 shrink-0">
+              <div className="text-sm font-semibold text-ink">{r.title}</div>
+              <div className="mt-0.5 text-[11px] font-medium text-ocean">{r.where}</div>
+            </div>
+            <p className="min-w-[260px] flex-1 text-sm text-muted">{r.what}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const showAvatars = useShowAvatars(token);
   const queryClient = useQueryClient();
@@ -24831,9 +25203,16 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [role, setRole] = useState<Role>("viewer");
   const [password, setPassword] = useState("");
   // One desk, two sections: workspace accounts vs sheet-employee mapping.
-  const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail" | "email">("members");
+  const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail" | "email" | "settings">("members");
   const [showInvite, setShowInvite] = useState(false);
   const [membersShown, setMembersShown] = useState(25);
+  // Members toolbar (owner #9): active-only by default (white-label), search,
+  // role filter, sort, list⇄grid — all client-side over the loaded members.
+  const [mSearch, setMSearch] = useState("");
+  const [mRole, setMRole] = useState("");
+  const [mShowAll, setMShowAll] = usePersistentState<boolean>("ls_team_showall", false);
+  const [mSort, setMSort] = usePersistentState<string>("ls_team_sort", "name");
+  const [mView, setMView] = usePersistentState<"list" | "grid">("ls_team_view", "list");
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -24986,6 +25365,18 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
     Boolean(fullName.trim()) && Boolean(email.trim()) && password.length >= 10 && !invite.isPending;
 
   const activeMembers = (members.data || []).filter((m) => m.is_active).length;
+  const mNeedle = mSearch.trim().toLowerCase();
+  const visibleMembers = (members.data || [])
+    .filter((m) =>
+      (mShowAll || m.is_active) &&
+      (!mRole || m.role === mRole) &&
+      (!mNeedle || m.full_name.toLowerCase().includes(mNeedle) || m.email.toLowerCase().includes(mNeedle))
+    )
+    .sort((a, b) => {
+      if (mSort === "role") return a.role.localeCompare(b.role) || a.full_name.localeCompare(b.full_name);
+      if (mSort === "login") return (b.last_login_at || "").localeCompare(a.last_login_at || "");
+      return a.full_name.localeCompare(b.full_name);
+    });
   return (
     <div className="space-y-5">
       {/* Page header: what this desk is + the one primary action. */}
@@ -25011,7 +25402,8 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           ["members", "Members & roles", "Accounts, roles, projects & access"],
           ["employees", "Employees & mapping", "Sheet names → app accounts"],
           ["gmail", "Gmail accounts", "Who holds each company address"],
-          ["email", "Email users", "Message the team (SMTP)"]
+          ["email", "Email users", "Message the team (SMTP)"],
+          ["settings", "Team settings", "Visibility, avatars, access & schedules"]
         ] as Array<[typeof teamTab, string, string]>).map(([id, label, hint]) => (
           <button
             key={id}
@@ -25034,6 +25426,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
       {teamTab === "email" ? (
         <EmailUsersCard token={token} members={members.data || []} projects={projectsQ.data || []} onNotice={onNotice} />
       ) : null}
+      {teamTab === "settings" ? <TeamSettingsHub token={token} onNotice={onNotice} /> : null}
       {/* Invite — a modal (the always-open form was noise on every visit). */}
       {showInvite ? (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[12vh] backdrop-blur-sm"
@@ -25080,11 +25473,76 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
       ) : null}
       {teamTab === "members" ? (<>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+          <input value={mSearch} onChange={(e) => setMSearch(e.target.value)} placeholder="Search members…"
+            className="w-52 rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-sm" />
+        </div>
+        <select value={mRole} onChange={(e) => setMRole(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+          <option value="">Role: all</option>
+          {TEAM_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+        </select>
+        <button
+          onClick={() => setMShowAll((v) => !v)}
+          className={clsx("rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition",
+            mShowAll ? "border-ocean/50 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted hover:text-ink")}
+          title="Include people who are no longer active"
+        >
+          {mShowAll ? "Showing all" : "Show all"}
+        </button>
+        <select value={mSort} onChange={(e) => setMSort(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+          <option value="name">Sort: name</option>
+          <option value="role">Sort: role</option>
+          <option value="login">Sort: last sign-in</option>
+        </select>
+        <span className="text-xs text-muted">{visibleMembers.length} {visibleMembers.length === 1 ? "member" : "members"}</span>
+        <span className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel p-0.5">
+          {(["list", "grid"] as const).map((m) => (
+            <button key={m} onClick={() => setMView(m)}
+              className={clsx("rounded-md px-2.5 py-1 text-xs font-semibold capitalize transition",
+                mView === m ? "bg-ocean/10 text-ocean" : "text-muted hover:text-ink")}>
+              {m}
+            </button>
+          ))}
+        </span>
+      </div>
+
+      {mView === "grid" ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {visibleMembers.slice(0, membersShown).map((m) => (
+            <div key={m.user_id} className="rounded-xl border border-line bg-panel p-4 shadow-card">
+              <div className="flex items-center gap-2.5">
+                <AvatarBubble uri={m.avatar_data_uri} name={m.full_name} className="h-10 w-10" show={showAvatars} square />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-semibold text-ink">{m.full_name}</div>
+                  <div className="truncate text-xs text-muted">{m.email}</div>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="rounded-full border border-ocean/30 bg-ocean/10 px-2 py-0.5 font-semibold text-ocean">{ROLE_LABEL[m.role] || m.role}</span>
+                {!m.is_active ? <span className="rounded-full bg-field px-2 py-0.5 font-semibold text-muted">Inactive</span> : null}
+                <span className="ml-auto text-muted">last sign-in {formatDay(m.last_login_at)}</span>
+              </div>
+            </div>
+          ))}
+          {!visibleMembers.length ? <Empty label="No members match." /> : null}
+        </div>
+      ) : null}
+      {mView === "grid" && visibleMembers.length > membersShown ? (
+        <div className="text-center">
+          <button onClick={() => setMembersShown((v) => v + 25)} className="rounded-lg border border-line px-4 py-1.5 text-sm font-medium text-ink transition hover:bg-field">
+            Load more ({visibleMembers.length - membersShown} more)
+          </button>
+        </div>
+      ) : null}
+
+      {mView === "list" ? (
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-4">
           <div>
             <h2 className="text-base font-semibold text-ink">Members</h2>
-            <p className="text-sm text-muted">{members.data?.length ?? 0} in this workspace</p>
+            <p className="text-sm text-muted">{visibleMembers.length} shown</p>
           </div>
           <Users className="h-5 w-5 text-ocean" />
         </div>
@@ -25154,7 +25612,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {(members.data || []).slice(0, membersShown).map((m) => (
+              {visibleMembers.slice(0, membersShown).map((m) => (
                 <tr key={m.user_id} className={clsx(!m.is_active && "opacity-60")}>
                   <Td>
                     <div className="flex items-center gap-2.5">
@@ -25272,10 +25730,10 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           </table>
           {members.isLoading ? <Empty label="Loading members…" /> : null}
           {!members.isLoading && !members.data?.length ? <Empty label="No members yet" /> : null}
-          {(members.data || []).length > membersShown ? (
+          {visibleMembers.length > membersShown ? (
             <div className="border-t border-line p-2 text-center">
               <span className="mr-3 text-xs text-muted">
-                Showing {membersShown} of {(members.data || []).length}
+                Showing {membersShown} of {visibleMembers.length}
               </span>
               <button
                 onClick={() => setMembersShown((v) => v + 25)}
@@ -25287,6 +25745,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           ) : null}
         </div>
       </section>
+      ) : null}
 
       {(members.data || []).some((m) => m.role === "manager" || m.role === "qa") ? (
         <section className="rounded-xl border border-line bg-panel shadow-card">
