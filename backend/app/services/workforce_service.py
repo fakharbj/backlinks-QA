@@ -67,7 +67,7 @@ async def visible_labels(db: AsyncSession, ctx: AuthContext) -> set[str] | None:
     """
     from app.core.rbac import Role
 
-    if ctx.role == Role.VIEWER:
+    if ctx.role in (Role.VIEWER, Role.INTERN):
         return await own_labels(db, ctx)
     if ctx.role not in (Role.MANAGER, Role.QA):
         return None

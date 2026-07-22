@@ -104,6 +104,25 @@ async def _pending_by_batch(db, batch_ids: list[uuid.UUID]) -> dict[uuid.UUID, i
     return {bid: n for bid, n in rows.all()}
 
 
+def _require_reviewer(ctx: AuthContext) -> None:
+    from app.core.errors import PermissionDeniedError
+    from app.core.rbac import Role
+
+    if ctx.role.rank < Role.QA.rank:
+        raise PermissionDeniedError(
+            "Interns can't approve or reject — a QA, manager or admin reviews your submissions."
+        )
+
+
+def _intern_only_own(ctx: AuthContext, started_by) -> None:
+    """Interns see ONLY the batches they started (their isolated data area)."""
+    from app.core.errors import NotFoundError as _NF
+    from app.core.rbac import Role
+
+    if ctx.role is Role.INTERN and started_by != ctx.user.id:
+        raise _NF("Batch not found")
+
+
 @router.get("", response_model=list[BatchOut])
 async def list_batches(
     ctx: AuthCtx,
@@ -125,6 +144,10 @@ async def list_batches(
         limit=limit, offset=offset, parent_id=parent,
         top_level=top_level and parent is None,
     )
+    from app.core.rbac import Role as _Role
+
+    if ctx.role is _Role.INTERN:
+        rows = [b for b in rows if b.started_by == ctx.user.id]
     review_ids = [b.id for b in rows if b.kind in batch_review_service.REVIEW_KINDS]
     pending = await _pending_by_batch(db, review_ids)
     return [
@@ -138,6 +161,7 @@ async def get_batch(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> Batch
     b = await db.get(Batch, batch_id)
     if b is None or b.workspace_id != ctx.workspace_id:
         raise NotFoundError("Batch not found")
+    _intern_only_own(ctx, b.started_by)
     pending = None
     if b.kind in batch_review_service.REVIEW_KINDS:
         pending = (await _pending_by_batch(db, [b.id])).get(b.id, 0)
@@ -350,7 +374,10 @@ async def approve_batch_items(
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
 ) -> dict:
     """Approve staged items into production (links → normal import pipeline,
-    domains → source-domain catalog). Only pending/checked items qualify."""
+    domains → source-domain catalog). Only pending/checked items qualify.
+    QA-and-above only: interns submit and check, a reviewer decides — this IS
+    the intern→production transfer gate (keep separate / partial / full)."""
+    _require_reviewer(ctx)
     result = await batch_review_service.approve_items(
         db, ctx, batch_id, item_ids=payload.item_ids,
         state=payload.state, presence=payload.presence, q=payload.q,
@@ -373,7 +400,8 @@ async def reject_batch_items(
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
 ) -> dict:
     """Reject staged items — they stay visible in the batch for the audit
-    trail but can never be imported."""
+    trail but can never be imported. QA-and-above only (see approve)."""
+    _require_reviewer(ctx)
     result = await batch_review_service.reject_items(
         db, ctx, batch_id, item_ids=payload.item_ids,
         state=payload.state, presence=payload.presence, q=payload.q,

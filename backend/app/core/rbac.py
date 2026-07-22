@@ -15,10 +15,14 @@ class Role(str, enum.Enum):
     MANAGER = "manager"
     QA = "qa"
     VIEWER = "viewer"
+    # Interns (owner 2026-07-22): a separate workflow — they SUBMIT links into
+    # isolated review batches (never directly into production data) and see
+    # only their own work. Promotion = a normal role change.
+    INTERN = "intern"
 
     @property
     def rank(self) -> int:
-        return {"admin": 4, "manager": 3, "qa": 2, "viewer": 1}[self.value]
+        return {"admin": 4, "manager": 3, "qa": 2, "viewer": 1, "intern": 0}[self.value]
 
 
 class Permission(str, enum.Enum):
@@ -85,6 +89,13 @@ _MATRIX: dict[Role, set[Permission]] = {
         Permission.VIEW_DASHBOARDS,
         Permission.EXPORT_REPORTS,
     },
+    # Interns can STAGE links (isolated review batches) and run the staged QA
+    # check on their own submissions — but never approve/export/edit anything.
+    Role.INTERN: {
+        Permission.VIEW_DASHBOARDS,
+        Permission.IMPORT_BACKLINKS,
+        Permission.RUN_CRAWLS,
+    },
 }
 
 
@@ -97,5 +108,5 @@ def has_permission(role: Role, permission: Permission) -> bool:
 
 
 def is_project_scoped(role: Role) -> bool:
-    """Viewers are always project-scoped; managers/QA may be, admins never."""
-    return role in (Role.VIEWER, Role.QA, Role.MANAGER)
+    """Viewers/interns are always project-scoped; managers/QA may be, admins never."""
+    return role in (Role.VIEWER, Role.QA, Role.MANAGER, Role.INTERN)

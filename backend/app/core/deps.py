@@ -103,9 +103,9 @@ async def get_auth_context(
                 select(ProjectMember.project_id).where(ProjectMember.user_id == user_id)
             )
         ).scalars().all()
-        # Viewers MUST be scoped; managers/QA without explicit rows see all projects
-        # in their workspace (membership rows narrow them when present).
-        if role is Role.VIEWER or rows:
+        # Viewers/interns MUST be scoped (no rows = see nothing); managers/QA
+        # without explicit rows see all projects in their workspace.
+        if role in (Role.VIEWER, Role.INTERN) or rows:
             allowed_projects = set(rows)
 
     return AuthContext(

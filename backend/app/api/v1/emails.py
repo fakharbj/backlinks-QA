@@ -19,7 +19,7 @@ router = APIRouter(prefix="/emails", tags=["emails"])
 
 class EmailSendIn(BaseModel):
     user_ids: list[uuid.UUID] | None = None
-    role: str | None = Field(default=None, pattern="^(admin|manager|qa|viewer)$")
+    role: str | None = Field(default=None, pattern="^(admin|manager|qa|viewer|intern)$")
     project_id: uuid.UUID | None = None
     subject: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=5000)

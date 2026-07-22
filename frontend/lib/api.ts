@@ -829,7 +829,7 @@ export type AlertRule = {
   is_active: boolean;
 };
 
-export type Role = "admin" | "manager" | "qa" | "viewer";
+export type Role = "admin" | "manager" | "qa" | "viewer" | "intern";
 
 export type TeamMember = {
   user_id: string;

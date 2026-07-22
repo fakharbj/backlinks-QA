@@ -208,7 +208,9 @@ export function WorkspaceApp() {
       ? tab
       : role === "viewer"
         ? "mywork"
-        : "overview";
+        : role === "intern"
+          ? "imports"
+          : "overview";
     setActiveProjectIdState(next);
     setTabState(nextTab);
     syncUrl(next, nextTab, true);
@@ -303,7 +305,7 @@ export function WorkspaceApp() {
     // the TopBar "?" even though it only sits in the viewer nav.
     if (tab === "statusguide") return;
     if (!navTabs(Boolean(activeProjectId), role).includes(tab)) {
-      const fallback: Tab = role === "viewer" ? "mywork" : "overview";
+      const fallback: Tab = role === "viewer" ? "mywork" : role === "intern" ? "imports" : "overview";
       setTabState(fallback);
       syncUrl(activeProjectId, fallback, false);
     }
@@ -494,7 +496,7 @@ export function WorkspaceApp() {
             <DomainImportDesk token={token} onNotice={setNotice} onOpenBatch={openBatch} />
           ) : null}
           {tab === "batches" ? (
-            <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+            <BatchesDesk token={token} projectId={activeProjectId} onNotice={setNotice} role={role} />
           ) : null}
           {tab === "performance" ? (
             <PerformanceDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onOpenUser={openUserDash} />
@@ -844,6 +846,30 @@ const PROJECT_NAV: NavGroup[] = [
 
 // Standard users (Viewer role) get their OWN focused surface — tasks, targets,
 // completion and leave — never the team-wide/admin desks.
+// Interns: a deliberately small, separate world — submit links (staged review
+// batches), watch their QA results, learn. Nothing else.
+const INTERN_NAV: NavGroup[] = [
+  {
+    label: "My Links",
+    items: [
+      ["imports", "Submit links", Upload],
+      ["batches", "My submissions", Layers]
+    ]
+  },
+  {
+    label: "Learn",
+    items: [
+      ["guidance", "Guidance", Lightbulb],
+      ["myscoring", "Scoring", Gauge],
+      ["statusguide", "Status Guide", Info]
+    ]
+  },
+  {
+    label: "Me",
+    items: [["mywork", "My Work", CalendarDays]]
+  }
+];
+
 const MY_NAV: NavGroup[] = [
   {
     // Owner rule: My Work is the PRIMARY entry (first, and the landing tab).
@@ -983,6 +1009,7 @@ const roleFilterNav = (groups: NavGroup[], role: string | null): NavGroup[] => {
 
 const navGroups = (inProject: boolean, role: string | null): NavGroup[] => {
   if (role === "viewer") return MY_NAV;
+  if (role === "intern") return INTERN_NAV;
   return roleFilterNav(inProject ? PROJECT_NAV : WORKSPACE_NAV, role);
 };
 const navTabs = (inProject: boolean, role: string | null): Tab[] =>
@@ -11904,7 +11931,8 @@ function BatchDetails({
   onNotice,
   onBack,
   onOpenBacklinks,
-  onOpenBatch
+  onOpenBatch,
+  canModerate = true
 }: {
   token: string | null;
   batchId: string;
@@ -11912,6 +11940,8 @@ function BatchDetails({
   onBack: () => void;
   onOpenBacklinks?: (filters: Record<string, string>) => void;
   onOpenBatch?: (batchId: string) => void;
+  // false for interns: approve/reject/delete/export hidden (backend enforces too).
+  canModerate?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [stateF, setStateF] = useState<string[]>([]);
@@ -12376,7 +12406,7 @@ function BatchDetails({
               </span>
             ) : null}
           </div>
-          {b.status === "running" || b.status === "pending" ? (
+          {canModerate && (b.status === "running" || b.status === "pending") ? (
             <button
               onClick={() => {
                 if (window.confirm(
@@ -12390,7 +12420,7 @@ function BatchDetails({
               Cancel run
             </button>
           ) : null}
-          {b.status !== "running" ? (
+          {canModerate && b.status !== "running" ? (
             <div className="flex items-center gap-3">
               {isReview ? (() => {
                 // Server-side export of the FULL filtered set (honors state/presence/
@@ -12674,6 +12704,7 @@ function BatchDetails({
             </>
           )}
           <span className="mx-1 h-6 w-px bg-line" />
+          {canModerate ? (<>
           <button
             onClick={() => {
               if (!picked.size && !window.confirm(`Approve ${scopeNote} (${picked.size || approvable} items)? Links/domains enter the main data.`)) return;
@@ -12697,6 +12728,11 @@ function BatchDetails({
             <XCircle className="h-4 w-4" />
             Reject {picked.size ? `selected (${picked.size})` : "all filtered"}
           </button>
+          </>) : (
+            <span className="rounded-lg bg-field/70 px-2.5 py-1.5 text-xs text-muted" title="Interns submit and QA-check; a QA, manager or admin approves into production">
+              A reviewer approves your submissions into production.
+            </span>
+          )}
           {(byState.failed || 0) > 0 ? (
             <button
               onClick={() => runCheck.mutate({ state: "failed" })}
@@ -12927,12 +12963,17 @@ function BatchDetails({
 function BatchesDesk({
   token,
   projectId,
-  onNotice
+  onNotice,
+  role
 }: {
   token: string | null;
   projectId: string;
   onNotice: (text: string) => void;
+  role?: string | null;
 }) {
+  // Interns submit and check; only QA+ approve/reject/delete (backend enforces
+  // the same rule — this just hides controls that would 403).
+  const canModerate = role !== "intern";
   const queryClient = useQueryClient();
   const [kind, setKind] = useState("");
   const [statusF, setStatusF] = useState("");
@@ -12979,7 +13020,7 @@ function BatchesDesk({
   });
 
   if (openId) {
-    return <BatchDetails token={token} batchId={openId} onNotice={onNotice} onBack={() => setOpenId(null)} onOpenBatch={setOpenId} />;
+    return <BatchDetails token={token} batchId={openId} onNotice={onNotice} onBack={() => setOpenId(null)} onOpenBatch={setOpenId} canModerate={canModerate} />;
   }
 
   return (
@@ -24011,18 +24052,20 @@ function severityClass(value: string) {
   }[value] || "bg-field text-muted";
 }
 
-const TEAM_ROLES: Role[] = ["admin", "manager", "qa", "viewer"];
+const TEAM_ROLES: Role[] = ["admin", "manager", "qa", "viewer", "intern"];
 const ROLE_LABEL: Record<Role, string> = {
   admin: "Admin",
   manager: "Manager",
   qa: "QA",
-  viewer: "Viewer"
+  viewer: "Viewer",
+  intern: "Intern"
 };
 const ROLE_HINT: Record<Role, string> = {
   admin: "Full control, including team & workspace settings",
   manager: "Manage projects, links, alerts and reports",
   qa: "Run crawls, edit links and override verdicts",
-  viewer: "Read-only dashboards and exports"
+  viewer: "Read-only dashboards and exports",
+  intern: "Separate area: submits links into review batches — nothing reaches production until a reviewer approves; promote by changing the role"
 };
 
 function MemberProjectsCell({
