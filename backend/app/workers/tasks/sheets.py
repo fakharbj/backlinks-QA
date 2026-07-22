@@ -74,14 +74,20 @@ def _run_serialized(task, owner: str, fn):
 
 async def _sync_main_async(workspace_id: uuid.UUID) -> dict:
     async with session_scope() as s:
-        sheet_source_ids = await sheet_sync_service.discover_projects(s, workspace_id)
+        discovery = await sheet_sync_service.discover_projects(s, workspace_id)
 
     # Main-sheet sync only DISCOVERS projects — it registers each project's name +
-    # sheet link (and its tabs, for mapping) but does NOT pull any links. The user
-    # sets the per-tab mapping (including which tabs to ignore) first, then syncs a
-    # project's links explicitly (POST /sheets/{id}/sync). This keeps reads far
-    # under the Sheets API quota and enforces the "map first, then sync" flow.
-    return {"discovered_projects": len(sheet_source_ids), "mode": "discover_only"}
+    # sheet link (and its tabs, for mapping) and applies the Status column, but
+    # does NOT pull any links. The user sets the per-tab mapping (including which
+    # tabs to ignore) first, then syncs a project's links explicitly
+    # (POST /sheets/{id}/sync). This keeps reads far under the Sheets API quota
+    # and enforces the "map first, then sync" flow.
+    return {
+        "discovered_projects": len(discovery["sheet_source_ids"]),
+        "activated": discovery["activated"],
+        "deactivated": discovery["deactivated"],
+        "mode": "discover_only",
+    }
 
 
 async def _sync_project_async(sheet_source_id: uuid.UUID, parent_batch_id: str | None = None) -> dict:

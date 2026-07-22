@@ -474,6 +474,29 @@ member cards, persisted prefs) + **Team settings hub** tab (live avatar
 toggle writing branding + where-it-lives descriptions for IP rules/security
 log/working days/rates/roles/scoping/branding).
 
+**Task-sheet + main-sheet-status batch shipped + deployed** (2026-07-23 #2, no
+new migration, 262 tests): (1) **suggestion count = assigned links + 2**
+(`suggest_for_task(limit=None)` → `expected_links + 2`, clamped ≤50; response
+carries `expected_links`/`suggestion_target`; widget dropped its `limit=8` and
+shows an "N links + 2 spare" chip). (2) **Task-sheet exports** — `GET
+/workforce/task-export?assignment_id=|day=&user_label=&format=csv|xlsx`
+(`workforce_service.task_export_rows`): one row per suggested domain w/ task
+meta + DA/PA/Spam/AS + "Why suggested" + EMPTY "Backlink URL / Anchor text /
+Remarks (fill in)" columns; pads blank rows up to the target so every link has
+a line; Task ID + domain = stable keys for the NEXT-phase submit-back (not
+built yet). Buttons: My Work Today header ("Today's sheet" XLSX) + per-task
+widget (XLSX/CSV); shared `downloadAuthed()` helper. Viewer-scoped via
+day_report/visible_labels. (3) **Main-sheet Status column**
+(`GOOGLE_MAIN_STATUS_COL="Status"`): `status_from_cell` (active/inactive word
+sets; blank/typo → None = untouched; "inactive" checked before "active") in
+`discover_projects` sets `Project.status` + runs the SAME
+`project_service.deactivation_cleanup` as a manual pause (future assignments +
+templates removed); discover returns activated/deactivated counts. Auto sync
+stays ACTIVE-only; per-row manual Sync of inactive projects unchanged (by
+design). NOTE: server test DB `linksentinel_test` was migrated to head (was
+stuck pre-0055) — integration tests run via
+`DATABASE_URL=…linksentinel_test venv/bin/python -m pytest`.
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:

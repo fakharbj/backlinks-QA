@@ -28,7 +28,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.integrations import google_sheets
 from app.models.backlink import BacklinkRecord
-from app.models.enums import ImportSource, ImportStatus
+from app.models.enums import ImportSource, ImportStatus, ProjectStatus
 from app.models.imports import Import
 from app.models.project import Project
 from app.models.sheet_tab import GoogleSheetTab
@@ -76,10 +76,42 @@ def _slugify(name: str) -> str:
     return (slug or "project")[:110]
 
 
-async def discover_projects(db: AsyncSession, workspace_id: uuid.UUID) -> list[uuid.UUID]:
-    """Read the main sheet; ensure Project + SheetSource per row; return ids to sync."""
+# Main-sheet Status cell → project state. Exact-word sets first, then loose
+# containment ("inactive" must be tested before "active" — it contains it).
+# Anything blank/unrecognized returns None = leave the project untouched, so
+# a typo in the sheet can never flip a project's state.
+_STATUS_ACTIVE_WORDS = frozenset(
+    {"active", "live", "on", "yes", "y", "true", "1", "running", "enabled", "open"}
+)
+_STATUS_INACTIVE_WORDS = frozenset(
+    {"inactive", "in active", "in-active", "paused", "pause", "hold", "on hold",
+     "off", "no", "n", "false", "0", "stopped", "stop", "closed", "disabled", "done"}
+)
+
+
+def status_from_cell(raw: object) -> ProjectStatus | None:
+    text_value = str(raw or "").strip().lower()
+    if not text_value:
+        return None
+    if text_value in _STATUS_ACTIVE_WORDS:
+        return ProjectStatus.ACTIVE
+    if text_value in _STATUS_INACTIVE_WORDS or "inactive" in text_value:
+        return ProjectStatus.PAUSED
+    if "archiv" in text_value:
+        return ProjectStatus.ARCHIVED
+    if "active" in text_value:  # after the inactive checks: "Active ✓", "active now"
+        return ProjectStatus.ACTIVE
+    return None
+
+
+async def discover_projects(db: AsyncSession, workspace_id: uuid.UUID) -> dict:
+    """Read the main sheet; ensure Project + SheetSource per row; apply the
+    Status column to each project's state. Returns the SheetSource ids plus
+    activated/deactivated counts for the task result."""
     rows = await asyncio.to_thread(google_sheets.read_main_sheet)
     sheet_source_ids: list[uuid.UUID] = []
+    activated = 0
+    deactivated = 0
     for row in rows:
         name = (str(row.get(settings.GOOGLE_MAIN_PROJECT_COL, "")) or "").strip()
         url = (str(row.get(settings.GOOGLE_MAIN_URL_COL, "")) or "").strip()
@@ -90,6 +122,20 @@ async def discover_projects(db: AsyncSession, workspace_id: uuid.UUID) -> list[u
             log.warning("sheet_url_unparsable", project=name, url=url[:120])
             continue
         project = await _resolve_project(db, workspace_id, name)
+        wanted = status_from_cell(row.get(settings.GOOGLE_MAIN_STATUS_COL))
+        if wanted is not None and project.status != wanted:
+            was_active = project.status == ProjectStatus.ACTIVE
+            project.status = wanted
+            if was_active and wanted != ProjectStatus.ACTIVE:
+                # Same owner rule as a manual deactivation: future planned
+                # tasks + standing weekly templates leave the planner now.
+                from app.services.project_service import deactivation_cleanup
+
+                await deactivation_cleanup(db, workspace_id, project.id)
+                deactivated += 1
+            elif not was_active and wanted == ProjectStatus.ACTIVE:
+                activated += 1
+            log.info("main_sheet_status_applied", project=name, status=wanted.value)
         source = await _resolve_sheet_source(
             db, workspace_id, project.id, name, spreadsheet_id, url
         )
@@ -106,7 +152,11 @@ async def discover_projects(db: AsyncSession, workspace_id: uuid.UUID) -> list[u
             log.warning("discover_tabs_failed", project=name, error=repr(exc))
         sheet_source_ids.append(source.id)
     await db.commit()
-    return sheet_source_ids
+    return {
+        "sheet_source_ids": sheet_source_ids,
+        "activated": activated,
+        "deactivated": deactivated,
+    }
 
 
 async def _resolve_project(db: AsyncSession, workspace_id: uuid.UUID, name: str) -> Project:

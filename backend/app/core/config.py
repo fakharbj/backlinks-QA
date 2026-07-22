@@ -288,6 +288,10 @@ class Settings(BaseSettings):
     GOOGLE_MAIN_SHEET_TAB: str | None = None   # tab name (None → first worksheet)
     GOOGLE_MAIN_PROJECT_COL: str = "Project Name"     # main-sheet column: project name
     GOOGLE_MAIN_URL_COL: str = "Project Sheet URL"    # main-sheet column: project sheet link
+    # Main-sheet column that drives each project's state ("Active"/"Inactive").
+    # Blank or unrecognized cells leave the project untouched; inactive projects
+    # drop out of auto sync but their row Sync button keeps working manually.
+    GOOGLE_MAIN_STATUS_COL: str = "Status"
     # Spread the per-project syncs so 1,000 sheets don't hammer the Sheets API at once.
     GOOGLE_SYNC_STAGGER_SECONDS: float = 2.0
     GOOGLE_SHEETS_TIMEOUT_SECONDS: float = 60.0

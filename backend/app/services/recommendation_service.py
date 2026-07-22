@@ -232,10 +232,13 @@ async def _suggest(
 
 
 async def suggest_for_task(
-    db: AsyncSession, ctx: AuthContext, assignment_id: uuid.UUID, *, limit: int = 20
+    db: AsyncSession, ctx: AuthContext, assignment_id: uuid.UUID, *, limit: int | None = None
 ) -> dict:
     """Suggestions for ONE task — self-scoped: a viewer can only ask about their
-    own assignments (visible_labels), a TeamLead about their people."""
+    own assignments (visible_labels), a TeamLead about their people.
+
+    Count rule (owner): no explicit limit → the task's assigned links + 2 spare
+    picks — a 5-link task offers 7 domains, a 10-link task 12."""
     from app.services.workforce_service import visible_labels
 
     ta = await db.get(TaskAssignment, assignment_id)
@@ -245,6 +248,10 @@ async def suggest_for_task(
     if scope is not None and ta.user_label not in scope:
         raise PermissionDeniedError("Not your task")
     ctx.assert_project(ta.project_id)
+    expected = int(ta.expected_links or 0)
+    if limit is None:
+        limit = expected + 2
+    limit = max(1, min(limit, MAX_SUGGESTIONS))
     items = await _suggest(
         db, ctx, project_id=ta.project_id, link_types=ta.link_type_names or [],
         user_label=ta.user_label, limit=limit,
@@ -253,6 +260,8 @@ async def suggest_for_task(
         "assignment_id": str(assignment_id),
         "project_id": str(ta.project_id),
         "link_types": ta.link_type_names or [],
+        "expected_links": expected,
+        "suggestion_target": limit,
         "items": items,
     }
 

@@ -1104,3 +1104,84 @@ async def decide_leave(
     row.decided_at = datetime.now(timezone.utc)
     await db.flush()
     return row
+
+
+# ── Task-sheet export (owner rule) ───────────────────────────────────────────
+TASK_EXPORT_HEADERS = [
+    "Task ID", "Date", "User", "Project", "Link types", "Target links",
+    "Priority", "Task note", "Suggested domain", "DA", "PA", "Spam", "AS",
+    "Why suggested", "Backlink URL (fill in)", "Anchor text (fill in)",
+    "Remarks (fill in)",
+]
+
+
+async def task_export_rows(
+    db: AsyncSession, ctx: AuthContext, *,
+    assignment_id: uuid.UUID | None = None,
+    day: date | None = None,
+    user_label: str | None = None,
+) -> tuple[list[str], list[list], str]:
+    """Rows for the hand-out work sheet: one row per suggested domain (the
+    task's assigned links + 2 spare), with EMPTY fill-in columns next to each
+    row so the builder pastes the backlink they created beside the domain it
+    was built on. Two modes: ONE task (``assignment_id``) or a whole day
+    (defaults to today). Label scoping is enforced by ``day_report`` /
+    ``visible_labels`` — a viewer only ever exports their own plan. The Task
+    ID + Suggested domain columns are stable keys, so the filled sheet can be
+    submitted back in a later phase."""
+    from app.models.project import Project
+    from app.services import recommendation_service
+
+    if assignment_id is not None:
+        ta = await db.get(TaskAssignment, assignment_id)
+        if ta is None or ta.workspace_id != ctx.workspace_id:
+            raise NotFoundError("Task not found")
+        report = await day_report(
+            db, ctx, date_from=ta.day, date_to=ta.day, user_label=ta.user_label
+        )
+        tasks = [r for r in report if r["id"] == str(assignment_id)]
+        if not tasks:  # outside the caller's label scope → same 404 as missing
+            raise NotFoundError("Task not found")
+        base = f"task-sheet_{ta.user_label}_{ta.day.isoformat()}"
+    else:
+        d = day or date.today()
+        tasks = await day_report(db, ctx, date_from=d, date_to=d, user_label=user_label)
+        base = f"task-sheet_{user_label or 'day'}_{d.isoformat()}"
+
+    project_names: dict[str, str] = {}
+    if tasks:
+        pids = {uuid.UUID(t["project_id"]) for t in tasks}
+        for pid, name in (
+            await db.execute(select(Project.id, Project.name).where(Project.id.in_(pids)))
+        ).all():
+            project_names[str(pid)] = name
+
+    rows: list[list] = []
+    for t in tasks:
+        sugg = await recommendation_service.suggest_for_task(
+            db, ctx, uuid.UUID(t["id"]), limit=None  # → assigned links + 2
+        )
+        items = sugg["items"]
+        # At least one row per link the person must build — pad with blank
+        # suggestion rows when the engine has fewer domains than the target,
+        # so every built link still has a line to be written on.
+        want = max(len(items), int(t["expected_links"] or 0), 1)
+        meta = [
+            t["id"], t["day"], t["user_label"],
+            project_names.get(t["project_id"], ""),
+            ", ".join(t["link_type_names"] or []),
+            t["expected_links"], t["priority"] or "", t["note"] or "",
+        ]
+        for i in range(want):
+            it = items[i] if i < len(items) else None
+            detail = (
+                [
+                    it["domain_key"], it.get("da"), it.get("pa"),
+                    it.get("spam_score"), it.get("semrush_as"),
+                    "; ".join(it.get("reasons") or []),
+                ]
+                if it is not None
+                else ["", None, None, None, None, "(no suggestion — pick your own domain)"]
+            )
+            rows.append(meta + detail + ["", "", ""])
+    return TASK_EXPORT_HEADERS, rows, base

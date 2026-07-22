@@ -6061,8 +6061,10 @@ function TaskDomainSuggestions({
     enabled: Boolean(token && assignmentId),
     retry: false,
     queryFn: () =>
-      api<{ items: Suggestion[]; link_types: string[] }>(
-        `/workforce/assignments/${assignmentId}/domain-suggestions?limit=8`,
+      // No limit param: the server sizes the list to the task's assigned
+      // links + 2 spare picks (5-link task -> 7, 10 -> 12).
+      api<{ items: Suggestion[]; link_types: string[]; expected_links?: number; suggestion_target?: number }>(
+        `/workforce/assignments/${assignmentId}/domain-suggestions`,
         { token }
       )
   });
@@ -6127,8 +6129,34 @@ function TaskDomainSuggestions({
   const items = sugg.data?.items || [];
   return (
     <div className="mt-3 border-t border-line pt-2">
-      <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
         Suggested domains for this task
+        {sugg.data?.suggestion_target ? (
+          <span
+            className="rounded bg-ocean/10 px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal text-ocean"
+            title={`Your task is ${sugg.data.expected_links ?? 0} links, so we list that many suggestions plus 2 spare picks.`}
+          >
+            {sugg.data.expected_links ?? 0} links + 2 spare
+          </span>
+        ) : null}
+        <span className="ml-auto flex items-center gap-1 normal-case tracking-normal">
+          {(["xlsx", "csv"] as const).map((fmt) => (
+            <button
+              key={fmt}
+              onClick={async () => {
+                await downloadAuthed(
+                  token,
+                  `/workforce/task-export?assignment_id=${assignmentId}&format=${fmt}`,
+                  `task-sheet.${fmt}`
+                );
+              }}
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[10px] font-semibold text-ink transition hover:bg-field"
+              title="Download this task's work sheet: the suggested domains with empty Backlink URL / Anchor / Remarks columns to fill in next to each row"
+            >
+              <Download className="h-3 w-3" /> {fmt === "xlsx" ? "Task sheet" : "CSV"}
+            </button>
+          ))}
+        </span>
         <HelpTip text="Source domains ranked for this task's link type and project. Type matching counts EVERY spelling variant (Web2.0 = WEB 2.0 = web-2.0 = Web 2.o) and related types (GBP Web 2.0 counts for a Web 2.0 task) — the chips show what each domain was really used for and how many links it already carries. Ranked by type fit, then quality (DA, qualified %, low spam). Robots-blocked, spammy, and already-used-in-this-project domains are excluded. Accept = you'll use it; Skip = don't show it again." />
       </div>
       {sugg.isLoading ? (
@@ -7385,18 +7413,36 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
       <div className={clsx("grid items-start gap-4", !focus && "xl:grid-cols-2")}>
         {showToday ? (
         <section className="rounded-xl border border-line bg-panel shadow-card" aria-labelledby="today-heading">
-          <div className="flex items-center justify-between pr-3">
+          <div className="flex items-center justify-between gap-2 pr-3">
             <SectionTitle title={
               isCurrentWeek
                 ? `Today · ${todayRows.length} task${todayRows.length === 1 ? "" : "s"}` +
                   (todayRows.length ? ` · ${Math.round(todayRows.reduce((a, r) => a + r.hours, 0) * 10) / 10}h` : "")
                 : "Today"
             } />
-            {todayRows.length > 4 ? (
-              <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
-                {showAllToday ? "Show less" : `View all ${todayRows.length}`}
-              </button>
-            ) : null}
+            <span className="flex items-center gap-2">
+              {isCurrentWeek && todayRows.length ? (
+                <button
+                  onClick={async () => {
+                    const ok = await downloadAuthed(
+                      token, `/workforce/task-export?day=${today}&format=xlsx`, `task-sheet_${today}.xlsx`
+                    );
+                    onNotice(ok
+                      ? "Today's task sheet downloaded — paste each backlink you build next to its suggested domain"
+                      : "Export failed — try again");
+                  }}
+                  className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-ink transition hover:bg-field"
+                  title="Download today's work sheet: every task's suggested domains with empty Backlink URL / Anchor / Remarks columns to fill in"
+                >
+                  <Download className="h-3 w-3" /> Today&apos;s sheet
+                </button>
+              ) : null}
+              {todayRows.length > 4 ? (
+                <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
+                  {showAllToday ? "Show less" : `View all ${todayRows.length}`}
+                </button>
+              ) : null}
+            </span>
           </div>
           <div className="space-y-2 p-3">
             {me.isLoading ? (
@@ -9709,6 +9755,28 @@ function BarCompare({
       </svg>
     </div>
   );
+}
+
+// Authenticated file download: Bearer fetch -> blob -> synthetic <a download>.
+// Same pattern the Backlinks/Reports exports use, shared so every desk can
+// pull server-built sheets without repeating the plumbing.
+async function downloadAuthed(token: string | null, path: string, filename: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (!res.ok) return false;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function downloadCsv(
@@ -22442,8 +22510,11 @@ function SheetsDesk({
             <h2 className="text-base font-semibold text-ink">Google Sheets</h2>
             <p className="text-sm text-muted">
               <span className="font-medium text-ink">Sync from main sheet</span> only discovers projects
-              (their name, sheet link + tabs). Then set each project&apos;s mapping — including any tabs
-              to ignore — and click <span className="font-medium text-ink">Sync</span> on that project to pull its links.
+              (their name, sheet link + tabs) and applies the main sheet&apos;s{" "}
+              <span className="font-medium text-ink">Status</span> column — a row marked Inactive pauses that
+              project (it leaves auto sync; its row Sync button keeps working manually). Then set each
+              project&apos;s mapping — including any tabs to ignore — and click{" "}
+              <span className="font-medium text-ink">Sync</span> on that project to pull its links.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
