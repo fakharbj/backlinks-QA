@@ -66,7 +66,14 @@ async def register(payload: RegisterRequest, request: Request, db: DbSession) ->
 
 @router.post("/login", response_model=TokenPair)
 async def login(payload: LoginRequest, request: Request, db: DbSession) -> TokenPair:
-    user = await auth_service.authenticate(db, email=payload.email, password=payload.password)
+    from app.services import login_ip_service
+
+    _ip0, _ua0 = _meta(request)
+    pre_ip = login_ip_service.client_ip(request) or _ip0
+    user = await auth_service.authenticate(
+        db, email=payload.email, password=payload.password,
+        ip_address=pre_ip, user_agent=_ua0,
+    )
     membership = await auth_service.default_workspace(db, user.id)
     if membership is None:
         await db.commit()
@@ -79,12 +86,13 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
     # Enforced AFTER credential+membership checks so exemptions can resolve;
     # blocked attempts are audited. Fail-open on internal errors — a broken
     # rules row must never lock the whole company out.
-    from app.services import login_ip_service
-
     real_ip = login_ip_service.client_ip(request) or ip
     try:
         rules = await login_ip_service.get_rules(db)
-        allowed, why = login_ip_service.is_allowed(rules, real_ip, user.id, membership.role.value)
+        team_mode = await login_ip_service.resolve_team_mode(db, rules, user.id)
+        allowed, why = login_ip_service.is_allowed(
+            rules, real_ip, user.id, membership.role.value, team_mode=team_mode
+        )
     except Exception:  # noqa: BLE001
         allowed, why = True, "rules unavailable (fail-open)"
     if not allowed:
@@ -115,15 +123,32 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
 
 
 @router.post("/refresh", response_model=TokenPair)
-async def refresh(payload: RefreshRequest, db: DbSession) -> TokenPair:
-    tokens = await auth_service.rotate_refresh(db, refresh_token=payload.refresh_token)
+async def refresh(payload: RefreshRequest, request: Request, db: DbSession) -> TokenPair:
+    from app.services import login_ip_service
+
+    ip = login_ip_service.client_ip(request)
+    ua = request.headers.get("user-agent")
+    try:
+        bind = bool((await login_ip_service.get_rules(db)).get("bind_sessions"))
+    except Exception:  # noqa: BLE001 — never let a rules problem kill refresh
+        bind = False
+    tokens = await auth_service.rotate_refresh(
+        db, refresh_token=payload.refresh_token,
+        ip_address=ip, user_agent=ua, enforce_ip_bind=bind,
+    )
     await db.commit()
     return tokens
 
 
 @router.post("/logout", response_model=Message)
-async def logout(payload: RefreshRequest, db: DbSession) -> Message:
-    await auth_service.logout(db, refresh_token=payload.refresh_token)
+async def logout(payload: RefreshRequest, request: Request, db: DbSession) -> Message:
+    from app.services import login_ip_service
+
+    await auth_service.logout(
+        db, refresh_token=payload.refresh_token,
+        ip_address=login_ip_service.client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     await db.commit()
     return Message(message="Logged out")
 

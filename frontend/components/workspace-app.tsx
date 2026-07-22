@@ -19224,13 +19224,125 @@ const QA_KNOB_META: Record<string, { label: string; help: string; group: string 
   render_wait_until: { label: "Render wait-until", help: "When the browser considers a page 'loaded' (networkidle is strictest).", group: "Rendering" }
 };
 
+// ── Settings → Security: the security activity log (admin) ──────────────────
+function SecurityLogCard({ token }: { token: string | null }) {
+  const [actionF, setActionF] = useState("");
+  const [q, setQ] = useState("");
+  const [qDeb, setQDeb] = useState("");
+  const [limit, setLimit] = useState(100);
+  useEffect(() => {
+    const t = window.setTimeout(() => setQDeb(q.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
+  type Row = {
+    created_at: string | null; action: string; actor: string; actor_email: string | null;
+    summary: string | null; ip_address: string | null; user_agent: string | null; entity_type: string | null;
+  };
+  const log = useQuery({
+    queryKey: ["security-log", token, actionF, qDeb, limit],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => {
+      const p = new URLSearchParams({ limit: String(limit) });
+      if (actionF) p.set("action", actionF);
+      if (qDeb) p.set("q", qDeb);
+      return api<{ items: Row[] }>(`/settings/security-log?${p.toString()}`, { token });
+    }
+  });
+  const rows = log.data?.items || [];
+  const actionChip = (a: string, et: string | null) => {
+    if (a === "login") return <span className="rounded-full bg-success/20 px-2 py-0.5 text-[11px] font-semibold text-success">Login</span>;
+    if (a === "login_failed") return <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger">Failed login</span>;
+    if (a === "logout") return <span className="rounded-full bg-field px-2 py-0.5 text-[11px] font-semibold text-muted">Logout / revoke</span>;
+    if (et === "login_ip_rules") return <span className="rounded-full bg-ocean/10 px-2 py-0.5 text-[11px] font-semibold text-ocean">IP rules</span>;
+    return <span className="rounded-full bg-plum/10 px-2 py-0.5 text-[11px] font-semibold text-plum">Account</span>;
+  };
+  const device = (ua: string | null) => {
+    if (!ua) return "—";
+    if (/mobile|android|iphone/i.test(ua)) return "Mobile";
+    const m = ua.match(/(Edg|Chrome|Firefox|Safari|Opera)\/[\d.]+/);
+    return m ? m[0].split("/")[0] : ua.slice(0, 24);
+  };
+  if (log.isError) return null;
+  return (
+    <section className="rounded-xl border border-line bg-panel shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+        <div>
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+            <History className="h-4 w-4 text-ocean" /> Security activity
+            <HelpTip text="Every security-relevant event from the audit trail: sign-ins, failed attempts (with IP + device), sign-outs and session revocations, IP-rule and account changes. Newest first." />
+          </h3>
+          <p className="text-xs text-muted">Logins · failed attempts · sessions · security changes</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {([["", "All"], ["login", "Logins"], ["login_failed", "Failed"], ["logout", "Sessions"], ["login_ip_rules,user", "Changes"]] as Array<[string, string]>).map(([v, l]) => (
+            <button
+              key={v}
+              onClick={() => setActionF(v)}
+              className={clsx(
+                "rounded-full border px-2.5 py-1 text-xs font-medium transition",
+                actionF === v ? "border-ocean bg-ocean/10 font-semibold text-ocean" : "border-line text-muted hover:text-ink"
+              )}
+            >
+              {l}
+            </button>
+          ))}
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search user / IP / text…"
+            className="h-8 w-48 rounded-lg border border-line bg-panel px-2 text-xs"
+          />
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[860px] text-left text-sm">
+          <thead className="bg-field text-xs uppercase text-muted">
+            <tr>
+              <Th>When</Th><Th>Event</Th><Th>User</Th><Th>Details</Th><Th>IP address</Th><Th>Device</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((r, i) => (
+              <tr key={i} className={clsx(r.action === "login_failed" && "bg-danger/5")}>
+                <Td><span className="whitespace-nowrap text-xs text-muted">{r.created_at ? formatDate(r.created_at) : "—"}</span></Td>
+                <Td>{actionChip(r.action, r.entity_type)}</Td>
+                <Td>
+                  <span className="font-medium text-ink">{r.actor}</span>
+                  {r.actor_email && r.actor_email !== r.actor ? <span className="block text-[11px] text-muted">{r.actor_email}</span> : null}
+                </Td>
+                <Td><span className="text-xs text-ink">{r.summary || "—"}</span></Td>
+                <Td><span className="font-mono text-xs text-muted">{r.ip_address || "—"}</span></Td>
+                <Td><span className="text-xs text-muted" title={r.user_agent || ""}>{device(r.user_agent)}</span></Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {log.isLoading ? <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div> : null}
+        {!log.isLoading && !rows.length ? <Empty label="No security events match." /> : null}
+        {rows.length >= limit && limit < 500 ? (
+          <div className="border-t border-line p-2 text-center">
+            <button onClick={() => setLimit((l) => Math.min(500, l + 100))} className="rounded-lg border border-line px-4 py-1.5 text-sm font-medium text-ink transition hover:bg-field">
+              Load more
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 // ── Settings → Security: login IP whitelist (multi IP/CIDR, per-user and
 // per-role overrides; precedence user > role > master switch) ────────────────
 function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
   type Rules = {
     enabled: boolean; ips: string[];
+    ip_notes?: Record<string, string>;
     user_overrides: Record<string, string>; role_overrides: Record<string, string>;
+    team_overrides?: Record<string, string>;
+    bind_sessions?: boolean;
     caller_ip: string | null;
   };
   const q = useQuery({
@@ -19246,30 +19358,65 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
     queryFn: () => api<TeamMember[]>("/team/members", { token })
   });
   const [enabled, setEnabled] = useState(false);
+  const [bindSessions, setBindSessions] = useState(false);
   const [ipsText, setIpsText] = useState("");
   const [roleOv, setRoleOv] = useState<Record<string, string>>({});
   const [userOv, setUserOv] = useState<Record<string, string>>({});
+  const [teamOv, setTeamOv] = useState<Record<string, string>>({});
+  const leadsQ = useQuery({
+    queryKey: ["team-leads", token],
+    enabled: Boolean(token),
+    retry: false,
+    queryFn: () => api<Array<{ manager_user_id: string; labels: string[] }>>("/team/leads", { token })
+  });
+  // "ip | note" per line <-> ips[] + ip_notes{}.
+  const parseIpLines = (text: string) => {
+    const ips: string[] = [];
+    const notes: Record<string, string> = {};
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      const [ip, ...rest] = line.split("|");
+      const key = ip.trim();
+      if (!key) continue;
+      ips.push(key);
+      const note = rest.join("|").trim();
+      if (note) notes[key] = note;
+    }
+    return { ips, notes };
+  };
   const [pickUser, setPickUser] = useState("");
   const [pickMode, setPickMode] = useState("exempt");
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     if (!q.data || loaded) return;
     setEnabled(q.data.enabled);
-    setIpsText((q.data.ips || []).join("\n"));
+    setBindSessions(Boolean(q.data.bind_sessions));
+    setIpsText((q.data.ips || []).map((ip) => {
+      const note = (q.data?.ip_notes || {})[ip];
+      return note ? `${ip} | ${note}` : ip;
+    }).join("\n"));
     setRoleOv(q.data.role_overrides || {});
     setUserOv(q.data.user_overrides || {});
+    setTeamOv(q.data.team_overrides || {});
     setLoaded(true);
   }, [q.data, loaded]);
   const save = useMutation({
     mutationFn: () =>
       api<Rules>("/settings/login-ips", {
         token, method: "PUT",
-        body: JSON.stringify({
-          enabled,
-          ips: ipsText.split("\n").map((x) => x.trim()).filter(Boolean),
-          role_overrides: roleOv,
-          user_overrides: userOv
-        })
+        body: JSON.stringify((() => {
+          const { ips, notes } = parseIpLines(ipsText);
+          return {
+            enabled,
+            bind_sessions: bindSessions,
+            ips,
+            ip_notes: notes,
+            role_overrides: roleOv,
+            user_overrides: userOv,
+            team_overrides: teamOv
+          };
+        })())
       }),
     onSuccess: () => {
       onNotice("Login IP rules saved.");
@@ -19280,7 +19427,7 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
   const memberName = (id: string) =>
     (membersQ.data || []).find((m) => m.user_id === id)?.full_name || id.slice(0, 8);
   const onSave = () => {
-    const list = ipsText.split("\n").map((x) => x.trim()).filter(Boolean);
+    const list = parseIpLines(ipsText).ips;
     const callerIp = q.data?.caller_ip || "";
     // Best-effort self-lockout warning: enabling with a non-empty list that
     // doesn't contain your IP (exact match check only — CIDR may still cover it).
@@ -19308,10 +19455,16 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
           </h3>
           <p className="text-xs text-muted">Controls new sign-ins only · your IP: <span className="font-mono text-ink">{q.data?.caller_ip || "…"}</span></p>
         </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="h-4 w-4 rounded border-line accent-[rgb(var(--ocean))]" />
-          Whitelist enabled
-        </label>
+        <span className="flex flex-wrap items-center gap-4">
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="h-4 w-4 rounded border-line accent-[rgb(var(--ocean))]" />
+            Whitelist enabled
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink" title="If a signed-in session's network address changes, it is signed out at the next token refresh and must log in again.">
+            <input type="checkbox" checked={bindSessions} onChange={(e) => setBindSessions(e.target.checked)} className="h-4 w-4 rounded border-line accent-[rgb(var(--ocean))]" />
+            Sign out on IP change
+          </label>
+        </span>
       </div>
       <div className="grid gap-4 p-4 lg:grid-cols-2">
         <div>
@@ -19333,10 +19486,10 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
             value={ipsText}
             onChange={(e) => setIpsText(e.target.value)}
             rows={7}
-            placeholder={"One per line:\n203.0.113.7\n10.1.0.0/24"}
+            placeholder={"One per line, optional remark after |\n203.0.113.7 | office static IP\n10.1.0.0/24 | HQ network"}
             className="w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-xs"
           />
-          <p className="mt-1 text-[11px] text-muted">Single IPs or CIDR networks (IPv4/IPv6). Office networks are easiest as a CIDR.</p>
+          <p className="mt-1 text-[11px] text-muted">Single IPs or CIDR networks (IPv4/IPv6). Add a remark after a pipe: <span className="font-mono">1.2.3.4 | office</span>.</p>
         </div>
         <div className="space-y-4">
           <div>
@@ -19358,8 +19511,32 @@ function LoginIpCard({ token, onNotice }: { token: string | null; onNotice: (tex
               ))}
             </div>
           </div>
+          {(leadsQ.data || []).length ? (
+            <div>
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Team rules (a TeamLead&apos;s whole team; beat role rules)</span>
+              <div className="mt-1.5 space-y-1.5">
+                {(leadsQ.data || []).map((l) => (
+                  <div key={l.manager_user_id} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-field/40 px-2.5 py-1.5">
+                    <span className="min-w-0 truncate text-sm font-medium text-ink" title={`Team: ${l.labels.join(", ") || "(no members set)"}`}>
+                      {memberName(l.manager_user_id)}&apos;s team
+                      <span className="ml-1 text-xs text-muted">({l.labels.length})</span>
+                    </span>
+                    <select
+                      value={teamOv[l.manager_user_id] || ""}
+                      onChange={(e) => setTeamOv((o) => { const nx = { ...o }; if (e.target.value) nx[l.manager_user_id] = e.target.value; else delete nx[l.manager_user_id]; return nx; })}
+                      className="h-8 rounded-md border border-line bg-panel px-2 text-xs"
+                    >
+                      <option value="">Follow role / master</option>
+                      <option value="exempt">Exempt — any IP</option>
+                      <option value="enforce">Always enforce</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div>
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Per-user exceptions (beat role rules)</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Per-user exceptions (beat team &amp; role rules)</span>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <SearchSelect
                 value={pickUser}
@@ -19805,7 +19982,10 @@ function SettingsDesk({
         <ProductivityCard token={token} onNotice={onNotice} />
         <QaSettingsCard token={token} onNotice={onNotice} />
       </>) : null}
-      {settingsTab === "security" ? <LoginIpCard token={token} onNotice={onNotice} /> : null}
+      {settingsTab === "security" ? (<>
+        <LoginIpCard token={token} onNotice={onNotice} />
+        <SecurityLogCard token={token} />
+      </>) : null}
       {settingsTab === "datahealth" ? <DataHealthCard token={token} /> : null}
       {settingsTab !== "projects" ? null : !projectId ? (
         <div className="rounded-xl border border-line bg-panel shadow-card">

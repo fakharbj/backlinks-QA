@@ -90,8 +90,11 @@ class QaSettingsIn(BaseModel):
 class LoginIpRulesIn(BaseModel):
     enabled: bool = False
     ips: list[str] = Field(default_factory=list)
+    ip_notes: dict[str, str] = Field(default_factory=dict)
     user_overrides: dict[str, str] = Field(default_factory=dict)
     role_overrides: dict[str, str] = Field(default_factory=dict)
+    team_overrides: dict[str, str] = Field(default_factory=dict)
+    bind_sessions: bool = False
 
 
 @router.get("/settings/login-ips")
@@ -121,6 +124,79 @@ async def put_login_ips(
     )
     await db.commit()
     return {**rules, "caller_ip": login_ip_service.client_ip(request)}
+
+
+@router.get("/settings/security-log")
+async def security_log(
+    db: ReadSession,
+    action: str | None = Query(None, max_length=200),  # comma list of audit actions
+    q: str | None = Query(None, max_length=200),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    ctx: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Security activity (admin): logins, failed logins (with IP + device),
+    logouts / session revocations, and security-settings changes — from the
+    audit trail, newest first."""
+    from sqlalchemy import or_
+
+    from app.models.user import User
+
+    sec_actions = [AuditAction.LOGIN, AuditAction.LOGIN_FAILED, AuditAction.LOGOUT]
+    base = or_(
+        AuditLog.action.in_(sec_actions),
+        AuditLog.entity_type.in_(("login_ip_rules", "user")),
+    )
+    stmt = (
+        select(AuditLog, User.email, User.full_name)
+        .outerjoin(User, User.id == AuditLog.actor_user_id)
+        .where(
+            or_(AuditLog.workspace_id == ctx.workspace_id, AuditLog.workspace_id.is_(None)),
+            base,
+        )
+    )
+    if action:
+        wanted = [a.strip().lower() for a in action.split(",") if a.strip()]
+        valid = [a for a in sec_actions if a.value in wanted]
+        extra_types = [t for t in ("login_ip_rules", "user") if t in wanted]
+        stmt = stmt.where(
+            or_(
+                AuditLog.action.in_(valid) if valid else AuditLog.action.is_(None),
+                AuditLog.entity_type.in_(extra_types) if extra_types else AuditLog.entity_type.is_(None),
+            )
+        )
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                AuditLog.summary.ilike(needle),
+                AuditLog.ip_address.ilike(needle),
+                User.email.ilike(needle),
+                User.full_name.ilike(needle),
+            )
+        )
+    rows = (
+        await db.execute(
+            stmt.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+                "action": log.action.value if hasattr(log.action, "value") else str(log.action),
+                "actor": name or email or (str(log.actor_user_id)[:8] if log.actor_user_id else "—"),
+                "actor_email": email,
+                "summary": log.summary,
+                "ip_address": log.ip_address,
+                "user_agent": log.user_agent,
+                "entity_type": log.entity_type,
+            }
+            for log, email, name in rows
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/qa-settings")

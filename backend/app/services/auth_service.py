@@ -67,7 +67,10 @@ async def register(
     return user, workspace
 
 
-async def authenticate(db: AsyncSession, *, email: str, password: str) -> User:
+async def authenticate(
+    db: AsyncSession, *, email: str, password: str,
+    ip_address: str | None = None, user_agent: str | None = None,
+) -> User:
     user = (
         await db.execute(select(User).where(User.email == email.lower()))
     ).scalar_one_or_none()
@@ -87,6 +90,7 @@ async def authenticate(db: AsyncSession, *, email: str, password: str) -> User:
         await audit_service.record(
             db, action=AuditAction.LOGIN_FAILED, actor_user_id=user.id,
             summary=f"Failed login ({user.failed_login_attempts})",
+            ip_address=ip_address, user_agent=user_agent,
         )
         raise AuthenticationError("Invalid email or password")
 
@@ -141,7 +145,9 @@ async def issue_tokens(
 
 
 async def rotate_refresh(
-    db: AsyncSession, *, refresh_token: str, workspace_id: uuid.UUID | None = None
+    db: AsyncSession, *, refresh_token: str, workspace_id: uuid.UUID | None = None,
+    ip_address: str | None = None, user_agent: str | None = None,
+    enforce_ip_bind: bool = False,
 ) -> TokenPair:
     try:
         payload = decode_token(refresh_token, expected_type="refresh")
@@ -190,6 +196,28 @@ async def rotate_refresh(
             raise AuthenticationError("Refresh token expired or revoked")
     jti = stored.jti
 
+    # IP-bound sessions (Settings → Security): if the network address changed
+    # since this session was issued, revoke it — the user signs in again.
+    # Runs AFTER the reuse-grace resolution so honest multi-tab races on one
+    # IP never trip it; only compares when BOTH sides are known (fail-open).
+    if (
+        enforce_ip_bind
+        and ip_address
+        and stored.ip_address
+        and stored.ip_address != ip_address
+    ):
+        stored.revoked = True
+        await revoke_jti(jti, _ttl(stored.expires_at))
+        await audit_service.record(
+            db, action=AuditAction.LOGOUT, actor_user_id=user_id,
+            summary=f"Session revoked — network address changed ({stored.ip_address} → {ip_address})",
+            ip_address=ip_address, user_agent=user_agent,
+        )
+        await db.commit()
+        raise AuthenticationError(
+            "Your session ended because your network address changed. Please sign in again."
+        )
+
     user = await db.get(User, user_id)
     if user is None or not user.is_active:
         raise AuthenticationError("User not found or inactive")
@@ -214,7 +242,13 @@ async def rotate_refresh(
     stored.revoked = True
     stored.replaced_by_jti = new_jti
     await revoke_jti(jti, _ttl(stored.expires_at))
-    db.add(RefreshToken(user_id=user.id, jti=new_jti, expires_at=expires))
+    db.add(RefreshToken(
+        user_id=user.id, jti=new_jti, expires_at=expires,
+        # Carry the session metadata: current values when the proxy supplied
+        # them, else whatever the lineage already knew.
+        ip_address=ip_address or stored.ip_address,
+        user_agent=user_agent or stored.user_agent,
+    ))
 
     return TokenPair(
         access_token=new_access,
@@ -223,7 +257,10 @@ async def rotate_refresh(
     )
 
 
-async def logout(db: AsyncSession, *, refresh_token: str) -> None:
+async def logout(
+    db: AsyncSession, *, refresh_token: str,
+    ip_address: str | None = None, user_agent: str | None = None,
+) -> None:
     try:
         payload = decode_token(refresh_token, expected_type="refresh")
     except jwt.PyJWTError:
@@ -235,6 +272,10 @@ async def logout(db: AsyncSession, *, refresh_token: str) -> None:
     if stored is not None and not stored.revoked:
         stored.revoked = True
         await revoke_jti(jti, _ttl(stored.expires_at))
+        await audit_service.record(
+            db, action=AuditAction.LOGOUT, actor_user_id=stored.user_id,
+            summary="Signed out", ip_address=ip_address, user_agent=user_agent,
+        )
 
 
 async def _revoke_user_tokens(db: AsyncSession, user_id: uuid.UUID) -> None:

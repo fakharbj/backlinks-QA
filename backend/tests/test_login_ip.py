@@ -75,3 +75,27 @@ def test_normalize_ips_validates():
     assert normalize_ips([" 203.0.113.7 ", "10.1.0.0/24", ""]) == ["203.0.113.7", "10.1.0.0/24"]
     with pytest.raises(ValidationAppError):
         normalize_ips(["not-an-ip"])
+
+
+def test_team_mode_precedence():
+    # Team override beats role; user override beats team.
+    r = rules(role_overrides={"viewer": "exempt"})
+    assert not is_allowed(r, "8.8.8.8", UID, "viewer", team_mode="enforce")[0]
+    r2 = rules(user_overrides={UID: "exempt"})
+    assert is_allowed(r2, "8.8.8.8", UID, "viewer", team_mode="enforce")[0]
+    # Team exempt beats master-on.
+    assert is_allowed(rules(), "8.8.8.8", UID, "viewer", team_mode="exempt")[0]
+
+
+def test_clean_keeps_notes_only_for_existing_normalized_entries():
+    from app.services.login_ip_service import _clean
+
+    out = _clean({
+        "enabled": True,
+        "ips": ["203.0.113.7/32", "10.1.0.0/24"],
+        "ip_notes": {"203.0.113.7": "office", "9.9.9.9": "gone", "bad": "x"},
+        "bind_sessions": True,
+    })
+    assert out["ips"] == ["203.0.113.7", "10.1.0.0/24"]
+    assert out["ip_notes"] == {"203.0.113.7": "office"}
+    assert out["bind_sessions"] is True

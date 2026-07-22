@@ -42,7 +42,22 @@ _MODES = ("exempt", "enforce")
 def defaults() -> dict:
     # Admins exempt out of the box — the owner's own example ("admin login
     # from any IP") and the guard against self-lockout when enabling.
-    return {"enabled": False, "ips": [], "user_overrides": {}, "role_overrides": {"admin": "exempt"}}
+    return {
+        "enabled": False,
+        "ips": [],
+        # Optional remark per whitelist entry, keyed by the NORMALIZED entry
+        # (normalize_ips output) so notes never silently detach.
+        "ip_notes": {},
+        "user_overrides": {},
+        "role_overrides": {"admin": "exempt"},
+        # Keyed by a TeamLead's user id — applies to everyone on that lead's
+        # team (labels via teamlead_users → employee mapping). Precedence:
+        # user > team > role > master.
+        "team_overrides": {},
+        # When on, a session whose network address changes is revoked at the
+        # next token refresh — the user must sign in again.
+        "bind_sessions": False,
+    }
 
 
 def client_ip(request: Request) -> str | None:
@@ -79,8 +94,23 @@ def normalize_ips(ips: list[str]) -> list[str]:
 def _clean(payload: dict) -> dict:
     rules = defaults()
     rules["enabled"] = bool(payload.get("enabled", False))
+    rules["bind_sessions"] = bool(payload.get("bind_sessions", False))
     rules["ips"] = normalize_ips(list(payload.get("ips") or []))
-    for field in ("user_overrides", "role_overrides"):
+    # Notes survive only for entries that still exist, keyed by normalized form.
+    notes_in = dict(payload.get("ip_notes") or {})
+    normalized_notes: dict[str, str] = {}
+    for k, v in notes_in.items():
+        note = str(v or "").strip()[:120]
+        if not note:
+            continue
+        try:
+            key = normalize_ips([str(k)])[0]
+        except (ValidationAppError, IndexError):
+            continue
+        if key in rules["ips"]:
+            normalized_notes[key] = note
+    rules["ip_notes"] = normalized_notes
+    for field in ("user_overrides", "role_overrides", "team_overrides"):
         cleaned: dict[str, str] = {}
         for k, v in dict(payload.get(field) or {}).items():
             mode = str(v or "").strip().lower()
@@ -93,9 +123,16 @@ def _clean(payload: dict) -> dict:
     return rules
 
 
-def is_allowed(rules: dict, ip: str | None, user_id: uuid.UUID | str, role: str) -> tuple[bool, str]:
-    """Pure decision: may this user log in from this IP? Returns (allowed, why)."""
+def is_allowed(
+    rules: dict, ip: str | None, user_id: uuid.UUID | str, role: str,
+    team_mode: str | None = None,
+) -> tuple[bool, str]:
+    """Pure decision: may this user log in from this IP? Returns (allowed, why).
+    ``team_mode`` is the pre-resolved team override (async lookup — see
+    resolve_team_mode); precedence: user > team > role > master."""
     mode = (rules.get("user_overrides") or {}).get(str(user_id))
+    if mode is None:
+        mode = team_mode
     if mode is None:
         mode = (rules.get("role_overrides") or {}).get(str(role or "").lower())
     if mode is None:
@@ -118,6 +155,50 @@ def is_allowed(rules: dict, ip: str | None, user_id: uuid.UUID | str, role: str)
         except ValueError:
             continue  # a bad stored entry never blocks evaluation of the rest
     return False, "IP not in the whitelist"
+
+
+async def resolve_team_mode(
+    db: AsyncSession, rules: dict, user_id: uuid.UUID
+) -> str | None:
+    """Team-based access: if any TeamLead override covers this user (their
+    sheet labels appear in that lead's team), return its mode. 'enforce' wins
+    when several leads disagree. None when no team override applies."""
+    overrides = {str(k): v for k, v in (rules.get("team_overrides") or {}).items()}
+    if not overrides:
+        return None
+    from app.models.employee import UserEmployeeMapping
+    from app.models.workforce import TeamLeadAssignment
+
+    ws = await _primary_workspace_id(db)
+    if ws is None:
+        return None
+    labels = [
+        (lbl or "").strip().lower()
+        for lbl in (
+            await db.execute(
+                select(UserEmployeeMapping.sheet_user_label).where(
+                    UserEmployeeMapping.workspace_id == ws,
+                    UserEmployeeMapping.user_id == user_id,
+                    UserEmployeeMapping.canonical_label.is_(None),
+                )
+            )
+        ).scalars().all()
+        if lbl and lbl.strip()
+    ]
+    if not labels:
+        return None
+    lead_ids = (
+        await db.execute(
+            select(TeamLeadAssignment.manager_user_id).where(
+                TeamLeadAssignment.workspace_id == ws,
+                TeamLeadAssignment.member_label.in_(labels),
+            ).distinct()
+        )
+    ).scalars().all()
+    modes = {overrides[str(lid)] for lid in lead_ids if str(lid) in overrides}
+    if not modes:
+        return None
+    return "enforce" if "enforce" in modes else "exempt"
 
 
 async def _primary_workspace_id(db: AsyncSession) -> uuid.UUID | None:
