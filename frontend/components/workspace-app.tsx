@@ -127,6 +127,7 @@ export function WorkspaceApp() {
   // Users desk reports which person is open so admin nav shows the sections too.
   const [dashSection, setDashSection] = useState<DashSection>("overview");
   const [dashPerson, setDashPerson] = useState<string | null>(null);
+  const [tasksSection, setTasksSection] = useState<TasksSection>("planner");
   // Toast stack: EVERY onNotice(text) becomes its OWN stacked popup with a
   // timestamp — two rapid notifications are two visibly separate panels, never
   // one panel whose text morphs. Up to 6 stack; each auto-dismisses on its own
@@ -413,13 +414,16 @@ export function WorkspaceApp() {
               dashSection={dashSection}
               onDashSection={setDashSection}
               dashSubFor={tab === "mydash" ? "mydash" : tab === "users" && dashPerson ? "users" : null}
+              tasksSection={tasksSection}
+              onTasksSection={setTasksSection}
             />
           </div>
         </aside>
         <section key={`${tab}-${activeProjectId}`} className="desk-enter min-w-0 flex-1 space-y-5">
           <MobileNav activeTab={tab} onTab={setTab} inProject={Boolean(activeProjectId)} role={role}
             dashSection={dashSection} onDashSection={setDashSection}
-            dashSubFor={tab === "mydash" ? "mydash" : tab === "users" && dashPerson ? "users" : null} />
+            dashSubFor={tab === "mydash" ? "mydash" : tab === "users" && dashPerson ? "users" : null}
+            tasksSection={tasksSection} onTasksSection={setTasksSection} />
           {role !== "viewer" ? (
             <div className="lg:hidden">
               <ProjectPanel
@@ -500,7 +504,7 @@ export function WorkspaceApp() {
               section={dashSection} onSectionChange={setDashSection} onPersonChange={setDashPerson} />
           ) : null}
           {tab === "tasks" ? (
-            <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} />
+            <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} section={tasksSection} />
           ) : null}
           {tab === "alerts" ? (
             <AlertsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
@@ -882,6 +886,17 @@ const DASH_SECTIONS: Array<[DashSection, string, NavIcon, string]> = [
 // live in My Work / My calendar already (owner request: avoid the duplicate).
 const dashSectionsFor = (viewer: boolean) =>
   viewer ? DASH_SECTIONS.filter(([sid]) => sid !== "calendar") : DASH_SECTIONS;
+
+// Tasks & Calendar splits into clear sub-pages (owner rule: one nav item held
+// too much). Same sidebar pattern as the dashboard sections above.
+type TasksSection = "planner" | "byuser" | "byproject" | "workingdays" | "leave";
+const TASKS_SECTIONS: Array<[TasksSection, string, NavIcon, string]> = [
+  ["planner", "Planner & calendar", CalendarDays, "Week-by-week tasks & assigning"],
+  ["byuser", "Completion by user", Users, "Done vs target per person"],
+  ["byproject", "Completion by project", Layers, "Done vs target per project"],
+  ["workingdays", "Working days", Sun, "Company off-day calendar"],
+  ["leave", "Leave requests", History, "Request · approve · history"]
+];
 
 // Every tab's human label (breadcrumb + palette) — derived from the nav
 // definitions so it can never drift from the sidebar.
@@ -1664,7 +1679,9 @@ function Sidebar({
   role,
   dashSection,
   onDashSection,
-  dashSubFor
+  dashSubFor,
+  tasksSection,
+  onTasksSection
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
@@ -1679,6 +1696,9 @@ function Sidebar({
   dashSection: DashSection;
   onDashSection: (s: DashSection) => void;
   dashSubFor: Tab | null;
+  // Tasks & Calendar sub-pages (same expandable pattern).
+  tasksSection: TasksSection;
+  onTasksSection: (s: TasksSection) => void;
 }) {
   // ── Rail (collapsed) mode + per-group collapse, both remembered. Hydrated
   // in effects (never in initializers) so static prerender stays clean. ──
@@ -1903,6 +1923,32 @@ function Sidebar({
                       })}
                     </div>
                   ) : null}
+                  {/* Tasks & Calendar expands into its sub-pages the same way. */}
+                  {id === "tasks" && active ? (
+                    <div className="ml-3.5 mt-1 space-y-0.5 border-l-2 border-ocean/25 pl-2 pb-1">
+                      {TASKS_SECTIONS.map(([sid, slabel, SIcon, sdesc]) => {
+                        const son = tasksSection === sid;
+                        return (
+                          <button
+                            key={sid}
+                            onClick={() => { onTab(id); onTasksSection(sid); }}
+                            className={clsx(
+                              "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition",
+                              son ? "bg-ocean/10" : "hover:bg-field"
+                            )}
+                          >
+                            <SIcon className={clsx("mt-0.5 h-3.5 w-3.5 shrink-0", son ? "text-ocean" : "text-muted")} />
+                            <span className="min-w-0">
+                              <span className={clsx("block text-[13px] leading-tight", son ? "font-semibold text-ocean" : "font-medium text-ink")}>
+                                {slabel}
+                              </span>
+                              <span className="block truncate text-[10px] leading-tight text-muted">{sdesc}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                   </Fragment>
                 );
               })}
@@ -1923,7 +1969,9 @@ function MobileNav({
   role,
   dashSection,
   onDashSection,
-  dashSubFor
+  dashSubFor,
+  tasksSection,
+  onTasksSection
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
@@ -1932,6 +1980,8 @@ function MobileNav({
   dashSection: DashSection;
   onDashSection: (s: DashSection) => void;
   dashSubFor: Tab | null;
+  tasksSection: TasksSection;
+  onTasksSection: (s: TasksSection) => void;
 }) {
   return (
     <nav aria-label="Primary (mobile)" className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-panel p-1 shadow-card scrollbar-thin lg:hidden">
@@ -1959,6 +2009,22 @@ function MobileNav({
                 className={clsx(
                   "flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition",
                   dashSection === sid ? "border-ocean/40 bg-ocean/10 font-semibold text-ocean" : "border-line text-muted hover:bg-field"
+                )}
+              >
+                <SIcon className="h-3.5 w-3.5" />
+                {slabel}
+              </button>
+            ))
+          : null}
+        {activeTab === id && id === "tasks"
+          ? TASKS_SECTIONS.map(([sid, slabel, SIcon]) => (
+              <button
+                key={sid}
+                onClick={() => { onTab(id); onTasksSection(sid); }}
+                title={slabel}
+                className={clsx(
+                  "flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition",
+                  tasksSection === sid ? "border-ocean/40 bg-ocean/10 font-semibold text-ocean" : "border-line text-muted hover:bg-field"
                 )}
               >
                 <SIcon className="h-3.5 w-3.5" />
@@ -7279,12 +7345,16 @@ function TasksDesk({
   token,
   projectId,
   projects,
-  onNotice
+  onNotice,
+  section = "planner"
 }: {
   token: string | null;
   projectId: string;
   projects: Project[];
   onNotice: (text: string) => void;
+  // Which sub-page the sidebar selected (Planner / By user / By project /
+  // Working days / Leave) — one page at a time, owner nav rule.
+  section?: TasksSection;
 }) {
   const queryClient = useQueryClient();
   // Local-safe date helpers (no UTC off-by-one).
@@ -7482,15 +7552,6 @@ function TasksDesk({
     for (const d of [...(weekCal1.data || []), ...(weekCal2.data || [])]) m.set(d.day, d.is_working);
     return m;
   }, [weekCal1.data, weekCal2.data]);
-  const productivity = useQuery({
-    queryKey: ["productivity", token],
-    enabled: Boolean(token),
-    queryFn: () =>
-      api<{
-        global: Array<{ link_type_name: string; links_per_hour: number }>;
-        overrides: Array<{ user_label: string; link_type_name: string; links_per_hour: number }>;
-      }>("/workforce/productivity", { token })
-  });
   const leaves = useQuery({
     queryKey: ["leaves", token],
     enabled: Boolean(token),
@@ -7641,34 +7702,6 @@ function TasksDesk({
     },
     onError: (e: Error) => onNotice(e.message)
   });
-  const saveProductivity = useMutation({
-    mutationFn: (p: { link_type_name: string; links_per_hour: number; user_label?: string }) =>
-      api<{ message: string }>("/workforce/productivity", {
-        token,
-        method: "PUT",
-        body: JSON.stringify(p)
-      }),
-    onSuccess: () => {
-      onNotice("Productivity saved");
-      queryClient.invalidateQueries({ queryKey: ["productivity"] });
-    },
-    onError: (e: Error) => onNotice(e.message)
-  });
-  const removeOverride = useMutation({
-    mutationFn: (p: { user_label: string; link_type_name: string }) =>
-      api<{ message: string }>(
-        `/workforce/productivity?user_label=${encodeURIComponent(p.user_label)}&link_type_name=${encodeURIComponent(p.link_type_name)}`,
-        { token, method: "DELETE" }
-      ),
-    onSuccess: () => {
-      onNotice("Override removed — global rate applies again");
-      queryClient.invalidateQueries({ queryKey: ["productivity"] });
-    },
-    onError: (e: Error) => onNotice(e.message)
-  });
-  const [ovUser, setOvUser] = useState("");
-  const [ovType, setOvType] = useState("");
-  const [ovLph, setOvLph] = useState("");
   const toggleDay = useMutation({
     mutationFn: (p: { day: string; is_working: boolean }) =>
       api<{ message: string }>("/workforce/calendar", { token, method: "PUT", body: JSON.stringify(p) }),
@@ -7678,19 +7711,26 @@ function TasksDesk({
   const [lvUser, setLvUser] = useState("");
   const [lvFrom, setLvFrom] = useState(todayIso);
   const [lvTo, setLvTo] = useState(todayIso);
+  const [lvReason, setLvReason] = useState("");
   const requestLeave = useMutation({
     mutationFn: () =>
       api<{ id: string }>("/workforce/leaves", {
         token,
         method: "POST",
-        body: JSON.stringify({ user_label: lvUser.trim(), start_date: lvFrom, end_date: lvTo })
+        body: JSON.stringify({ user_label: lvUser.trim(), start_date: lvFrom, end_date: lvTo, reason: lvReason.trim() || null })
       }),
     onSuccess: () => {
       onNotice("Leave request submitted");
+      setLvReason("");
       queryClient.invalidateQueries({ queryKey: ["leaves"] });
     },
     onError: (e: Error) => onNotice(e.message)
   });
+  // Completion pages read the from/to date inputs — align the range plumbing.
+  useEffect(() => {
+    if (section === "byuser" || section === "byproject") setView("list");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
   const decideLeave = useMutation({
     mutationFn: (p: { id: string; approve: boolean }) =>
       api<{ status: string }>(`/workforce/leaves/${p.id}?approve=${p.approve}`, { token, method: "PATCH" }),
@@ -7718,17 +7758,34 @@ function TasksDesk({
   return (
     <section className="space-y-5">
       <div>
-        <h2 className="text-base font-semibold text-ink">Tasks & calendar</h2>
+        <h2 className="text-base font-semibold text-ink">
+          {TASKS_SECTIONS.find(([sid]) => sid === section)?.[1] || "Tasks & calendar"}
+        </h2>
         <p className="text-sm text-muted">
-          Plan each person&apos;s day (hours × link types → expected links), then track completion
-          against that day&apos;s plan. Approved leave and non-working days don&apos;t count against anyone.
+          {section === "planner"
+            ? "Plan each person's day (hours × link types → expected links), then track completion against that day's plan. Approved leave and non-working days don't count against anyone."
+            : section === "byuser"
+              ? "Done vs target per person for the chosen date range — excused days (leave, off days) never count against anyone."
+              : section === "byproject"
+                ? "Done vs target per project for the chosen date range."
+                : section === "workingdays"
+                  ? "Company calendar: click a day to toggle it working/off. Off days excuse everyone's plans."
+                  : "Request leave and manage approvals — approved leave excuses those days everywhere."}
         </p>
       </div>
 
-      {/* Where the time goes — hours & completion by person and by project */}
-      {visibleRows.length ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {statGroups.map(([title, keyOf, labelOf]) => {
+      {/* Completion sections (By user / By project) — their own pages now. */}
+      {section === "byuser" || section === "byproject" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted">Date range</span>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <DateRangePresets from={from} to={to} onChange={(f, t) => { setFrom(f); setTo(t); }} />
+        </div>
+      ) : null}
+      {(section === "byuser" || section === "byproject") && visibleRows.length ? (
+        <div className="grid gap-4">
+          {statGroups.filter(([title]) => (section === "byuser" ? title === "By person" : title === "By project")).map(([title, keyOf, labelOf]) => {
             const agg = new Map<string, { hours: number; target: number; done: number }>();
             for (const r of visibleRows) {
               const k = keyOf(r);
@@ -7783,7 +7840,7 @@ function TasksDesk({
       ) : null}
 
       {/* Office hours — live status chip (config in Settings → Office hours). */}
-      {officeHours.data ? (
+      {section === "planner" && officeHours.data ? (
         <div className={clsx(
           "flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium",
           officeHours.data.in_hours ? "border-ocean/40 bg-ocean/10 text-ocean" : "border-line bg-panel text-muted"
@@ -7798,6 +7855,7 @@ function TasksDesk({
       ) : null}
 
       {/* Plan vs done — weekly planner (day-wise, like the old sheet), project view, list */}
+      {section === "planner" ? (
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
@@ -8430,9 +8488,11 @@ function TasksDesk({
         </div>
         )}
       </section>
+      ) : null}
 
       {/* Assign — a MODAL so clicking a planner chip edits in place without
           losing sight of the calendar (the old below-the-page form was invisible). */}
+      {section === "planner" ? (
       <div>
         <button
           onClick={() => setShowAssign(true)}
@@ -8442,6 +8502,7 @@ function TasksDesk({
           Assign work
         </button>
       </div>
+      ) : null}
       {showAssign ? (
       <div
         className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[8vh] backdrop-blur-sm"
@@ -8532,90 +8593,10 @@ function TasksDesk({
       </div>
       ) : null}
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        {/* Productivity settings */}
-        <section className="rounded-xl border border-line bg-panel shadow-card">
-          <SectionTitle title="Productivity (links per hour) — personal rates first" />
-          <div className="border-b border-line">
-            <p className="flex items-center gap-1.5 px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
-              Per-person rates (highest priority)
-              <HelpTip text="A personal rate for one link type, e.g. a fast profile-link builder. It beats the global rate above when calculating that person's expected links. Remove it to fall back to the global rate." />
-            </p>
-            <div className="divide-y divide-line">
-              {(productivity.data?.overrides || []).map((o) => (
-                <div key={`${o.user_label}|${o.link_type_name}`} className="flex items-center justify-between gap-3 px-3 py-2">
-                  <span className="text-sm text-ink">
-                    <span className="font-medium">{o.user_label}</span>
-                    <span className="text-muted"> · {o.link_type_name}</span>
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-ink">{o.links_per_hour}/h</span>
-                    <button
-                      onClick={() => removeOverride.mutate({ user_label: o.user_label, link_type_name: o.link_type_name })}
-                      className="text-xs text-muted hover:text-danger hover:underline"
-                    >
-                      Remove
-                    </button>
-                  </span>
-                </div>
-              ))}
-              {!(productivity.data?.overrides || []).length ? (
-                <p className="px-3 py-2 text-xs text-muted">No personal rates yet — everyone uses the global rates above.</p>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap items-end gap-2 p-3">
-              <input value={ovUser} onChange={(e) => setOvUser(e.target.value)} placeholder="User (sheet name)…" className="h-9 w-36 rounded-lg border border-line bg-panel px-2 text-sm" />
-              <select value={ovType} onChange={(e) => setOvType(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
-                <option value="">Link type…</option>
-                {Array.from(
-                  new Set([
-                    ...(linkTypes.data || []).filter((t) => t.is_active).map((t) => t.name),
-                    ...(productivity.data?.global || []).map((g) => g.link_type_name)
-                  ])
-                )
-                  .sort((a, b) => a.localeCompare(b))
-                  .map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-              </select>
-              <input type="number" min={0.1} step={0.5} value={ovLph} onChange={(e) => setOvLph(e.target.value)} placeholder="links/h" className="h-9 w-24 rounded-lg border border-line bg-panel px-2 text-sm" />
-              <button
-                onClick={() => {
-                  saveProductivity.mutate({ link_type_name: ovType, links_per_hour: Number(ovLph), user_label: ovUser.trim() });
-                  setOvUser(""); setOvType(""); setOvLph("");
-                }}
-                disabled={saveProductivity.isPending || !ovUser.trim() || !ovType || !(Number(ovLph) > 0)}
-                className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
-              >
-                Add override
-              </button>
-            </div>
-          </div>
-          <p className="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
-            Global default rates (used when no personal rate exists)
-          </p>
-          <div className="divide-y divide-line">
-            {(productivity.data?.global || []).map((g) => (
-              <div key={g.link_type_name} className="flex items-center justify-between gap-3 p-3">
-                <span className="text-sm font-medium text-ink">{g.link_type_name}</span>
-                <input
-                  type="number"
-                  min={0.1}
-                  step={0.5}
-                  defaultValue={g.links_per_hour}
-                  onBlur={(e) => {
-                    const v = Number(e.target.value);
-                    if (v > 0 && v !== g.links_per_hour)
-                      saveProductivity.mutate({ link_type_name: g.link_type_name, links_per_hour: v });
-                  }}
-                  className="h-8 w-24 rounded-lg border border-line bg-panel px-2 text-right text-sm"
-                />
-              </div>
-            ))}
-            {!(productivity.data?.global || []).length ? <Empty label="No link types yet." /> : null}
-          </div>
-        </section>
-
+      {/* Working days — its own page (owner nav rule). Productivity rates moved
+          to Settings → QA & rates (single home). */}
+      {section === "workingdays" ? (
+      <div className="max-w-2xl">
         {/* Working-days calendar */}
         <section className="rounded-xl border border-line bg-panel shadow-card">
           <div className="flex items-center justify-between border-b border-line p-3">
@@ -8658,21 +8639,32 @@ function TasksDesk({
           </p>
         </section>
       </div>
+      ) : null}
 
-      {/* Leave */}
+      {/* Leave — its own page: request (right here, owner rule) + approvals. */}
+      {section === "leave" ? (
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <SectionTitle title="Leave requests" />
         <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
-          <input value={lvUser} onChange={(e) => setLvUser(e.target.value)} placeholder="User…" className="h-9 w-36 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <SearchSelect
+            value={lvUser}
+            onChange={setLvUser}
+            options={(knownLabels.data || []).map((l) => ({ value: l }))}
+            placeholder="Person…"
+            allowCustom
+            width="w-44"
+          />
           <input type="date" value={lvFrom} onChange={(e) => setLvFrom(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
           <input type="date" value={lvTo} onChange={(e) => setLvTo(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <input value={lvReason} onChange={(e) => setLvReason(e.target.value)} placeholder="Reason (optional)…" className="h-9 w-56 rounded-lg border border-line bg-panel px-2 text-sm" />
           <button
             onClick={() => requestLeave.mutate()}
             disabled={requestLeave.isPending || !lvUser.trim()}
-            className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
+            className="h-9 rounded-lg bg-ocean px-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             Request leave
           </button>
+          <span className="text-xs text-muted">Approved leave excuses those days everywhere.</span>
         </div>
         <div className="divide-y divide-line">
           {(leaves.data || []).map((l) => (
@@ -8695,6 +8687,7 @@ function TasksDesk({
           {!leaves.isLoading && !(leaves.data || []).length ? <Empty label="No leave requests." /> : null}
         </div>
       </section>
+      ) : null}
     </section>
   );
 }
@@ -19481,11 +19474,30 @@ function ProductivityCard({ token, onNotice }: { token: string | null; onNotice:
     queryFn: () => api<Prod>("/workforce/productivity", { token })
   });
   const save = useMutation({
-    mutationFn: (p: { link_type_name: string; links_per_hour: number }) =>
+    mutationFn: (p: { link_type_name: string; links_per_hour: number; user_label?: string }) =>
       api<{ message: string }>("/workforce/productivity", { token, method: "PUT", body: JSON.stringify(p) }),
-    onSuccess: () => { onNotice("Global rate saved"); queryClient.invalidateQueries({ queryKey: ["productivity"] }); },
+    onSuccess: () => { onNotice("Rate saved"); queryClient.invalidateQueries({ queryKey: ["productivity"] }); },
     onError: (e: Error) => onNotice(e.message)
   });
+  // Per-person overrides moved here from the Tasks desk (owner nav rule) —
+  // Settings is the single home for rates now.
+  const removeOverride = useMutation({
+    mutationFn: (p: { user_label: string; link_type_name: string }) =>
+      api<{ message: string }>(
+        `/workforce/productivity?user_label=${encodeURIComponent(p.user_label)}&link_type_name=${encodeURIComponent(p.link_type_name)}`,
+        { token, method: "DELETE" }
+      ),
+    onSuccess: () => { onNotice("Override removed — global rate applies again"); queryClient.invalidateQueries({ queryKey: ["productivity"] }); },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const labelsQ = useQuery({
+    queryKey: ["workforce-labels", token],
+    enabled: Boolean(token),
+    queryFn: () => api<string[]>("/workforce/labels", { token })
+  });
+  const [ovUser, setOvUser] = useState("");
+  const [ovType, setOvType] = useState("");
+  const [ovLph, setOvLph] = useState("");
   const rows = q.data?.global || [];
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
@@ -19514,7 +19526,55 @@ function ProductivityCard({ token, onNotice }: { token: string | null; onNotice:
           ))}
         </div>
       )}
-      <p className="px-4 py-2 text-[11px] text-muted">Per-person overrides live in the Tasks desk (they win over these).</p>
+      {/* Per-person rates — they beat the global rates above. */}
+      <div className="border-t border-line">
+        <p className="flex items-center gap-1.5 px-4 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
+          Per-person rates (highest priority)
+          <HelpTip text="A personal rate for one link type, e.g. a fast profile-link builder. It beats the global rate when calculating that person's expected links. Remove it to fall back to the global rate." />
+        </p>
+        <div className="divide-y divide-line">
+          {(q.data?.overrides || []).map((o) => (
+            <div key={`${o.user_label}|${o.link_type_name}`} className="flex items-center justify-between gap-3 px-4 py-2">
+              <span className="text-sm text-ink">
+                <span className="font-medium capitalize">{o.user_label}</span>
+                <span className="text-muted"> · {linkTypeLabel(o.link_type_name)}</span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-ink">{o.links_per_hour}/h</span>
+                <button
+                  onClick={() => removeOverride.mutate({ user_label: o.user_label, link_type_name: o.link_type_name })}
+                  className="text-xs text-muted hover:text-danger hover:underline"
+                >
+                  Remove
+                </button>
+              </span>
+            </div>
+          ))}
+          {!(q.data?.overrides || []).length ? (
+            <p className="px-4 py-2 text-xs text-muted">No personal rates yet — everyone uses the global rates above.</p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-end gap-2 p-4">
+          <SearchSelect value={ovUser} onChange={setOvUser} options={(labelsQ.data || []).map((l) => ({ value: l }))} placeholder="Person…" allowCustom width="w-40" />
+          <select value={ovType} onChange={(e) => setOvType(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+            <option value="">Link type…</option>
+            {rows.map((g) => (
+              <option key={g.link_type_name} value={g.link_type_name}>{linkTypeLabel(g.link_type_name)}</option>
+            ))}
+          </select>
+          <input type="number" min={0.1} step={0.5} value={ovLph} onChange={(e) => setOvLph(e.target.value)} placeholder="links/h" className="h-9 w-24 rounded-lg border border-line bg-panel px-2 text-sm" />
+          <button
+            onClick={() => {
+              save.mutate({ link_type_name: ovType, links_per_hour: Number(ovLph), user_label: ovUser.trim() });
+              setOvUser(""); setOvType(""); setOvLph("");
+            }}
+            disabled={save.isPending || !ovUser.trim() || !ovType || !(Number(ovLph) > 0)}
+            className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-ink transition hover:bg-field disabled:opacity-50"
+          >
+            Add override
+          </button>
+        </div>
+      </div>
     </section>
   );
 }

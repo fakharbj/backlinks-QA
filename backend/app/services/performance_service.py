@@ -36,6 +36,24 @@ _LINK_TS_E = "coalesce(e.placement_date, e.created_at)"     # same, for the "fir
 _LINK_DAY_RAW = "coalesce(placement_date, created_at::date)"  # ::date (actuals CTEs, no alias)
 
 
+def completion_cutoff() -> "date | None":
+    """Owner rule: task-completion metrics start fresh at
+    ``TASK_COMPLETION_START_DATE`` — assignments planned before it are ignored
+    by every completion aggregate (plan stats, weekly target-vs-done, project
+    effort). Returns None when the knob is empty/invalid (no cutoff)."""
+    from datetime import date as _date
+
+    from app.core.config import settings as _settings
+
+    raw = (_settings.TASK_COMPLETION_START_DATE or "").strip()
+    if not raw:
+        return None
+    try:
+        return _date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def _scope(ctx: AuthContext, project_id: uuid.UUID | None) -> tuple[str, dict]:
     clause = "b.workspace_id = :ws"
     params: dict = {"ws": ctx.workspace_id}
@@ -195,9 +213,13 @@ async def user_dashboard(
     # Plan vs done — excusal-aware in SQL so ANY window length works (the
     # interactive day-report is capped at 92 days).
     async def _plan_stats(a: datetime, b: datetime) -> dict:
+        cut = completion_cutoff()
         p = {
             "ws": ctx.workspace_id, "label": user_label,
             "f": a.date(), "t": b.date(),
+            # Completion clock starts at the owner cutoff — earlier plans are
+            # ignored by the METRICS (planner views still show them).
+            "pf": max(a.date(), cut) if cut else a.date(),
         }
         proj_clause = ""
         if project_id is not None:
@@ -234,7 +256,7 @@ async def user_dashboard(
                   ON act.project_id = a.project_id AND act.d = a.day
                  AND act.u = lower(a.user_label)
                 WHERE a.workspace_id = :ws AND lower(a.user_label) = lower(:label)
-                  AND a.day >= :f AND a.day <= :t{proj_clause}
+                  AND a.day >= :pf AND a.day <= :t{proj_clause}
             )
             SELECT count(*)                                            AS assignments,
                    coalesce(sum(hours), 0)                             AS hours_assigned,
@@ -290,10 +312,12 @@ async def user_dashboard(
         GROUP BY 1
         """
     )
+    _cut = completion_cutoff()
     for r in (
         await db.execute(
             plan_proj_sql,
-            {"ws": ctx.workspace_id, "label": user_label, "f": t0.date(), "t": t1.date()},
+            {"ws": ctx.workspace_id, "label": user_label,
+             "f": max(t0.date(), _cut) if _cut else t0.date(), "t": t1.date()},
         )
     ).mappings().all():
         key = str(r["project_id"])
@@ -361,7 +385,7 @@ async def user_dashboard(
         FROM task_assignments a
         LEFT JOIN actuals act ON act.project_id = a.project_id AND act.d = a.day
         WHERE a.workspace_id = :ws AND lower(a.user_label) = lower(:label)
-          AND a.day >= :f AND a.day <= :t
+          AND a.day >= :pf AND a.day <= :t
         GROUP BY 1 ORDER BY 1
         """
     )
@@ -370,7 +394,8 @@ async def user_dashboard(
         for r in (
             await db.execute(
                 plan_wk_sql,
-                {"ws": ctx.workspace_id, "label": user_label, "f": t0.date(), "t": t1.date()},
+                {"ws": ctx.workspace_id, "label": user_label, "f": t0.date(), "t": t1.date(),
+                 "pf": max(t0.date(), _cut) if _cut else t0.date()},
             )
         ).mappings().all()
     ]
@@ -503,8 +528,12 @@ async def project_effort(
     t0 = date_from or (t1 - timedelta(days=max(1, min(days, 3660))))
     bucket = granularity if granularity in ("day", "week", "month") else "week"
 
+    _cut = completion_cutoff()
     p: dict = {"ws": ctx.workspace_id, "pid": project_id, "t0": t0, "t1": t1,
-               "f": t0.date(), "t": t1.date()}
+               "f": t0.date(), "t": t1.date(),
+               # Plan/target CTEs start at the completion cutoff (owner rule);
+               # link production (:t0/:f on backlink CTEs) is NOT clamped.
+               "pf": max(t0.date(), _cut) if _cut else t0.date()}
     user_clause_b = user_clause_a = ""
     if user_label:
         user_clause_b = " AND lower(b.assigned_user_label) = lower(:label)"
@@ -536,7 +565,7 @@ async def project_effort(
                    coalesce(sum(a.expected_links), 0) AS target
             FROM task_assignments a
             WHERE a.workspace_id = :ws AND a.project_id = :pid
-              AND a.day >= :f AND a.day <= :t{user_clause_a}
+              AND a.day >= :pf AND a.day <= :t{user_clause_a}
             GROUP BY 1
         )
         SELECT coalesce(links.u, plan.u) AS u,
@@ -596,7 +625,7 @@ async def project_effort(
                    coalesce(sum(a.expected_links), 0) AS target
             FROM task_assignments a
             WHERE a.workspace_id = :ws AND a.project_id = :pid
-              AND a.day >= :f AND a.day <= :t{user_clause_a}
+              AND a.day >= :pf AND a.day <= :t{user_clause_a}
             GROUP BY 1
         )
         SELECT coalesce(actuals.week, plan.week) AS week,

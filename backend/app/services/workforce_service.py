@@ -402,10 +402,18 @@ async def day_report(
     for r in result.mappings().all():
         actuals[(r["project_id"], r["u"], r["d"])] = int(r["n"])
 
+    # Completion clock (owner rule): assignments before the tracking start date
+    # stay visible in the planner but count NOWHERE — same "excused" mechanics
+    # as leave/non-working days, so every consumer ignores them for free.
+    from app.services.performance_service import completion_cutoff
+
+    cutoff = completion_cutoff()
+
     out = []
     for a in rows:
         working = overrides.get(a.day, _default_working(a.day))
-        excused = (not working) or on_leave(a.user_label, a.day)
+        pre_cutoff = cutoff is not None and a.day < cutoff
+        excused = (not working) or on_leave(a.user_label, a.day) or pre_cutoff
         actual = actuals.get((a.project_id, a.user_label, a.day), 0)
         completion = (
             None if excused or a.expected_links <= 0
@@ -421,7 +429,11 @@ async def day_report(
                 "excused": excused,
                 "excuse_reason": (
                     None if not excused
-                    else ("On approved leave" if on_leave(a.user_label, a.day) else "Non-working day")
+                    else (
+                        "On approved leave" if on_leave(a.user_label, a.day)
+                        else "Non-working day" if not working
+                        else f"Before completion tracking started ({cutoff.isoformat()}) — not counted"
+                    )
                 ),
                 "priority": a.priority,
                 "rate_source": a.rate_source,

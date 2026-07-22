@@ -333,6 +333,13 @@ class Settings(BaseSettings):
     # Retry failed). True restores the old always-on recheck loop.
     AUTO_SCHEDULED_RECHECKS: bool = False
 
+    # ── Task-completion tracking start (owner rule 2026-07-22) ───────────────
+    # Completion METRICS (plan stats, weekly target-vs-done, week strips,
+    # dashboards) ignore task assignments planned before this ISO date — the
+    # completion clock starts fresh at go-live. Planner views still SHOW older
+    # assignments (marked excused, "not counted"). Empty string disables.
+    TASK_COMPLETION_START_DATE: str = "2026-07-27"
+
     # ── External-API usage limits (Enterprise §3) ────────────────────────────
     # JSON maps of api-name → max requests, e.g. {"iproyal": 5000, "serper": 2400}.
     # Known names: iproyal, render, serper, moz, semrush, rdap, google_sheets,
