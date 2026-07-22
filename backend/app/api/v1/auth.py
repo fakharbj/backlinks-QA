@@ -181,6 +181,7 @@ async def me(ctx: AuthCtx, db: ReadSession) -> MeResponse:
 class BrandingOut(BaseModel):
     company_name: str | None = None
     logo_data_uri: str | None = None
+    logo_dark_data_uri: str | None = None
     # Phase 10 P8 — safe additions only (never company_domain):
     announcement: str | None = None      # admin-controlled login-page banner
     smtp_ready: bool = False             # forgot-password shows only when true

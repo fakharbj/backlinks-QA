@@ -58,6 +58,8 @@ async def public_branding(db: AsyncSession) -> dict:
     return {
         "company_name": value.get("company_name") or primary.name,
         "logo_data_uri": value.get("logo_data_uri") or None,
+        # Separate dark-appearance logo (falls back to the light one in the UI).
+        "logo_dark_data_uri": value.get("logo_dark_data_uri") or None,
         # Admin-controlled login-page banner (safe: admin-authored text only).
         "announcement": (value.get("announcement") or "").strip() or None,
     }

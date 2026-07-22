@@ -554,6 +554,7 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
     queryFn: () =>
       api<{
         company_name: string | null; logo_data_uri: string | null;
+        logo_dark_data_uri?: string | null;
         announcement?: string | null; smtp_ready?: boolean;
       }>("/auth/branding"),
     staleTime: 300000
@@ -648,13 +649,13 @@ function AuthPanel({ onToken }: { onToken: (tokens: TokenPair) => void }) {
               <p className="mt-1 text-sm text-muted">{branding.data.company_name}</p>
             ) : null}
           </div>
-          {branding.data?.logo_data_uri ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={branding.data.logo_data_uri}
-              alt=""
-              className="h-10 w-10 rounded-lg object-contain"
-            />
+          {branding.data?.logo_data_uri || branding.data?.logo_dark_data_uri ? (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={branding.data.logo_data_uri || branding.data.logo_dark_data_uri || ""} alt="" className="h-10 w-10 rounded-lg object-contain dark:hidden" />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={branding.data.logo_dark_data_uri || branding.data.logo_data_uri || ""} alt="" className="hidden h-10 w-10 rounded-lg object-contain dark:block" />
+            </>
           ) : (
             <ShieldAlert className="h-7 w-7 text-plum" aria-hidden />
           )}
@@ -1558,6 +1559,14 @@ function TopBar({
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
+  const showAvatars = useShowAvatars(token);
+  const meQ = useQuery({
+    queryKey: ["me", token],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => api<{ user: { avatar_data_uri?: string | null } }>("/auth/me", { token })
+  });
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false);
@@ -1569,7 +1578,7 @@ function TopBar({
   const branding = useQuery({
     queryKey: ["branding"],
     queryFn: () =>
-      api<{ company_name: string | null; logo_data_uri: string | null }>("/auth/branding"),
+      api<{ company_name: string | null; logo_data_uri: string | null; logo_dark_data_uri?: string | null }>("/auth/branding"),
     staleTime: 300000
   });
   return (
@@ -1587,13 +1596,21 @@ function TopBar({
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
-          {branding.data?.logo_data_uri ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={branding.data.logo_data_uri}
-              alt=""
-              className="h-7 w-7 rounded-lg object-contain"
-            />
+          {branding.data?.logo_data_uri || branding.data?.logo_dark_data_uri ? (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={branding.data.logo_data_uri || branding.data.logo_dark_data_uri || ""}
+                alt=""
+                className="h-7 w-7 rounded-lg object-contain dark:hidden"
+              />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={branding.data.logo_dark_data_uri || branding.data.logo_data_uri || ""}
+                alt=""
+                className="hidden h-7 w-7 rounded-lg object-contain dark:block"
+              />
+            </>
           ) : (
             <div className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-ocean to-plum text-white shadow-soft">
               <Activity className="h-4 w-4" />
@@ -1667,9 +1684,9 @@ function TopBar({
               title={identity ? `${identity.name} · ${identity.email}` : "Account"}
               aria-label="Account menu"
               aria-expanded={profileOpen}
-              className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-ocean to-plum text-[11px] font-bold text-white shadow-card transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
+              className="rounded-lg shadow-card transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgb(var(--ocean))]"
             >
-              {(identity?.name || "?").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?"}
+              <AvatarBubble uri={meQ.data?.user.avatar_data_uri} name={identity?.name || "?"} className="h-8 w-8" show={showAvatars} square />
             </button>
             {profileOpen ? (
               <div className="absolute right-0 top-10 z-40 w-64 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
@@ -6787,6 +6804,36 @@ function usePersistentState<T>(key: string, initial: T): [T, (v: T | ((p: T) => 
   return [val, set];
 }
 
+// One avatar language everywhere: photo when available (and globally enabled),
+// otherwise clean initials — same shape, size prop, no layout jumps.
+function AvatarBubble({ uri, name, className = "h-8 w-8", show = true, square = false }: {
+  uri?: string | null; name: string; className?: string; show?: boolean; square?: boolean;
+}) {
+  const shape = square ? "rounded-lg" : "rounded-full";
+  if (show && uri) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={uri} alt="" className={clsx(className, shape, "shrink-0 object-cover")} />;
+  }
+  return (
+    <span className={clsx(className, shape, "grid shrink-0 place-items-center bg-gradient-to-br from-ocean/90 to-plum/90 text-[11px] font-bold text-white")}>
+      {(name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?"}
+    </span>
+  );
+}
+
+// Label → avatar map for sheet-people (labels resolve to accounts through the
+// employee mapping; one cached request feeds every label-based surface).
+function useLabelAvatars(token: string | null): Map<string, string> {
+  const q = useQuery({
+    queryKey: ["workforce-people", token, ""],
+    enabled: Boolean(token),
+    retry: false,
+    placeholderData: (prev) => prev,
+    queryFn: () => api<Array<{ user_label: string; active: boolean; avatar_data_uri?: string | null }>>("/workforce/people", { token })
+  });
+  return new Map((q.data || []).filter((p) => p.avatar_data_uri).map((p) => [p.user_label.toLowerCase(), p.avatar_data_uri as string]));
+}
+
 // Global display preference: show/hide profile photos everywhere (Settings →
 // Company & branding). Reads the already-cached /auth/me — zero extra requests.
 function useShowAvatars(token: string | null): boolean {
@@ -7553,6 +7600,8 @@ function TasksDesk({
   section?: TasksSection;
 }) {
   const queryClient = useQueryClient();
+  const labelAvatars = useLabelAvatars(token);
+  const showAvatarsPref = useShowAvatars(token);
   // Local-safe date helpers (no UTC off-by-one).
   const fmtIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -7904,6 +7953,7 @@ function TasksDesk({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["work-calendar"] }),
     onError: (e: Error) => onNotice(e.message)
   });
+  const [leavesShown, setLeavesShown] = useState(30);
   const [lvUser, setLvUser] = useState("");
   const [lvFrom, setLvFrom] = useState(todayIso);
   const [lvTo, setLvTo] = useState(todayIso);
@@ -8004,7 +8054,12 @@ function TasksDesk({
                     const pctDone = a.target > 0 ? Math.round((100 * a.done) / a.target) : null;
                     return (
                       <div key={k} className="flex items-center gap-3 px-3 py-2 text-sm">
-                        <span className="w-40 truncate font-medium text-ink" title={labelOf(k)}>{labelOf(k)}</span>
+                        <span className="flex w-40 min-w-0 items-center gap-2 font-medium text-ink" title={labelOf(k)}>
+                          {section === "byuser" ? (
+                            <AvatarBubble uri={labelAvatars.get(k.toLowerCase())} name={labelOf(k)} className="h-6 w-6 text-[9px]" show={showAvatarsPref} />
+                          ) : null}
+                          <span className="truncate capitalize">{labelOf(k)}</span>
+                        </span>
                         <span className="w-14 whitespace-nowrap text-xs text-muted">{Math.round(a.hours * 10) / 10}h</span>
                         <span className="w-20 whitespace-nowrap text-xs text-muted">{a.done}/{a.target}</span>
                         <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-field">
@@ -8863,11 +8918,14 @@ function TasksDesk({
           <span className="text-xs text-muted">Approved leave excuses those days everywhere.</span>
         </div>
         <div className="divide-y divide-line">
-          {(leaves.data || []).map((l) => (
+          {(leaves.data || []).slice(0, leavesShown).map((l) => (
             <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
-              <div>
-                <span className="font-medium text-ink">{l.user_label}</span>{" "}
-                <span className="text-muted">{l.start_date} → {l.end_date}{l.reason ? ` · ${l.reason}` : ""}</span>
+              <div className="flex min-w-0 items-center gap-2">
+                <AvatarBubble uri={labelAvatars.get((l.user_label || "").toLowerCase())} name={l.user_label} className="h-6 w-6 text-[9px]" show={showAvatarsPref} />
+                <span className="min-w-0 truncate">
+                  <span className="font-medium capitalize text-ink">{l.user_label}</span>{" "}
+                  <span className="text-muted">{l.start_date} → {l.end_date}{l.reason ? ` · ${l.reason}` : ""}</span>
+                </span>
               </div>
               <div className="flex items-center gap-2">
                 <Status value={l.status === "approved" ? "completed" : l.status === "rejected" ? "failed" : "pending"} />
@@ -8881,6 +8939,17 @@ function TasksDesk({
             </div>
           ))}
           {!leaves.isLoading && !(leaves.data || []).length ? <Empty label="No leave requests." /> : null}
+          {(leaves.data || []).length > leavesShown ? (
+            <div className="p-2 text-center">
+              <span className="mr-3 text-xs text-muted">Showing {leavesShown} of {(leaves.data || []).length}</span>
+              <button
+                onClick={() => setLeavesShown((v) => v + 30)}
+                className="rounded-lg border border-line px-4 py-1.5 text-sm font-medium text-ink transition hover:bg-field"
+              >
+                Load more
+              </button>
+            </div>
+          ) : null}
         </div>
       </section>
       ) : null}
@@ -8900,7 +8969,9 @@ const _BENCH_METRICS: Array<{ key: string; label: string; suffix?: string; integ
   { key: "avg_score", label: "Avg QA score", get: (m) => m.avg_score ?? 0 },
   { key: "indexed", label: "Indexed links", integer: true, get: (m) => m.indexed }
 ];
-function TeamDistribution({ members, caption }: { members: BenchMember[]; caption: string }) {
+function TeamDistribution({ members, caption, token }: { members: BenchMember[]; caption: string; token?: string | null }) {
+  const benchAvatars = useLabelAvatars(token ?? null);
+  const benchShowAvatars = useShowAvatars(token ?? null);
   const [metricKey, setMetricKey] = useState("links");
   const [hover, setHover] = useState<string | null>(null);
   const metric = _BENCH_METRICS.find((m) => m.key === metricKey) || _BENCH_METRICS[0];
@@ -8948,6 +9019,7 @@ function TeamDistribution({ members, caption }: { members: BenchMember[]; captio
               onMouseLeave={() => setHover(null)}
               title={`${m.user_label} — ${metric.label}: ${fmt(v)}`}
             >
+              <AvatarBubble uri={benchAvatars.get(m.user_label.toLowerCase())} name={m.user_label} className="h-5 w-5 text-[8px]" show={benchShowAvatars} />
               <span className={clsx("w-24 shrink-0 truncate text-[11px]", m.is_current ? "font-semibold text-ocean" : "text-muted")}>
                 {m.is_current ? `${m.user_label} (you)` : m.user_label}
               </span>
@@ -9977,6 +10049,8 @@ function UserDashboard({
   selfView?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const labelAvatars = useLabelAvatars(token);
+  const showAvatarsPref = useShowAvatars(token);
   // Viewers have no "Plans & calendar" page on their own dashboard (their plans
   // live in My Work / My calendar) — coerce a stale/deep-linked section away.
   useEffect(() => {
@@ -10306,9 +10380,13 @@ function UserDashboard({
               ← All people
             </button>
           ) : null}
-          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white shadow-soft">
-            {userLabel.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
-          </span>
+          <AvatarBubble
+            uri={labelAvatars.get(userLabel.toLowerCase())}
+            name={userLabel}
+            className="h-14 w-14 text-lg shadow-soft"
+            show={showAvatarsPref}
+            square
+          />
           <div className="min-w-0">
             <div className="text-[11px] font-bold uppercase tracking-widest text-ocean">
               {selfView ? "My Dashboard" : "User dashboard"}
@@ -10546,6 +10624,7 @@ function UserDashboard({
                 <TeamDistribution
                   members={d.team.members}
                   caption={`${fmtChartLabel(d.from, true)} → ${fmtChartLabel(d.to, true)}`}
+                  token={token}
                 />
               ) : (
                 <p className="pt-3 text-sm text-muted">Not enough team data for a comparison yet.</p>
@@ -11261,6 +11340,7 @@ function UserDashboardsDesk({
   // "Show all" reveals everyone; no employment-status wording in the default view.
   const [showAll, setShowAll] = usePersistentState<boolean>("ls_users_showall", false);
   const [viewMode, setViewMode] = usePersistentState<"list" | "grid">("ls_users_view", "list");
+  const [peopleShown, setPeopleShown] = useState(36);
   useEffect(() => {
     onPersonChange?.(person || null);
     // Reports open/close only — deliberately not reactive to the callback identity.
@@ -11343,11 +11423,12 @@ function UserDashboardsDesk({
     )
     .sort((a, b) => b.links - a.links || a.user_label.localeCompare(b.user_label));
   const needle = q.trim().toLowerCase();
-  const users = allUsers.filter(
+  const usersAll = allUsers.filter(
     (u) =>
       (showAll || activeMap.get(u.user_label) !== false) &&
       (!needle || u.user_label.toLowerCase().includes(needle))
   );
+  const users = usersAll.slice(0, peopleShown);
   const hiddenCount = allUsers.length - allUsers.filter((u) => activeMap.get(u.user_label) !== false).length;
   const loading = team.isLoading || people.isLoading;
   const personAvatar = (label: string, size: string) => {
@@ -11407,7 +11488,7 @@ function UserDashboardsDesk({
             {showAll ? "Showing all" : "Show all"}
           </button>
         ) : null}
-        <span className="text-xs text-muted">{users.length} {users.length === 1 ? "person" : "people"}</span>
+        <span className="text-xs text-muted">{usersAll.length} {usersAll.length === 1 ? "person" : "people"}</span>
         <span className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel p-0.5">
           {(["list", "grid"] as const).map((m) => (
             <button
@@ -11500,6 +11581,17 @@ function UserDashboardsDesk({
             })}
           </div>
         )
+      ) : null}
+      {usersAll.length > peopleShown ? (
+        <div className="text-center">
+          <span className="mr-3 text-xs text-muted">Showing {peopleShown} of {usersAll.length}</span>
+          <button
+            onClick={() => setPeopleShown((v) => v + 36)}
+            className="rounded-lg border border-line px-4 py-1.5 text-sm font-medium text-ink transition hover:bg-field"
+          >
+            Load more
+          </button>
+        </div>
       ) : null}
     </section>
   );
@@ -19233,6 +19325,7 @@ function BrandingCard({
   const [companyName, setCompanyName] = useState("");
   const [companyDomain, setCompanyDomain] = useState("");
   const [logoDataUri, setLogoDataUri] = useState("");
+  const [logoDarkDataUri, setLogoDarkDataUri] = useState("");
   const [announcement, setAnnouncement] = useState("");
   const [showAvatars, setShowAvatars] = useState(true);
 
@@ -19247,12 +19340,13 @@ function BrandingCard({
   // Prefill the form from the stored "branding" setting once it loads.
   useEffect(() => {
     const branding = settings.data?.find((s) => s.key === "branding")?.value as
-      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null; announcement?: string | null; show_avatars?: boolean }
+      | { company_name?: string | null; company_domain?: string | null; logo_data_uri?: string | null; logo_dark_data_uri?: string | null; announcement?: string | null; show_avatars?: boolean }
       | undefined;
     if (branding) {
       setCompanyName(branding.company_name || "");
       setCompanyDomain(branding.company_domain || "");
       setLogoDataUri(branding.logo_data_uri || "");
+      setLogoDarkDataUri(branding.logo_dark_data_uri || "");
       setAnnouncement(branding.announcement || "");
       setShowAvatars(branding.show_avatars !== false);
     }
@@ -19286,6 +19380,7 @@ function BrandingCard({
             company_name: companyName.trim() || null,
             company_domain: companyDomain.trim() || null,
             logo_data_uri: logoDataUri || null,
+            logo_dark_data_uri: logoDarkDataUri || null,
             announcement: announcement.trim() || null,
             show_avatars: showAvatars
           },
@@ -19365,26 +19460,65 @@ function BrandingCard({
           Show profile photos across the system
           <HelpTip text="When off, every user-profile area (dashboards, Team, headers) shows neutral initials instead of uploaded photos — useful for client-facing/white-label viewing. Saved with Branding." />
         </label>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="block">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border border-line bg-field/30 p-3">
             <span className="mb-1 block text-xs font-semibold uppercase text-muted">
-              Company logo
+              Logo — light appearance
             </span>
-            <input
-              type="file"
-              accept="image/*"
-              className="block text-sm text-muted"
-              onChange={(event) => readLogo(event.target.files?.[0], setLogoDataUri)}
-            />
-          </label>
-          {logoDataUri ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={logoDataUri}
-              alt=""
-              className="h-10 w-10 rounded-lg border border-line object-contain"
-            />
-          ) : null}
+            <div className="flex items-center gap-3">
+              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-lg border border-line bg-white">
+                {logoDataUri ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoDataUri} alt="Light logo preview" className="max-h-10 max-w-10 object-contain" />
+                ) : (
+                  <span className="text-[10px] text-muted">none</span>
+                )}
+              </span>
+              <div className="min-w-0">
+                <input
+                  type="file"
+                  accept="image/png,image/svg+xml,image/webp,image/jpeg"
+                  className="block w-full text-xs text-muted"
+                  onChange={(event) => { readLogo(event.target.files?.[0], setLogoDataUri); event.target.value = ""; }}
+                />
+                {logoDataUri ? (
+                  <button onClick={() => setLogoDataUri("")} className="mt-1 text-xs font-medium text-muted hover:text-danger hover:underline">Remove</button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-line bg-field/30 p-3">
+            <span className="mb-1 block text-xs font-semibold uppercase text-muted">
+              Logo — dark appearance
+            </span>
+            <div className="flex items-center gap-3">
+              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-lg border border-line bg-[rgb(19,19,27)]">
+                {logoDarkDataUri ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoDarkDataUri} alt="Dark logo preview" className="max-h-10 max-w-10 object-contain" />
+                ) : (
+                  <span className="text-[10px] text-muted">none</span>
+                )}
+              </span>
+              <div className="min-w-0">
+                <input
+                  type="file"
+                  accept="image/png,image/svg+xml,image/webp,image/jpeg"
+                  className="block w-full text-xs text-muted"
+                  onChange={(event) => { readLogo(event.target.files?.[0], setLogoDarkDataUri); event.target.value = ""; }}
+                />
+                {logoDarkDataUri ? (
+                  <button onClick={() => setLogoDarkDataUri("")} className="mt-1 text-xs font-medium text-muted hover:text-danger hover:underline">Remove</button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+        <p className="text-[11px] text-muted">
+          Square works best (128&times;128 or larger), PNG/SVG/WebP with a transparent background, under 300 KB.
+          The app shows the matching logo for the viewer&apos;s light/dark appearance; with only one uploaded it is used for both.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
           <button
             onClick={() => saveBranding.mutate()}
             disabled={saveBranding.isPending}
@@ -24699,6 +24833,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   // One desk, two sections: workspace accounts vs sheet-employee mapping.
   const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail" | "email">("members");
   const [showInvite, setShowInvite] = useState(false);
+  const [membersShown, setMembersShown] = useState(25);
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -25019,7 +25154,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {(members.data || []).map((m) => (
+              {(members.data || []).slice(0, membersShown).map((m) => (
                 <tr key={m.user_id} className={clsx(!m.is_active && "opacity-60")}>
                   <Td>
                     <div className="flex items-center gap-2.5">
@@ -25137,6 +25272,19 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           </table>
           {members.isLoading ? <Empty label="Loading members…" /> : null}
           {!members.isLoading && !members.data?.length ? <Empty label="No members yet" /> : null}
+          {(members.data || []).length > membersShown ? (
+            <div className="border-t border-line p-2 text-center">
+              <span className="mr-3 text-xs text-muted">
+                Showing {membersShown} of {(members.data || []).length}
+              </span>
+              <button
+                onClick={() => setMembersShown((v) => v + 25)}
+                className="rounded-lg border border-line px-4 py-1.5 text-sm font-medium text-ink transition hover:bg-field"
+              >
+                Load more
+              </button>
+            </div>
+          ) : null}
         </div>
       </section>
 
