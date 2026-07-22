@@ -12328,6 +12328,80 @@ function BatchDetails({
         ) : null}
       </div>
 
+      {/* WHY it finished with problems — every failure signal in one panel
+          (owner rule: never leave the user guessing why QA stopped). */}
+      {(b.status === "partial" || b.status === "failed") ? (() => {
+        const norm = (lv: string) => (lv?.startsWith("warn") ? "warn" : lv);
+        const problemLogs = (logs.data || []).filter((l) => ["error", "warn"].includes(norm(l.level)));
+        const grouped = new Map<string, { count: number; level: string }>();
+        for (const l of problemLogs) {
+          const key = l.message;
+          const g = grouped.get(key) || { count: 0, level: norm(l.level) };
+          g.count += 1;
+          if (norm(l.level) === "error") g.level = "error";
+          grouped.set(key, g);
+        }
+        const top = Array.from(grouped.entries()).sort((a, z) => z[1].count - a[1].count).slice(0, 6);
+        const failedItems = Number(counts?.by_state?.failed || 0);
+        const failedRows = Number((b.totals as Record<string, number> | undefined)?.failed || 0);
+        const metaEntries = Object.entries((b.meta || {}) as Record<string, unknown>)
+          .filter(([k, v]) => k.startsWith("p:") && ["failed", "partial"].includes(String((v as { status?: string })?.status)))
+          .map(([k, v]) => v as { name?: string; status?: string; note?: string });
+        return (
+          <div className="rounded-xl border border-ember/40 bg-ember/5 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <AlertTriangle className="h-4 w-4 text-ember" />
+              Why this run had problems
+            </h3>
+            <div className="mt-2 space-y-1.5 text-sm">
+              {b.error ? (
+                <p className="text-ink"><span className="font-semibold text-danger">Stopped:</span> {b.error}</p>
+              ) : null}
+              {failedRows > 0 ? (
+                <p className="text-ink">
+                  <span className="font-semibold">{failedRows.toLocaleString()}</span> row{failedRows === 1 ? "" : "s"} failed while processing
+                  {(b.totals as Record<string, number> | undefined)?.ok ? ` (${Number((b.totals as Record<string, number>).ok).toLocaleString()} succeeded)` : ""}.
+                </p>
+              ) : null}
+              {isReview && failedItems > 0 ? (
+                <p className="text-ink">
+                  <span className="font-semibold">{failedItems}</span> staged item{failedItems === 1 ? "" : "s"} failed their check —{" "}
+                  <button onClick={() => { setStateF(["failed"]); setPresenceF([]); }} className="font-medium text-ocean hover:underline">
+                    show them below
+                  </button>{" "}
+                  (each row carries its own error; use “Re-run failed” after fixing).
+                </p>
+              ) : null}
+              {metaEntries.length ? (
+                <div>
+                  <p className="font-semibold text-ink">Projects with problems:</p>
+                  <ul className="ml-4 list-disc text-muted">
+                    {metaEntries.map((m, i) => (
+                      <li key={i}><span className="text-ink">{m.name}</span>{m.note ? ` — ${m.note}` : ""}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {top.length ? (
+                <div>
+                  <p className="font-semibold text-ink">Top reasons from the run log:</p>
+                  <ul className="ml-4 list-disc text-muted">
+                    {top.map(([msg, g]) => (
+                      <li key={msg} className={clsx(g.level === "error" && "text-danger")}>
+                        {msg}{g.count > 1 ? ` (×${g.count})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {!b.error && !failedRows && !failedItems && !metaEntries.length && !top.length ? (
+                <p className="text-muted">No detailed reason was recorded — check the full log below.</p>
+              ) : null}
+            </div>
+          </div>
+        );
+      })() : null}
+
       {/* Bulk sheet-sync parent: per-project progress rows (green = done,
           amber = finished with problems, red = failed, violet = running). */}
       {b.kind === "sheet_sync_all" ? (() => {
@@ -12663,9 +12737,9 @@ function BatchDetails({
           </span>
         </div>
         <div className="max-h-[420px] space-y-1 overflow-y-auto p-3">
-          {(logs.data || []).filter((l) => logLevel === "all" || l.level === logLevel).map((l, i) => (
+          {(logs.data || []).filter((l) => logLevel === "all" || (logLevel === "warn" ? l.level.startsWith("warn") : l.level === logLevel)).map((l, i) => (
             <div key={i} className="flex items-start gap-2 text-xs">
-              <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", l.level === "error" ? "bg-danger" : l.level === "warn" ? "bg-ember" : "bg-success")} />
+              <span className={clsx("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", l.level === "error" ? "bg-danger" : l.level.startsWith("warn") ? "bg-ember" : "bg-success")} />
               <span className="whitespace-nowrap text-muted">{formatDate(l.created_at)}</span>
               <span className="flex-1 text-ink">{l.message}</span>
               {l.data && (l.data as Record<string, unknown>).import_id ? (
@@ -12680,7 +12754,7 @@ function BatchDetails({
           ))}
           {logs.isLoading ? <div className="text-xs text-muted">Loading logs…</div> : null}
           {!logs.isLoading && !(logs.data || []).length ? <div className="text-xs text-muted">No log entries for this run.</div> : null}
-          {!logs.isLoading && (logs.data || []).length > 0 && !(logs.data || []).filter((l) => logLevel === "all" || l.level === logLevel).length ? (
+          {!logs.isLoading && (logs.data || []).length > 0 && !(logs.data || []).filter((l) => logLevel === "all" || (logLevel === "warn" ? l.level.startsWith("warn") : l.level === logLevel)).length ? (
             <div className="text-xs text-muted">No {logLevel} entries.</div>
           ) : null}
           {errorImportId ? (
@@ -12883,6 +12957,11 @@ function BatchesDesk({
                     <Td>
                       <span className="flex flex-wrap items-center gap-1">
                         <BatchStatusChip value={b.status} />
+                        {(b.status === "partial" || b.status === "failed") && b.error ? (
+                          <span className="block max-w-[260px] truncate text-[11px] text-danger" title={b.error}>
+                            {b.error}
+                          </span>
+                        ) : null}
                         {b.review_pending ? (
                           <span className="whitespace-nowrap rounded-full bg-plum/10 px-2 py-0.5 text-[11px] font-semibold text-plum" title="Items still awaiting your approve/reject decision">
                             {b.review_pending} to review
@@ -24122,6 +24201,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [password, setPassword] = useState("");
   // One desk, two sections: workspace accounts vs sheet-employee mapping.
   const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail" | "email">("members");
+  const [showInvite, setShowInvite] = useState(false);
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -24273,83 +24353,100 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const canSubmit =
     Boolean(fullName.trim()) && Boolean(email.trim()) && password.length >= 10 && !invite.isPending;
 
+  const activeMembers = (members.data || []).filter((m) => m.is_active).length;
   return (
     <div className="space-y-5">
-      <span className="flex w-fit overflow-hidden rounded-lg border border-line text-xs font-medium">
+      {/* Page header: what this desk is + the one primary action. */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold text-ink">
+            Team
+            <HelpTip text="Everything about people and access in one place: workspace accounts & roles, sheet-employee mapping, company Gmail accounts, and emailing your team." />
+          </h2>
+          <p className="text-sm text-muted">
+            {activeMembers} active member{activeMembers === 1 ? "" : "s"} · accounts, roles, mapping & access
+          </p>
+        </div>
         <button
-          onClick={() => setTeamTab("members")}
-          className={clsx("px-2.5 py-1 transition", teamTab === "members" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
+          onClick={() => setShowInvite(true)}
+          className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90"
         >
-          Members &amp; roles
+          <UserPlus className="h-4 w-4" /> Invite member
         </button>
-        <button
-          onClick={() => setTeamTab("employees")}
-          title="Sheet employees — codes, name variants and account mapping"
-          className={clsx("px-2.5 py-1 transition", teamTab === "employees" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
-        >
-          Employees &amp; mapping
-        </button>
-        <button
-          onClick={() => setTeamTab("gmail")}
-          title="Company Gmail accounts — who/what each address is assigned to"
-          className={clsx("px-2.5 py-1 transition", teamTab === "gmail" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
-        >
-          Gmail accounts
-        </button>
-        <button
-          onClick={() => setTeamTab("email")}
-          title="Email your team members (needs SMTP configured on the server)"
-          className={clsx("px-2.5 py-1 transition", teamTab === "email" ? "bg-ocean text-white" : "text-muted hover:bg-field")}
-        >
-          Email users
-        </button>
-      </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {([
+          ["members", "Members & roles", "Accounts, roles, projects & access"],
+          ["employees", "Employees & mapping", "Sheet names → app accounts"],
+          ["gmail", "Gmail accounts", "Who holds each company address"],
+          ["email", "Email users", "Message the team (SMTP)"]
+        ] as Array<[typeof teamTab, string, string]>).map(([id, label, hint]) => (
+          <button
+            key={id}
+            onClick={() => setTeamTab(id)}
+            title={hint}
+            className={clsx(
+              "rounded-full border px-3.5 py-1.5 text-sm font-medium transition",
+              teamTab === id
+                ? "border-ocean bg-ocean/10 font-semibold text-ocean"
+                : "border-line bg-panel text-muted hover:bg-field hover:text-ink"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {teamTab === "gmail" ? (
         <GmailAccountsCard token={token} members={members.data || []} projects={projectsQ.data || []} onNotice={onNotice} />
       ) : null}
       {teamTab === "email" ? (
         <EmailUsersCard token={token} members={members.data || []} projects={projectsQ.data || []} onNotice={onNotice} />
       ) : null}
+      {/* Invite — a modal (the always-open form was noise on every visit). */}
+      {showInvite ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[12vh] backdrop-blur-sm"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setShowInvite(false); }}>
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg rounded-xl border border-line bg-panel p-4 shadow-pop">
+            <h3 className="text-sm font-semibold text-ink">Invite a teammate</h3>
+            <p className="mt-0.5 text-xs text-muted">
+              Create an account and assign a role. Share the temporary password so they can sign in
+              and change it (My Work → My settings).
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Field label="Full name" value={fullName} onChange={setFullName} />
+              <Field label="Email" value={email} onChange={setEmail} />
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold uppercase text-muted">Role</span>
+                <select
+                  className="h-10 w-full rounded-md border border-line bg-panel px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as Role)}
+                >
+                  {TEAM_ROLES.map((r) => (
+                    <option key={r} value={r}>
+                      {ROLE_LABEL[r]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Field label="Temp password (min 10)" value={password} onChange={setPassword} type="password" />
+            </div>
+            <p className="mt-2 text-xs text-muted">{ROLE_HINT[role]}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowInvite(false)} className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-ink hover:bg-field">Cancel</button>
+              <button
+                onClick={() => invite.mutate()}
+                disabled={!canSubmit}
+                className="flex h-9 items-center justify-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {invite.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                Invite member
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {teamTab === "members" ? (<>
-      <section className="rounded-xl border border-line bg-panel shadow-card">
-        <div className="border-b border-line p-4">
-          <h2 className="text-base font-semibold text-ink">Invite a teammate</h2>
-          <p className="text-sm text-muted">
-            Create an account in this workspace and assign a role. Share the temporary password so
-            they can sign in and change it.
-          </p>
-        </div>
-        <div className="grid gap-3 p-4 md:grid-cols-2 lg:grid-cols-4">
-          <Field label="Full name" value={fullName} onChange={setFullName} />
-          <Field label="Email" value={email} onChange={setEmail} />
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold uppercase text-muted">Role</span>
-            <select
-              className="h-10 w-full rounded-md border border-line bg-panel px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ocean/20"
-              value={role}
-              onChange={(e) => setRole(e.target.value as Role)}
-            >
-              {TEAM_ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {ROLE_LABEL[r]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Field label="Temp password (min 10)" value={password} onChange={setPassword} type="password" />
-        </div>
-        <div className="flex flex-col gap-3 border-t border-line p-4 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-xs text-muted">{ROLE_HINT[role]}</span>
-          <button
-            onClick={() => invite.mutate()}
-            disabled={!canSubmit}
-            className="flex h-9 items-center justify-center gap-2 rounded-md bg-ocean px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {invite.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
-            Invite member
-          </button>
-        </div>
-      </section>
 
       <section className="rounded-xl border border-line bg-panel shadow-card">
         <div className="flex items-center justify-between border-b border-line p-4">
