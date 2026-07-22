@@ -423,6 +423,29 @@ PUT /auth/avatar; POST /auth/change-password keeps sessions). **T5 team**:
 members table → ⋯ actions menu + real modals (edit login, one-time temp
 password w/ copy) + avatars in rows.
 
+**Final-changes program shipped + deployed** (2026-07-22 #2, migrations
+`0057`, 254 tests, docs/FINAL-CHANGES-PLAN.md, tranches F1–F6): **F1** viewer
+rules (no exports on selfView, 30-day default), My Work Target-vs-done paired
+bars, myopps explainer, User Dashboards white-label (active-only + "Show all",
+list⇄grid, avatars, no employment wording) + global `show_avatars` display
+pref (branding Setting → /auth/me prefs, useShowAvatars), Backlinks filters
+container + scoring-guide info icon. **F2** Tasks & Calendar sidebar
+sub-pages (planner/by-user/by-project/working-days/leave; TASKS_SECTIONS
+pattern), Productivity moved to Settings ProductivityCard (incl. per-person
+overrides), leave form w/ person picker + reason, **completion clock**
+`TASK_COMPLETION_START_DATE=2026-07-27` (5 SQL :pf clamps in
+performance_service + day_report pre-cutoff excusal). **F3** "Why this run had
+problems" batch panel + list reason hints + warn-level normalization; Team
+page header/tab bar + invite modal. **F4** IP-bound sessions
+(`bind_sessions` → revoke on refresh IP change; rotated tokens carry ip/ua),
+ip rule remarks (`ip_notes`, "ip | note" lines) + `team_overrides`
+(user>team>role>master), Security activity log (GET /settings/security-log;
+logout + credential-failure audits now carry real IP/device). **F5** intern
+role (0057): stage+check only, own-batches-only visibility, approve/reject =
+QA+ (`_require_reviewer` — the keep/partial/full transfer gate), INTERN_NAV,
+promotion = role change. **F6** My Work suggestion manager (status pages,
+search/filters/sort, bulk use/dismiss, similar-type drill, CSV+TXT only).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:
