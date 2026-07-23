@@ -237,6 +237,8 @@ class BacklinkFilters(BaseModel):
     assigned_to: date | None = None
     updated_from: date | None = None        # updated_at
     updated_to: date | None = None
+    index_from: date | None = None          # index_checked_at (SERP/index result time)
+    index_to: date | None = None
 
 
 class AssignmentEventOut(BaseModel):

@@ -5058,7 +5058,7 @@ function ColorLegend() {
       {open ? (
         <div className="absolute right-0 top-full z-40 mt-1 w-72 space-y-1.5 rounded-lg border border-line bg-panel p-3 text-xs shadow-pop">
           <p className="font-semibold uppercase tracking-wide text-muted">Completion</p>
-          <Row swatch="border border-ocean/50 bg-ocean/20" label="Green — target reached (100%+)" />
+          <Row swatch="border border-success/50 bg-success/20" label="Green — target reached (100%+)" />
           <Row swatch="border border-ember/50 bg-ember/20" label="Amber — getting there (60–99%)" />
           <Row swatch="border border-danger/50 bg-danger/20" label="Red — behind (below 60%)" />
           <Row swatch="border border-line bg-field" label="Gray — excused (day off / leave), doesn't count" />
@@ -5750,9 +5750,13 @@ type MyCalRow = {
 };
 
 function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; cls: string } {
+  const target = r.expected_links ?? 0;
+  // Genuine completion (built ≥ target) always reads as done/green — even when
+  // the day is excused by the completion-tracking start date. "Finished" is a
+  // fact; excusal only governs the NOT-done states below.
+  if (target > 0 && (r.actual_links ?? 0) >= target) return { key: "done", label: "Done", cls: "border-success bg-success text-white" };
   if (r.excused) return { key: "excused", label: r.excuse_reason || "Excused", cls: "border-line bg-field text-muted" };
-  if ((r.expected_links ?? 0) === 0) return { key: "none", label: "No target", cls: "border-line bg-field text-muted" };
-  if ((r.completion_pct ?? 0) >= 100) return { key: "done", label: "Done", cls: "border-success bg-success text-white" };
+  if (target === 0) return { key: "none", label: "No target", cls: "border-line bg-field text-muted" };
   if (r.day > today) return { key: "upcoming", label: "Upcoming", cls: "border-line bg-panel text-ink" };
   if (r.day === today) return { key: "today", label: "In progress", cls: "border-ocean/40 bg-ocean/10 text-ocean" };
   return { key: "missed", label: "Behind", cls: "border-danger/40 bg-danger/10 text-danger" };
@@ -5762,12 +5766,14 @@ function myCalStatus(r: MyCalRow, today: string): { key: string; label: string; 
 // SITUATION, not raw completion — an unstarted FUTURE task is calm, not red:
 //   done → green · no target (0/0) → neutral · upcoming → neutral ·
 //   today → blue (in progress) · past & behind → red (or amber if mostly done).
-function planChipCls(r: { day: string; completion_pct: number | null; excused?: boolean | null; expected_links?: number | null }): string {
-  if (r.excused) return "border-line bg-field text-muted";
+function planChipCls(r: { day: string; completion_pct: number | null; excused?: boolean | null; expected_links?: number | null; actual_links?: number | null }): string {
   const target = r.expected_links ?? 0;
+  // Genuine completion is green first — see myCalStatus. Excusal governs only
+  // the not-done states.
+  if (target > 0 && (r.actual_links ?? 0) >= target) return "border-success bg-success text-white";  // done
+  if (r.excused) return "border-line bg-field text-muted";
   if (target === 0) return "border-line bg-field text-muted";            // nothing required — don't alarm
   const pct = r.completion_pct ?? 0;
-  if (pct >= 100) return "border-success bg-success text-white";          // done
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   if (r.day > today) return "border-line bg-panel text-ink";              // upcoming — calm
@@ -5902,6 +5908,13 @@ function MyTaskCalendar({ token }: { token: string | null }) {
     const target = list.reduce((a, r) => a + (r.excused ? 0 : r.expected_links), 0);
     return { hours: Math.round(hours * 10) / 10, done, target };
   };
+  // Whole-day completion (for the day-box tint): at least one task with a
+  // target, and every such task reached it. Independent of excusal so a fully
+  // built day shows green even before the completion clock starts.
+  const dayComplete = (day: string) => {
+    const planned = (byDay[day] || []).filter((r) => (r.expected_links ?? 0) > 0);
+    return planned.length > 0 && planned.every((r) => (r.actual_links ?? 0) >= (r.expected_links ?? 0));
+  };
 
   const weekDays = useMemo(() => {
     if (mode !== "week") return [];
@@ -5963,7 +5976,9 @@ function MyTaskCalendar({ token }: { token: string | null }) {
                     key={day}
                     className={clsx(
                       "min-h-[92px] rounded-lg border p-1",
-                      day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel"
+                      dayComplete(day)
+                        ? (day === today ? "border-ocean bg-success/10" : "border-success/50 bg-success/10")
+                        : day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel"
                     )}
                   >
                     <div className="flex items-center justify-between gap-1">
@@ -6003,7 +6018,7 @@ function MyTaskCalendar({ token }: { token: string | null }) {
             {weekDays.map((day) => {
               const t = dayTotals(day);
               return (
-                <div key={day} className={clsx("min-h-[130px] rounded-lg border p-1.5", day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel")}>
+                <div key={day} className={clsx("min-h-[130px] rounded-lg border p-1.5", dayComplete(day) ? (day === today ? "border-ocean bg-success/10" : "border-success/50 bg-success/10") : day === today ? "border-ocean bg-ocean/5" : "border-line bg-panel")}>
                   <div className="flex items-center justify-between gap-1">
                     <span className={clsx("text-[10px] font-semibold", day === today ? "text-ocean" : "text-muted")}>{formatDay(day)}</span>
                     {onLeave(day) ? <span className="rounded bg-plum/15 px-1 text-[8px] font-semibold text-plum">Leave</span> : null}
@@ -6962,14 +6977,12 @@ function MySettingsCard({ token, onNotice }: { token: string | null; onNotice: (
       <SectionTitle title="My settings" />
       <div className="grid gap-4 p-3 md:grid-cols-2">
         <div className="flex items-center gap-3">
-          {avatar ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={avatar} alt="Profile photo" className="h-14 w-14 rounded-xl object-cover shadow-card" />
-          ) : (
-            <span className="grid h-14 w-14 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-lg font-bold text-white">
-              {(whoami.data?.user.full_name || "?").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
-            </span>
-          )}
+          <AvatarBubble
+            uri={avatar}
+            name={whoami.data?.user.full_name || "?"}
+            className="h-14 w-14 shadow-card"
+            square
+          />
           <div className="min-w-0">
             <div className="text-sm font-semibold text-ink">Profile photo</div>
             <p className="text-xs text-muted">Shown on your dashboard and to your team. Max 300 KB.</p>
@@ -7241,14 +7254,13 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
           every line answers a question. */}
       <header className="rounded-xl border border-line bg-panel p-4 shadow-card">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {showAvatars && whoami.data?.user.avatar_data_uri ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={whoami.data.user.avatar_data_uri} alt="" className="h-10 w-10 shrink-0 rounded-xl object-cover shadow-card" />
-          ) : (
-            <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-plum text-sm font-bold text-white">
-              {(me.data?.labels[0] || whoami.data?.user.full_name || "Me").split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
-            </span>
-          )}
+          <AvatarBubble
+            uri={whoami.data?.user.avatar_data_uri}
+            name={me.data?.labels[0] || whoami.data?.user.full_name || "Me"}
+            className="h-10 w-10 shadow-card"
+            square
+            show={showAvatars}
+          />
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 truncate text-lg font-bold capitalize tracking-tight text-ink">
               {me.data?.labels.length ? me.data.labels.join(", ") : whoami.data?.user.full_name || "My Work"}
@@ -11592,17 +11604,9 @@ function UserDashboardsDesk({
   const users = usersAll.slice(0, peopleShown);
   const hiddenCount = allUsers.length - allUsers.filter((u) => activeMap.get(u.user_label) !== false).length;
   const loading = team.isLoading || people.isLoading;
-  const personAvatar = (label: string, size: string) => {
-    const uri = showAvatars ? avatarMap.get(label) : null;
-    return uri ? (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img src={uri} alt="" className={clsx(size, "shrink-0 rounded-full object-cover")} />
-    ) : (
-      <span className={clsx(size, "flex shrink-0 items-center justify-center rounded-full bg-ocean/10 text-ocean")}>
-        <Users className="h-4 w-4" />
-      </span>
-    );
-  };
+  const personAvatar = (label: string, size: string) => (
+    <AvatarBubble uri={avatarMap.get(label)} name={label} className={size} show={showAvatars} />
+  );
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -18039,8 +18043,17 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
     queryFn: () => api<Project[]>("/projects", { token })
   });
   const [drafts, setDrafts] = useState<Record<string, { name?: string; client_name?: string; target_domain?: string }>>({});
-  const val = (p: Project, k: "name" | "client_name" | "target_domain") =>
-    drafts[p.id]?.[k] ?? (p[k] || "");
+  // The Target-domain cell shows the REFINED domain (scheme/www/path stripped)
+  // from the project's existing value — falling back to the first target URL
+  // when target_domain itself is blank. Editing overrides; saving normalizes.
+  const refinedTarget = (p: Project) =>
+    prettyDomain(p.target_domain || (p.target_urls && p.target_urls[0]) || "");
+  const val = (p: Project, k: "name" | "client_name" | "target_domain") => {
+    const draft = drafts[p.id]?.[k];
+    if (draft !== undefined) return draft;
+    if (k === "target_domain") return refinedTarget(p);
+    return p[k] || "";
+  };
   const save = useMutation({
     mutationFn: (v: { id: string; body: Record<string, unknown> }) =>
       api(`/projects/${v.id}`, { token, method: "PATCH", body: JSON.stringify(v.body) }),
@@ -18132,7 +18145,9 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
                   <Td>
                     <input value={val(p, "target_domain")}
                       onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: { ...d[p.id], target_domain: e.target.value } }))}
-                      placeholder="example.com" className="h-8 w-52 rounded-md border border-line bg-panel px-2 font-mono text-xs" />
+                      placeholder="example.com"
+                      title={p.target_domain && p.target_domain !== refinedTarget(p) ? `Stored as: ${p.target_domain}` : "The project's main (target) domain"}
+                      className="h-8 w-52 rounded-md border border-line bg-panel px-2 font-mono text-xs" />
                   </Td>
                   <Td>
                     <button
@@ -18167,7 +18182,14 @@ function ProjectsQuickCard({ token, onNotice }: { token: string | null; onNotice
                     <div className="flex items-center gap-1.5">
                       {dirty ? (
                         <button
-                          onClick={() => save.mutate({ id: p.id, body: { ...drafts[p.id] } })}
+                          onClick={() => {
+                            const body: Record<string, unknown> = { ...drafts[p.id] };
+                            // Normalize the domain on save so the stored value
+                            // becomes the refined domain (no bulk migration —
+                            // only rows the user actually edits).
+                            if (typeof body.target_domain === "string") body.target_domain = prettyDomain(body.target_domain);
+                            save.mutate({ id: p.id, body });
+                          }}
                           disabled={save.isPending}
                           className="h-8 rounded-md bg-ocean px-3 text-xs font-semibold text-white disabled:opacity-50"
                         >
@@ -23492,6 +23514,8 @@ const BACKLINK_DATE_AXES: Array<{
   { key: "discovered", label: "Discovery", field: "discovered_at", sort: "discovered_at", from: "discovered_from", to: "discovered_to" },
   { key: "qa", label: "QA checked", field: "last_checked_at", sort: "last_checked_at", from: "qa_from", to: "qa_to" },
   { key: "completed", label: "Completion", field: "qa_completed_at", sort: "qa_completed_at", from: "completed_from", to: "completed_to" },
+  // Index result time — each link sorts by when ITS OWN SERP/index check ran.
+  { key: "index", label: "Index checked", field: "index_checked_at", sort: "index_checked_at", from: "index_from", to: "index_to" },
   { key: "imported", label: "Import", field: "created_at", sort: "created_at", from: "imported_from", to: "imported_to" },
   { key: "sheet", label: "Sheet", field: "sheet_created_date", sort: null, from: "sheet_from", to: "sheet_to" },
   { key: "assigned", label: "Assignment", field: "assigned_at", sort: "assigned_at", from: "assigned_from", to: "assigned_to" },
@@ -25777,14 +25801,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                 <tr key={m.user_id} className={clsx(!m.is_active && "opacity-60")}>
                   <Td>
                     <div className="flex items-center gap-2.5">
-                      {showAvatars && m.avatar_data_uri ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={m.avatar_data_uri} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
-                      ) : (
-                        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-ocean/10 text-xs font-bold text-ocean">
-                          {m.full_name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?"}
-                        </span>
-                      )}
+                      <AvatarBubble uri={m.avatar_data_uri} name={m.full_name || "?"} className="h-8 w-8" square show={showAvatars} />
                       <div className="min-w-0">
                         <div className="truncate font-medium text-ink">{m.full_name}</div>
                         <div className="truncate text-xs text-muted">{m.email}</div>

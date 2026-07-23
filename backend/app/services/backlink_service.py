@@ -46,6 +46,7 @@ _DATE_COLS = {
     "sheet": BacklinkRecord.sheet_created_date,
     "assigned": BacklinkRecord.assigned_at,
     "updated": BacklinkRecord.updated_at,
+    "index": BacklinkRecord.index_checked_at,  # per-result SERP/index time
 }
 # Date-typed columns use an inclusive <= upper bound; TIMESTAMPTZ use < to+1day.
 _DATE_TYPE_KEYS = {"placement", "sheet", "link"}
@@ -329,6 +330,10 @@ _DATETIME_SORTS = {
     "qa_completed_at": BacklinkRecord.qa_completed_at,
     "assigned_at": BacklinkRecord.assigned_at,
     "updated_at": BacklinkRecord.updated_at,
+    # Per-result SERP/index time: each row sorts by when ITS OWN index check
+    # ran (index_service writes index_checked_at per source), not by any
+    # batch/filter-applied time.
+    "index_checked_at": BacklinkRecord.index_checked_at,
 }
 _EPOCH_DATE = _EPOCH.date()
 

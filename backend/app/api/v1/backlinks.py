@@ -126,11 +126,14 @@ async def list_backlinks(
     assigned_to: date | None = None,
     updated_from: date | None = None,
     updated_to: date | None = None,
+    index_from: date | None = None,
+    index_to: date | None = None,
     sort: str = Query(
         default="score",
         pattern=(
             "^(score|last_checked_at|created_at|source_domain|link_type|http_status"
-            "|placement_date|discovered_at|qa_completed_at|assigned_at|updated_at)$"
+            "|placement_date|discovered_at|qa_completed_at|assigned_at|updated_at"
+            "|index_checked_at)$"
         ),
     ),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
@@ -159,6 +162,7 @@ async def list_backlinks(
         sheet_from=sheet_from, sheet_to=sheet_to,
         assigned_from=assigned_from, assigned_to=assigned_to,
         updated_from=updated_from, updated_to=updated_to,
+        index_from=index_from, index_to=index_to,
     )
     rows, next_cursor, has_more = await backlink_service.list_backlinks(
         db, ctx, filters, sort=sort, direction=direction, limit=limit, cursor=cursor
@@ -227,6 +231,7 @@ async def export_backlinks(
     sheet_from: date | None = None, sheet_to: date | None = None,
     assigned_from: date | None = None, assigned_to: date | None = None,
     updated_from: date | None = None, updated_to: date | None = None,
+    index_from: date | None = None, index_to: date | None = None,
     sort: str = Query(default="score"),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
     fmt: str = Query(default="csv", alias="format", pattern="^(csv|xlsx)$"),
@@ -256,6 +261,7 @@ async def export_backlinks(
         sheet_from=sheet_from, sheet_to=sheet_to,
         assigned_from=assigned_from, assigned_to=assigned_to,
         updated_from=updated_from, updated_to=updated_to,
+        index_from=index_from, index_to=index_to,
     )
     headers, rows, truncated = await backlink_service.export_rows(
         db, ctx, filters, sort=sort, direction=direction

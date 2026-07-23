@@ -114,12 +114,19 @@ def _require_reviewer(ctx: AuthContext) -> None:
         )
 
 
-def _intern_only_own(ctx: AuthContext, started_by) -> None:
-    """Interns see ONLY the batches they started (their isolated data area)."""
-    from app.core.errors import NotFoundError as _NF
+def _own_only(ctx: AuthContext) -> bool:
+    """Interns AND viewers see ONLY the batches they started — their own
+    submissions (e.g. task-sheet uploads staged for review). Higher roles see
+    the whole workspace."""
     from app.core.rbac import Role
 
-    if ctx.role is Role.INTERN and started_by != ctx.user.id:
+    return ctx.role in (Role.INTERN, Role.VIEWER)
+
+
+def _intern_only_own(ctx: AuthContext, started_by) -> None:
+    from app.core.errors import NotFoundError as _NF
+
+    if _own_only(ctx) and started_by != ctx.user.id:
         raise _NF("Batch not found")
 
 
@@ -144,9 +151,7 @@ async def list_batches(
         limit=limit, offset=offset, parent_id=parent,
         top_level=top_level and parent is None,
     )
-    from app.core.rbac import Role as _Role
-
-    if ctx.role is _Role.INTERN:
+    if _own_only(ctx):
         rows = [b for b in rows if b.started_by == ctx.user.id]
     review_ids = [b.id for b in rows if b.kind in batch_review_service.REVIEW_KINDS]
     pending = await _pending_by_batch(db, review_ids)
@@ -230,6 +235,7 @@ async def get_batch_logs(batch_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) -> 
     b = await db.get(Batch, batch_id)
     if b is None or b.workspace_id != ctx.workspace_id:
         raise NotFoundError("Batch not found")
+    _intern_only_own(ctx, b.started_by)  # interns/viewers: own submissions only
     logs = await batch_service.get_logs(db, batch_id)
     if not logs:
         # Never show an empty log panel: synthesize a line from the batch itself.
@@ -279,6 +285,10 @@ async def list_batch_items(
 ) -> dict:
     """The staged rows of a review batch with live counts — filters mirror the UI
     chips (comma lists) + substring search + DA/PA/Spam/AS thresholds."""
+    _b = await db.get(Batch, batch_id)
+    if _b is None or _b.workspace_id != ctx.workspace_id:
+        raise NotFoundError("Batch not found")
+    _intern_only_own(ctx, _b.started_by)  # interns/viewers: own submissions only
     thresholds = {"da_min": da_min, "da_max": da_max, "pa_min": pa_min, "pa_max": pa_max,
                   "spam_min": spam_min, "spam_max": spam_max, "as_min": as_min, "as_max": as_max}
     return await batch_review_service.list_items(

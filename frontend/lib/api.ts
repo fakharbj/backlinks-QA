@@ -12,6 +12,7 @@ export type Project = {
   name: string;
   client_name: string | null;
   target_domain: string | null;
+  target_urls?: string[] | null;
   status: string;
   schedule_interval: string;
   created_at: string;
