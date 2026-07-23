@@ -483,10 +483,21 @@ shows an "N links + 2 spare" chip). (2) **Task-sheet exports** — `GET
 (`workforce_service.task_export_rows`): one row per suggested domain w/ task
 meta + DA/PA/Spam/AS + "Why suggested" + EMPTY "Backlink URL / Anchor text /
 Remarks (fill in)" columns; pads blank rows up to the target so every link has
-a line; Task ID + domain = stable keys for the NEXT-phase submit-back (not
-built yet). Buttons: My Work Today header ("Today's sheet" XLSX) + per-task
-widget (XLSX/CSV); shared `downloadAuthed()` helper. Viewer-scoped via
-day_report/visible_labels. (3) **Main-sheet Status column**
+a line; Task ID + domain = stable keys. Buttons: My Work Today header
+("Today's sheet" XLSX) + per-task widget (XLSX/CSV); shared
+`downloadAuthed()` helper. Viewer-scoped via day_report/visible_labels.
+**Submit-back is LIVE**: `POST /workforce/task-import` (multipart csv/xlsx,
+any member) — `workforce_service.task_sheet_submit` parses the filled sheet
+(tolerant `_sheet_col` contains-matching), routes rows by Task ID
+(scope-checked per row; edited/unknown ids counted as skipped), stages one
+`link_review` batch per project via `stage_link_import` (label "Task sheet —
+<users> (N links)", `meta.task_sheet=true`; assigned_user_label +
+placement_date + link_type from the assignment; anchor/remarks carried;
+project default target applied) and `record_action(accepted, assignment_id)`
+marks used suggested domains. Nothing imports until reviewer approval — the
+staging gate is WHY any member may submit. UI: "Submit filled sheet" in My
+Work Today header + "Submit filled task sheet" in ImportDesk (routes itself,
+no project picker). (3) **Main-sheet Status column**
 (`GOOGLE_MAIN_STATUS_COL="Status"`): `status_from_cell` (active/inactive word
 sets; blank/typo → None = untouched; "inactive" checked before "active") in
 `discover_projects` sets `Project.status` + runs the SAME

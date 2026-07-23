@@ -139,3 +139,48 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
             "application/vnd.openxmlformats-officedocument"
         )
         assert exp_x.content[:2] == b"PK"  # zip magic — real xlsx bytes
+
+        # ── Round trip: fill two Backlink URL cells and submit the sheet back.
+        for i, url in enumerate(
+            ("https://blog.example.com/built-1", "https://forum.example.org/built-2")
+        ):
+            data[i][fill_col] = url
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(header)
+        writer.writerows(data)
+        sub = client.post(
+            "/api/v1/workforce/task-import",
+            files={"file": ("task-sheet.csv", buf.getvalue().encode("utf-8"), "text/csv")},
+            headers=headers,
+        )
+        assert sub.status_code == 202, sub.text
+        out = sub.json()
+        assert out["staged"] == 2
+        assert out["skipped_unknown_task"] == 0
+        assert len(out["batches"]) == 1  # one project → one review batch
+        batch_id = out["batches"][0]["batch_id"]
+
+        # The batch is an isolated link_review batch — nothing imported yet.
+        b = client.get(f"/api/v1/batches/{batch_id}", headers=headers)
+        assert b.status_code == 200, b.text
+        binfo = b.json()
+        assert binfo.get("kind") == "link_review"
+        links = client.get(
+            f"/api/v1/backlinks?project_id={project_id}&limit=10", headers=headers
+        )
+        assert links.status_code == 200
+        payload = links.json()
+        items = payload["items"] if isinstance(payload, dict) else payload
+        assert len(items) == 0  # staged only — approval is the gate
+
+        # A sheet with no filled Backlink URL cells is rejected with guidance.
+        empty_buf = io.StringIO()
+        w2 = csv.writer(empty_buf)
+        w2.writerow(header)
+        sub2 = client.post(
+            "/api/v1/workforce/task-import",
+            files={"file": ("task-sheet.csv", empty_buf.getvalue().encode("utf-8"), "text/csv")},
+            headers=headers,
+        )
+        assert sub2.status_code in (400, 422), sub2.text

@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.core.deps import AuthContext, AuthCtx, DbSession, ReadSession, require
@@ -308,6 +308,35 @@ async def task_export(
         iter([data]), media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{safe}.{fmt}"'},
     )
+
+
+@router.post("/task-import", status_code=202)
+async def task_import(
+    db: DbSession,
+    ctx: AuthCtx,
+    file: UploadFile = File(...),
+) -> dict:
+    """Submit a FILLED task sheet (the /task-export file with the Backlink URL
+    column filled in). Each filled row becomes a STAGED link in a link_review
+    batch — the same isolated review pipeline as manual imports, so nothing
+    reaches a project until QA/manager approves. Open to any member: rows are
+    matched by Task ID and scope-checked (a viewer can only submit their own
+    tasks); used suggested domains are marked accepted."""
+    data = await file.read()
+    if len(data) > 16 * 1024 * 1024:
+        from app.core.errors import ValidationAppError
+
+        raise ValidationAppError("File too large (max 16 MB)")
+    result = await workforce_service.task_sheet_submit(
+        db, ctx, data=data, filename=file.filename or "task-sheet.csv"
+    )
+    await audit_service.record(
+        db, action=AuditAction.CREATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="task_sheet_submit", entity_id=ctx.workspace_id,
+        summary=f"Task sheet submitted — {result['staged']} links staged for review",
+    )
+    await db.commit()
+    return result
 
 
 @router.delete("/assignments/{assignment_id}", response_model=Message)

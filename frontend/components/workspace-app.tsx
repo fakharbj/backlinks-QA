@@ -4886,6 +4886,20 @@ function ImportDesk({
     onSuccess: afterStage,
     onError: (err: Error) => onNotice(err.message)
   });
+  // Filled TASK sheets route themselves (Task ID column carries the project),
+  // so no project picker is needed for this one.
+  const uploadTaskSheet = useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return api<{ message: string }>("/workforce/task-import", { token, method: "POST", body: fd });
+    },
+    onSuccess: (d) => {
+      onNotice(d.message);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (err: Error) => onNotice(err.message)
+  });
 
   // This project's target — rows pasted without their own target default to it.
   const activeProj = (projectsQ.data || []).find((p) => p.id === effectiveProject);
@@ -4975,6 +4989,26 @@ function ImportDesk({
                       return;
                     }
                     if (f) uploadFile.mutate(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <label
+                className={clsx(
+                  "flex h-10 cursor-pointer items-center gap-2 rounded-md border border-ocean/40 bg-ocean/10 px-4 text-sm font-medium text-ocean transition hover:bg-ocean/20",
+                  uploadTaskSheet.isPending && "pointer-events-none opacity-50"
+                )}
+                title="Upload a FILLED task sheet (from My Work → Today's sheet / a task's export). Rows route themselves by Task ID — no project needed; everything stages for review."
+              >
+                {uploadTaskSheet.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Submit filled task sheet
+                <input
+                  type="file"
+                  accept=".csv,.xlsx"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadTaskSheet.mutate(f);
                     e.target.value = "";
                   }}
                 />
@@ -6989,6 +7023,24 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
 }) {
   const queryClient = useQueryClient();
   const showAvatars = useShowAvatars(token);
+  // Submit-back: the filled task sheet stages links into a review batch
+  // (Task ID column routes each row; nothing imports until approval).
+  const submitSheet = useMutation({
+    mutationFn: (f: File) => {
+      const fd = new FormData();
+      fd.append("file", f);
+      return api<{ message: string; staged: number; skipped_unknown_task: number }>(
+        "/workforce/task-import", { token, method: "POST", body: fd }
+      );
+    },
+    onSuccess: (d) => {
+      onNotice(d.skipped_unknown_task
+        ? `${d.message} (${d.skipped_unknown_task} row${d.skipped_unknown_task === 1 ? "" : "s"} skipped — edited/unknown Task ID)`
+        : d.message);
+      queryClient.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
   const fmtIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const today = fmtIso(new Date());
@@ -7436,6 +7488,28 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
                 >
                   <Download className="h-3 w-3" /> Today&apos;s sheet
                 </button>
+              ) : null}
+              {isCurrentWeek && todayRows.length ? (
+                <label
+                  className={clsx(
+                    "flex cursor-pointer items-center gap-1 rounded-md border border-ocean/40 bg-ocean/10 px-2 py-1 text-[11px] font-semibold text-ocean transition hover:bg-ocean/20",
+                    submitSheet.isPending && "pointer-events-none opacity-50"
+                  )}
+                  title="Upload the filled sheet — every row with a Backlink URL becomes a staged link for review (nothing is added until approval)"
+                >
+                  {submitSheet.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                  Submit filled sheet
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) submitSheet.mutate(f);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
               ) : null}
               {todayRows.length > 4 ? (
                 <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">

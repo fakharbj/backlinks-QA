@@ -1185,3 +1185,162 @@ async def task_export_rows(
             )
             rows.append(meta + detail + ["", "", ""])
     return TASK_EXPORT_HEADERS, rows, base
+
+
+def _sheet_col(headers: list[str], *needles: str) -> str | None:
+    """Find a task-sheet column by contains-match on the lowered header —
+    tolerant of the "(fill in)" suffix being kept, edited or dropped."""
+    for h in headers:
+        low = (h or "").strip().lower()
+        if any(n in low for n in needles):
+            return h
+    return None
+
+
+async def task_sheet_submit(
+    db: AsyncSession, ctx: AuthContext, *, data: bytes, filename: str
+) -> dict:
+    """The filled task sheet comes back: every row whose "Backlink URL" cell
+    was filled becomes a STAGED link in a ``link_review`` batch (the same
+    isolated pipeline manual imports use — nothing reaches the project until a
+    reviewer approves), attributed to the task's user/project/day and link
+    type. Suggested domains that were actually used are marked accepted so
+    the suggestion manager stays truthful. Any member may submit, because the
+    Task ID on each row is scope-checked (a viewer can only submit rows for
+    their own tasks) and everything lands behind the QA+ approve gate."""
+    from app.services import batch_review_service, import_parse, recommendation_service
+    from app.models.enums import ImportSource
+    from app.models.project import Project
+
+    if filename.lower().endswith(".xlsx"):
+        headers, raw_rows = import_parse.parse_xlsx(data)
+        source = ImportSource.XLSX
+    else:
+        headers, raw_rows = import_parse.parse_csv(data)
+        source = ImportSource.CSV
+
+    task_col = _sheet_col(headers, "task id")
+    url_col = _sheet_col(headers, "backlink url")
+    if not task_col or not url_col:
+        raise ValidationAppError(
+            "This doesn't look like an exported task sheet — the Task ID and "
+            "Backlink URL columns are missing. Export the sheet from a task "
+            "(or Today's sheet), fill the Backlink URL column, then submit it."
+        )
+    anchor_col = _sheet_col(headers, "anchor")
+    remarks_col = _sheet_col(headers, "remark")
+    domain_col = _sheet_col(headers, "suggested domain")
+
+    filled: list[dict] = []
+    for row in raw_rows:
+        url = (str(row.get(url_col, "")) or "").strip()
+        if not url:
+            continue
+        filled.append(
+            {
+                "task_id": (str(row.get(task_col, "")) or "").strip(),
+                "url": url,
+                "anchor": (str(row.get(anchor_col, "")) or "").strip() if anchor_col else "",
+                "remarks": (str(row.get(remarks_col, "")) or "").strip() if remarks_col else "",
+                "domain": (str(row.get(domain_col, "")) or "").strip() if domain_col else "",
+            }
+        )
+    if not filled:
+        raise ValidationAppError(
+            "No filled rows found — paste each backlink you built into the "
+            "Backlink URL column next to its suggested domain, then submit."
+        )
+
+    # Resolve tasks; scope-check every label against the caller (visible_labels:
+    # viewer → own labels only, TeamLead → their people, manager/admin → all).
+    task_ids: list[uuid.UUID] = []
+    for f in filled:
+        try:
+            task_ids.append(uuid.UUID(f["task_id"]))
+        except (ValueError, AttributeError):
+            task_ids.append(uuid.UUID(int=0))
+    tasks = {
+        str(t.id): t
+        for t in (
+            await db.execute(
+                select(TaskAssignment).where(
+                    TaskAssignment.workspace_id == ctx.workspace_id,
+                    TaskAssignment.id.in_(set(task_ids)),
+                )
+            )
+        ).scalars()
+    }
+    scope = await visible_labels(db, ctx)
+    skipped_unknown = 0
+    by_project: dict[uuid.UUID, list[dict]] = {}
+    accepted = 0
+    for f in filled:
+        ta = tasks.get(f["task_id"])
+        if ta is None or (scope is not None and ta.user_label not in scope):
+            skipped_unknown += 1
+            continue
+        mapped = {
+            "source_page_url": f["url"],
+            "assigned_user_label": ta.user_label,
+            "placement_date": ta.day.isoformat(),
+        }
+        if ta.link_type_names:
+            mapped["link_type"] = ta.link_type_names[0]
+        if f["anchor"]:
+            mapped["expected_anchor_text"] = f["anchor"]
+        if f["remarks"]:
+            mapped["notes"] = f["remarks"]
+        by_project.setdefault(ta.project_id, []).append(mapped)
+        if f["domain"]:
+            try:
+                await recommendation_service.record_action(
+                    db, ctx, domain_key=f["domain"], status="accepted",
+                    project_id=ta.project_id, assignment_id=ta.id,
+                    recommended_to=ta.user_label, note="Built via task sheet",
+                )
+                accepted += 1
+            except Exception:  # noqa: BLE001 — bookkeeping must not block the submit
+                pass
+    if not by_project:
+        raise ValidationAppError(
+            "None of the filled rows matched a task you can submit for — "
+            "check the Task ID column wasn't edited."
+        )
+
+    batches = []
+    for pid, rows in by_project.items():
+        project = await db.get(Project, pid)
+        default = None
+        if project is not None:
+            if project.target_urls:
+                default = project.target_urls[0]
+            elif project.target_domain:
+                default = f"https://{project.target_domain}"
+        batch = await batch_review_service.stage_link_import(
+            db, ctx, project_id=pid, rows=rows, source=source,
+            filename=filename, default_target=default,
+        )
+        # Rebrand the batch so reviewers see WHERE it came from.
+        labels = sorted({r["assigned_user_label"] for r in rows})
+        batch.label = f"Task sheet — {', '.join(labels[:3])} ({len(rows)} links)"
+        batch.meta = {**(batch.meta or {}), "task_sheet": True}
+        batches.append(
+            {
+                "batch_id": str(batch.id), "seq": batch.seq,
+                "project_id": str(pid),
+                "project": project.name if project is not None else "",
+                "total": len(rows),
+            }
+        )
+    staged_total = sum(b["total"] for b in batches)
+    return {
+        "batches": batches,
+        "staged": staged_total,
+        "skipped_unknown_task": skipped_unknown,
+        "suggestions_marked_used": accepted,
+        "message": (
+            f"{staged_total} link{'s' if staged_total != 1 else ''} staged for review "
+            f"in {len(batches)} batch{'es' if len(batches) != 1 else ''} — "
+            "nothing is added until a reviewer approves"
+        ),
+    }
