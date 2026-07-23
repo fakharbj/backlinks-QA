@@ -544,6 +544,27 @@ TOP-LEVEL batches only; all-time "previous period" delta suppressed (was a fake
 own-batch scoping + 404 on others' logs/items, counts strip admin-only). Prod
 verified: 160 projects / 45,399 backlinks / 1,665 tasks intact, bundle live.
 
+**Finalization round 2 shipped + deployed** (2026-07-23 #4, no new migration,
+commits 0e7164d/2179165): **task sheet** — the full sheet's "Target links"
+column (task total repeated on every row) is now a per-row **"Link #"**
+(1..target, then `spare N`) so each row = ONE link; submit-back unaffected
+(routes by Task ID / User+Date; "Link #" doesn't collide with the "Link types"
+match). **My Work** — a step-by-step **guide** in the Today section (download →
+build → fill ONLY the Backlink URL → Submit → track in My submissions; target
+vs 2 spare). **Viewer "My links"** (new MY_NAV tab, `focus="links"` wired) —
+the previously-dead `MyRecentLinks` is now a full own-links view: status filter,
+score, Google index status, link date, load-more w/ running total, click →
+shared `BacklinkDetailDrawer`; scoped to the viewer's label (submitted links
+appear once approved). **Avatars** — Backlinks grid assigned-user chip + Overview
+assigned-user table. **Admin dashboard lists** — Recent Changes shows its count
++ "Show all N/less" (feed cap 15→50); By-link-type / Team performance / Top
+source domains / Recent regressions titles carry their counts (full paginated
+data stays in the dedicated desks). Completion tracking per task is already
+live (task cards show actual/expected + green when done, My links lists the
+built links). NOTE: completed-green remains presentation-only; the
+`TASK_COMPLETION_START_DATE=2026-07-27` clock is unchanged (see
+[[finalization-decisions]]).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:
