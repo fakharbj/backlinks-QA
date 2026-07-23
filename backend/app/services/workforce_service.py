@@ -1107,19 +1107,11 @@ async def decide_leave(
 
 
 # ── Task-sheet export (owner rule) ───────────────────────────────────────────
+# CLEAN, minimal layout (owner ask): no Task ID / Link # / priority / notes /
+# reasons — just the columns a builder needs to add links. Date/User/Project/
+# Link type stay because submit-back routes rows by them (User + Date, narrowed
+# by Project + Link type). Tasks are grouped with a divider row between them.
 TASK_EXPORT_HEADERS = [
-    # "Link #" is PER ROW (1..target, then "spare") — each row is ONE link to
-    # build, so the task's total lives in the guide, not repeated on every row.
-    "Task ID", "Date", "User", "Project", "Link types", "Link #",
-    "Priority", "Task note", "Suggested domain", "DA", "PA", "Spam", "AS",
-    "Why suggested", "Backlink URL (fill in)", "Anchor text (fill in)",
-    "Remarks (fill in)",
-]
-# "Simple" style (owner ask): the same day sheet without the plumbing columns
-# (no Task ID / target counts / priority / reasons) — just the main columns a
-# builder actually reads. Submit-back still routes these rows by
-# User + Date (+ Project / Link type) — see task_sheet_submit's fallback.
-TASK_EXPORT_HEADERS_SIMPLE = [
     "Date", "User", "Project", "Link type", "Suggested domain",
     "DA", "PA", "Spam", "AS",
     "Backlink URL (fill in)", "Anchor text (fill in)", "Remarks (fill in)",
@@ -1134,15 +1126,17 @@ async def task_export_rows(
     style: str = "full",
 ) -> tuple[list[str], list[list], str]:
     """Rows for the hand-out work sheet: one row per suggested domain (the
-    task's assigned links + 2 spare), with EMPTY fill-in columns next to each
-    row so the builder pastes the backlink they created beside the domain it
-    was built on. Two modes: ONE task (``assignment_id``) or a whole day
-    (defaults to today). Label scoping is enforced by ``day_report`` /
-    ``visible_labels`` — a viewer only ever exports their own plan. The Task
-    ID + Suggested domain columns are stable keys, so the filled sheet can be
-    submitted back in a later phase."""
+    task's assigned links + 2 spare), with EMPTY fill-in columns so the builder
+    pastes the backlink they created beside the domain it was built on. Tasks
+    are separated by a divider row (``style="flat"``/"simple" omits dividers).
+    Two modes: ONE task (``assignment_id``) or a whole day (defaults to today).
+    Label scoping is enforced by ``day_report`` / ``visible_labels`` — a viewer
+    only ever exports their own plan. Submit-back routes rows by User + Date
+    (+ Project / Link type) — no Task ID column needed."""
     from app.models.project import Project
     from app.services import recommendation_service
+
+    dividers = style not in ("flat", "simple")
 
     if assignment_id is not None:
         ta = await db.get(TaskAssignment, assignment_id)
@@ -1168,6 +1162,7 @@ async def task_export_rows(
         ).all():
             project_names[str(pid)] = name
 
+    ncols = len(TASK_EXPORT_HEADERS)
     rows: list[list] = []
     for t in tasks:
         sugg = await recommendation_service.suggest_for_task(
@@ -1175,42 +1170,27 @@ async def task_export_rows(
         )
         items = sugg["items"]
         # At least one row per link the person must build — pad with blank
-        # suggestion rows when the engine has fewer domains than the target,
-        # so every built link still has a line to be written on.
+        # suggestion rows when the engine has fewer domains than the target.
         target = int(t["expected_links"] or 0)
         want = max(len(items), target, 1)
+        project = project_names.get(t["project_id"], "")
+        ltypes = ", ".join(t["link_type_names"] or [])
+        if dividers:
+            # A separator row grouping each task. It has no Backlink URL, so
+            # submit-back skips it (only rows with a filled URL are imported).
+            label = f"──  {project} · {ltypes or 'Any type'} — build {target} link{'s' if target != 1 else ''}  ──"
+            rows.append([label] + [""] * (ncols - 1))
         for i in range(want):
-            # Per-row link number: 1..target are the task's target links; any
-            # extra rows are clearly labelled spares (the "+2" suggestions).
-            link_no = str(i + 1) if (target == 0 or i < target) else f"spare {i - target + 1}"
-            if style == "simple":
-                meta = [
-                    t["day"], t["user_label"],
-                    project_names.get(t["project_id"], ""),
-                    ", ".join(t["link_type_names"] or []),
-                ]
-            else:
-                meta = [
-                    t["id"], t["day"], t["user_label"],
-                    project_names.get(t["project_id"], ""),
-                    ", ".join(t["link_type_names"] or []),
-                    link_no, t["priority"] or "", t["note"] or "",
-                ]
             it = items[i] if i < len(items) else None
-            if it is not None:
-                metrics = [
-                    it["domain_key"], it.get("da"), it.get("pa"),
-                    it.get("spam_score"), it.get("semrush_as"),
-                ]
-                why = ["; ".join(it.get("reasons") or [])]
-            else:
-                metrics = ["", None, None, None, None]
-                why = ["(no suggestion — pick your own domain)"]
-            detail = metrics if style == "simple" else metrics + why
-            rows.append(meta + detail + ["", "", ""])
-    if style == "simple":
-        return TASK_EXPORT_HEADERS_SIMPLE, rows, f"{base}_simple"
-    return TASK_EXPORT_HEADERS, rows, base
+            domain = it["domain_key"] if it is not None else ""
+            metrics = (
+                [it.get("da"), it.get("pa"), it.get("spam_score"), it.get("semrush_as")]
+                if it is not None else [None, None, None, None]
+            )
+            rows.append(
+                [t["day"], t["user_label"], project, ltypes, domain, *metrics, "", "", ""]
+            )
+    return TASK_EXPORT_HEADERS, rows, (f"{base}_flat" if not dividers else base)
 
 
 def _sheet_col(headers: list[str], *needles: str) -> str | None:

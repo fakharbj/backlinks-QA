@@ -190,6 +190,12 @@ def _apply_filters(stmt: Select, f: BacklinkFilters) -> Select:
                 func.trim(BacklinkRecord.assigned_user_label) == "",
             )
         )
+    if f.no_sheet:
+        # NOT from the main Google-sheet sync — i.e. links ingested through the
+        # tool (task-sheet submissions / manual imports). Drives a viewer's
+        # "My links" so they see only the links they submitted, never the
+        # main-sheet catalog.
+        stmt = stmt.where(BacklinkRecord.source_sheet_id.is_(None))
     # spam_min / da_min / pa_min / as_min / orphaned resolve against the
     # source_domains aggregate row. source_domains is unique per
     # (workspace_id, domain_key) so the LEFT JOIN never fans out the backlink

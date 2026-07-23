@@ -105,6 +105,7 @@ async def list_backlinks(
     no_placement: bool | None = None,
     qa_wait: str | None = None,
     no_user: bool | None = None,
+    no_sheet: bool | None = None,
     search: str | None = None,
     target: str | None = None,
     # ── Date-range filters (one pair per date type; inclusive end, see service) ──
@@ -151,7 +152,7 @@ async def list_backlinks(
         http_status=http_status, broken=broken, http_class=http_class,
         link_missing=link_missing, spam_min=spam_min,
         da_min=da_min, pa_min=pa_min, as_min=as_min, orphaned=orphaned,
-        no_placement=no_placement, no_user=no_user, qa_wait=qa_wait,
+        no_placement=no_placement, no_user=no_user, no_sheet=no_sheet, qa_wait=qa_wait,
         search=search, target=target,
         link_from=link_from, link_to=link_to,
         placement_from=placement_from, placement_to=placement_to,

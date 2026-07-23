@@ -48,6 +48,9 @@ def test_backlinks_sort_index_checked_at_accepted(live_stack):
             headers=headers,
         )
         assert r2.status_code == 200, r2.text
+        # no_sheet filter (drives a viewer's "My links" = submitted only).
+        r3 = client.get("/api/v1/backlinks?no_sheet=true&limit=5", headers=headers)
+        assert r3.status_code == 200, r3.text
 
 
 def test_viewer_sees_only_own_batches(live_stack):

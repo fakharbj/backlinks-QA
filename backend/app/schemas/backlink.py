@@ -211,6 +211,7 @@ class BacklinkFilters(BaseModel):
     orphaned: bool | None = None         # source domain has no source_domains row
     no_placement: bool | None = None     # placement_date IS NULL (links awaiting a date)
     no_user: bool | None = None          # no assigned user (label blank) — quick chip
+    no_sheet: bool | None = None         # source_sheet_id IS NULL — tool-submitted, not main-sheet
     # QA wait state (Enterprise §1): waiting_api | api_failed | manual_retry, comma
     # list; "none" = links with NO wait reason (normal scheduling).
     qa_wait: str | None = None

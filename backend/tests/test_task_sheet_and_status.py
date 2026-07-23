@@ -116,8 +116,9 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
         )
         assert sugg2.json()["suggestion_target"] == 3
 
-        # Per-task sheet: CSV with the fill-in columns, padded to ≥5 rows so
-        # every link the person must build has a line.
+        # Per-task sheet: CLEAN layout — no Task ID / Link # / Priority / Why;
+        # a divider row groups the task; one row per suggested domain with the
+        # empty fill-in columns.
         exp = client.get(
             f"/api/v1/workforce/task-export?assignment_id={assignment_id}&format=csv",
             headers=headers,
@@ -126,23 +127,30 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
         assert "text/csv" in exp.headers["content-type"]
         rows = list(csv.reader(io.StringIO(exp.content.decode("utf-8-sig"))))
         header = rows[0]
-        assert "Backlink URL (fill in)" in header
-        assert "Anchor text (fill in)" in header
-        assert "Suggested domain" in header
-        data = rows[1:]
+        for col in ("Date", "User", "Project", "Link type", "Suggested domain",
+                    "Backlink URL (fill in)", "Anchor text (fill in)", "Remarks (fill in)"):
+            assert col in header, col
+        for gone in ("Task ID", "Link #", "Priority", "Task note", "Why suggested"):
+            assert gone not in header, gone
+        user_ix = header.index("User")
+        date_ix = header.index("Date")
+        fill_ix = header.index("Backlink URL (fill in)")
+        proj_ix = header.index("Project")
+        lt_ix = header.index("Link type")
+        allrows = rows[1:]
+        # Data rows carry the user label; divider rows start with "──".
+        data = [r for r in allrows if len(r) > user_ix and r[user_ix] == label]
         assert len(data) >= 5
-        id_col = header.index("Task ID")
-        fill_col = header.index("Backlink URL (fill in)")
-        assert all(r[id_col] == assignment_id for r in data)
-        assert all(r[fill_col] == "" for r in data)  # fill-in stays empty
+        assert any(r and r[0].startswith("──") for r in allrows)  # task divider present
+        assert all(r[fill_ix] == "" for r in data)  # fill-in stays empty
 
-        # Whole-day sheet contains the same task.
+        # Whole-day sheet contains this user's rows.
         exp_day = client.get(
             f"/api/v1/workforce/task-export?day={day.isoformat()}&format=csv",
             headers=headers,
         )
         assert exp_day.status_code == 200, exp_day.text
-        assert assignment_id in exp_day.content.decode("utf-8-sig")
+        assert label in exp_day.content.decode("utf-8-sig")
 
         # XLSX variant streams a spreadsheet.
         exp_x = client.get(
@@ -155,15 +163,22 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
         )
         assert exp_x.content[:2] == b"PK"  # zip magic — real xlsx bytes
 
-        # ── Round trip: fill two Backlink URL cells and submit the sheet back.
-        for i, url in enumerate(
-            ("https://blog.example.com/built-1", "https://forum.example.org/built-2")
-        ):
-            data[i][fill_col] = url
+        # Flat style omits the divider rows.
+        exp_flat = client.get(
+            f"/api/v1/workforce/task-export?assignment_id={assignment_id}&style=simple&format=csv",
+            headers=headers,
+        )
+        frows = list(csv.reader(io.StringIO(exp_flat.content.decode("utf-8-sig"))))[1:]
+        assert not any(r and r[0].startswith("──") for r in frows)
+
+        # ── Round trip: fill two data rows and submit the WHOLE sheet (divider
+        # rows have no URL, so they're skipped). Routes by User + Date.
+        data[0][fill_ix] = "https://blog.example.com/built-1"
+        data[1][fill_ix] = "https://forum.example.org/built-2"
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(header)
-        writer.writerows(data)
+        writer.writerows(allrows)
         sub = client.post(
             "/api/v1/workforce/task-import",
             files={"file": ("task-sheet.csv", buf.getvalue().encode("utf-8"), "text/csv")},
@@ -171,81 +186,39 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
         )
         assert sub.status_code == 202, sub.text
         out = sub.json()
-        assert out["staged"] == 2
+        assert out["staged"] == 2, out
         assert out["skipped_unknown_task"] == 0
         assert len(out["batches"]) == 1  # one project → one review batch
         batch_id = out["batches"][0]["batch_id"]
 
-        # The batch is an isolated link_review batch — nothing imported yet.
+        # Isolated link_review batch — nothing imported to the project yet.
         b = client.get(f"/api/v1/batches/{batch_id}", headers=headers)
         assert b.status_code == 200, b.text
-        binfo = b.json()
-        assert binfo.get("kind") == "link_review"
+        assert b.json().get("kind") == "link_review"
         links = client.get(
             f"/api/v1/backlinks?project_id={project_id}&limit=10", headers=headers
         )
-        assert links.status_code == 200
         payload = links.json()
         items = payload["items"] if isinstance(payload, dict) else payload
         assert len(items) == 0  # staged only — approval is the gate
 
-        # ── Simple style: main columns only — no Task ID / plumbing columns.
-        exp_s = client.get(
-            f"/api/v1/workforce/task-export?day={day.isoformat()}&style=simple&format=csv",
-            headers=headers,
-        )
-        assert exp_s.status_code == 200, exp_s.text
-        s_rows = list(csv.reader(io.StringIO(exp_s.content.decode("utf-8-sig"))))
-        s_header = s_rows[0]
-        assert "Task ID" not in s_header
-        assert "Priority" not in s_header
-        assert "Why suggested" not in s_header
-        for col in ("Date", "User", "Project", "Link type", "Suggested domain",
-                    "Backlink URL (fill in)"):
-            assert col in s_header, col
-        s_data = s_rows[1:]
-        assert len(s_data) >= 5  # still padded to the task's target
-        assert "simple" in exp_s.headers["content-disposition"]
-
-        # Simple sheet round trip: no Task ID column → rows route by
-        # User + Date (narrowed by Project / Link type).
-        s_fill = s_header.index("Backlink URL (fill in)")
-        s_data[0][s_fill] = "https://directory.example.net/built-3"
-        s_buf = io.StringIO()
-        w3 = csv.writer(s_buf)
-        w3.writerow(s_header)
-        w3.writerows(s_data)
-        sub3 = client.post(
-            "/api/v1/workforce/task-import",
-            files={"file": ("task-sheet_simple.csv", s_buf.getvalue().encode("utf-8"), "text/csv")},
-            headers=headers,
-        )
-        assert sub3.status_code == 202, sub3.text
-        out3 = sub3.json()
-        assert out3["staged"] == 1
-        assert out3["skipped_unknown_task"] == 0
-
-        # Excel-style locale dates in the simple sheet still route (the Date
-        # column is the simple sheet's only key and Excel rewrites it).
-        date_ix = s_header.index("Date")
+        # Excel-style locale date still routes (Excel rewrites ISO dates).
         us_day = f"{day.month}/{day.day}/{day.year}"
-        s_data[1][s_fill] = "https://blog.example.io/built-4"
-        s_data[1][date_ix] = us_day
-        s_buf2 = io.StringIO()
-        w4 = csv.writer(s_buf2)
-        w4.writerow(s_header)
-        w4.writerow(s_data[1])
+        data[2][fill_ix] = "https://blog.example.io/built-4"
+        data[2][date_ix] = us_day
+        b2 = io.StringIO()
+        w = csv.writer(b2)
+        w.writerow(header)
+        w.writerow(data[2])
         sub4 = client.post(
             "/api/v1/workforce/task-import",
-            files={"file": ("task-sheet_simple.csv", s_buf2.getvalue().encode("utf-8"), "text/csv")},
+            files={"file": ("task-sheet.csv", b2.getvalue().encode("utf-8"), "text/csv")},
             headers=headers,
         )
         assert sub4.status_code == 202, sub4.text
         assert sub4.json()["staged"] == 1
 
-        # ── Ambiguity handling. Assignments are unique per (project, user,
-        # day), so a second same-day task must live on a SECOND project:
-        # taskA = proj1 ["Profile"], taskB = proj2 ["Profile & Forums"].
+        # ── Ambiguity: a second same-day task on a SECOND project.
         proj2 = client.post(
             "/api/v1/projects", json={"name": "TaskSheet Proj B"}, headers=headers
         )
@@ -261,44 +234,37 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
         assert a2.status_code == 200, a2.text
 
         def submit_one(project_cell: str, ltype_cell: str, url: str):
-            row = list(s_data[2])
-            row[s_fill] = url
-            row[s_header.index("Project")] = project_cell
-            row[s_header.index("Link type")] = ltype_cell
-            buf2 = io.StringIO()
-            w = csv.writer(buf2)
-            w.writerow(s_header)
-            w.writerow(row)
+            row = list(data[3])
+            row[fill_ix] = url
+            row[proj_ix] = project_cell
+            row[lt_ix] = ltype_cell
+            b3 = io.StringIO()
+            w2 = csv.writer(b3)
+            w2.writerow(header)
+            w2.writerow(row)
             return client.post(
                 "/api/v1/workforce/task-import",
-                files={"file": ("task-sheet_simple.csv", buf2.getvalue().encode("utf-8"), "text/csv")},
+                files={"file": ("task-sheet.csv", b3.getvalue().encode("utf-8"), "text/csv")},
                 headers=headers,
             )
 
-        # Substring types must NOT cross-match: with the Project cell blanked
-        # (edited sheet), "Profile" must route to taskA by EXACT type — not be
-        # conflated with "Profile & Forums" and min()-routed by UUID.
+        # Project blanked, exact link type "Profile" → routes to taskA (proj1).
         sub5 = submit_one("", "Profile", "https://wiki.example.edu/built-5")
         assert sub5.status_code == 202, sub5.text
-        assert sub5.json()["staged"] == 1
-        assert sub5.json()["batches"][0]["project_id"] == project_id  # taskA's project
+        assert sub5.json()["batches"][0]["project_id"] == project_id
 
-        # A row naming a project that matches no candidate is SKIPPED, never
-        # guessed into another project (rename-after-export safety).
-        sub6 = submit_one(
-            "Renamed Project That Does Not Exist", "", "https://news.example.co/built-6"
-        )
-        assert sub6.status_code in (400, 422), sub6.text  # nothing routable
+        # Named project matching nothing → skipped, never guessed.
+        sub6 = submit_one("Renamed Project That Does Not Exist", "", "https://news.example.co/b6")
+        assert sub6.status_code in (400, 422), sub6.text
 
-        # No project + no link type + two candidates on different projects →
-        # ambiguous, skipped (never misattributed).
+        # No project + no link type + two different-project candidates → skipped.
         sub7 = submit_one("", "", "https://misc.example.dev/built-7")
         assert sub7.status_code in (400, 422), sub7.text
 
         # A sheet with no filled Backlink URL cells is rejected with guidance.
         empty_buf = io.StringIO()
-        w2 = csv.writer(empty_buf)
-        w2.writerow(header)
+        we = csv.writer(empty_buf)
+        we.writerow(header)
         sub2 = client.post(
             "/api/v1/workforce/task-import",
             files={"file": ("task-sheet.csv", empty_buf.getvalue().encode("utf-8"), "text/csv")},

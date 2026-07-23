@@ -6642,9 +6642,11 @@ function MyRecentLinks({ token, userLabel, onNotice }: { token: string | null; u
     retry: false,
     placeholderData: (prev) => prev,
     queryFn: () =>
+      // no_sheet=true → ONLY links this person submitted through the tool
+      // (task-sheet submissions), never the main Google-sheet catalog.
       api<Page<BacklinkRow>>(
         `/backlinks?assigned_user_label=${encodeURIComponent(userLabel)}` +
-        `&sort=updated_at&direction=desc&limit=${limit}&with_total=true` +
+        `&no_sheet=true&sort=updated_at&direction=desc&limit=${limit}&with_total=true` +
         (statusF ? `&status=${statusF}` : ""),
         { token }
       )
@@ -7578,22 +7580,6 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
                 </button>
               ) : null}
               {isCurrentWeek && todayRows.length ? (
-                <button
-                  onClick={async () => {
-                    const ok = await downloadAuthed(
-                      token, `/workforce/task-export?day=${today}&style=simple&format=xlsx`, `task-sheet_${today}_simple.xlsx`
-                    );
-                    onNotice(ok
-                      ? "Simple day sheet downloaded — main columns only; it can still be submitted back (rows match by user + date)"
-                      : "Export failed — try again");
-                  }}
-                  className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:bg-field hover:text-ink"
-                  title="Same day sheet without the Task ID / targets / priority columns — just Date, User, Project, Link type, the suggested domains with their metrics, and the fill-in columns"
-                >
-                  <Download className="h-3 w-3" /> Simple
-                </button>
-              ) : null}
-              {isCurrentWeek && todayRows.length ? (
                 <label
                   className={clsx(
                     "flex cursor-pointer items-center gap-1 rounded-md border border-ocean/40 bg-ocean/10 px-2 py-1 text-[11px] font-semibold text-ocean transition hover:bg-ocean/20",
@@ -7626,10 +7612,10 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
             <details className="border-b border-line bg-ocean/5 px-3 py-2 text-xs text-muted [&_summary]:cursor-pointer" open>
               <summary className="font-semibold text-ink">How today&apos;s sheet &amp; submit works</summary>
               <ol className="mt-1.5 list-decimal space-y-1 pl-4">
-                <li><b>Download</b> the sheet — <b>Today&apos;s sheet</b> (full) or <b>Simple</b> (main columns). Each row is <b>one link</b> to build.</li>
-                <li>Build your backlinks. Your <b>target</b> per task is the number of links to build; we also list <b>2 spare</b> suggested domains (marked <i>spare</i>) — use one only if a target domain doesn&apos;t work out.</li>
-                <li>In the sheet, fill <b>only the &ldquo;Backlink URL (fill in)&rdquo;</b> column with the link you built. Anchor text and Remarks are optional; leave every other column exactly as it is.</li>
-                <li>Click <b>Submit filled sheet</b>. Nothing goes live until a reviewer approves it — follow its progress under <b>My submissions</b>, and completed links show against each task here.</li>
+                <li><b>Download</b> <b>Today&apos;s sheet</b>. Each task is a titled group; every row inside it is <b>one link</b> to build (with a suggested domain + its metrics).</li>
+                <li>Build your backlinks. Fill <b>only the &ldquo;Backlink URL (fill in)&rdquo;</b> column with the link you built (Anchor text and Remarks are optional). Leave every other column exactly as it is.</li>
+                <li>Click <b>Submit filled sheet</b>. Nothing goes live until a reviewer approves it — follow its progress under <b>My submissions</b>.</li>
+                <li>As your links are approved, each task fills in automatically and turns green when it&apos;s complete.</li>
               </ol>
             </details>
           ) : null}
