@@ -128,6 +128,8 @@ export function WorkspaceApp() {
   const [dashSection, setDashSection] = useState<DashSection>("overview");
   const [dashPerson, setDashPerson] = useState<string | null>(null);
   const [tasksSection, setTasksSection] = usePersistentState<TasksSection>("ls_tasks_section", "planner");
+  const [teamSection, setTeamSection] = usePersistentState<string>("ls_team_section", "members");
+  const [settingsSection, setSettingsSection] = usePersistentState<string>("ls_settings_section", "company");
   // Toast stack: EVERY onNotice(text) becomes its OWN stacked popup with a
   // timestamp — two rapid notifications are two visibly separate panels, never
   // one panel whose text morphs. Up to 6 stack; each auto-dismisses on its own
@@ -418,6 +420,10 @@ export function WorkspaceApp() {
               dashSubFor={tab === "mydash" ? "mydash" : tab === "users" && dashPerson ? "users" : null}
               tasksSection={tasksSection}
               onTasksSection={setTasksSection}
+              teamSection={teamSection}
+              onTeamSection={setTeamSection}
+              settingsSection={settingsSection}
+              onSettingsSection={setSettingsSection}
             />
           </div>
         </aside>
@@ -514,14 +520,14 @@ export function WorkspaceApp() {
           {tab === "reports" ? (
             <ReportsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
-          {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} /> : null}
+          {tab === "team" ? <TeamDesk token={token} onNotice={setNotice} section={teamSection} onSectionChange={setTeamSection} /> : null}
           {tab === "interns" ? <InternsDesk token={token} onNotice={setNotice} onOpenBatch={openBatch} role={role} /> : null}
           {tab === "qatest" ? <QaTestDesk token={token} onNotice={setNotice} /> : null}
           {tab === "scoring" ? (
             <ScoringDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
           ) : null}
           {tab === "settings" ? (
-            <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} />
+            <SettingsDesk token={token} projectId={activeProjectId} onNotice={setNotice} section={settingsSection} onSectionChange={setSettingsSection} />
           ) : null}
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} onNav={setTab} /> : null}
           {/* Focused calendar page — full month view, straight from the sidebar. */}
@@ -932,6 +938,22 @@ const TASKS_SECTIONS: Array<[TasksSection, string, NavIcon, string]> = [
   ["byproject", "Completion by project", Layers, "Done vs target per project"],
   ["workingdays", "Working days", Sun, "Company off-day calendar"],
   ["leave", "Leave requests", History, "Request · approve · history"]
+];
+const TEAM_SECTIONS: Array<[string, string, NavIcon, string]> = [
+  ["members", "Members & roles", Users, "Accounts, roles & access"],
+  ["employees", "Employees & mapping", UserPlus, "Sheet names → app accounts"],
+  ["gmail", "Gmail accounts", Globe, "Who holds each address"],
+  ["email", "Email users", Info, "Message the team"],
+  ["settings", "Team settings", Settings, "Visibility, access & schedules"]
+];
+const SETTINGS_SECTIONS: Array<[string, string, NavIcon, string]> = [
+  ["company", "Company & branding", Globe, "Name, logo, avatars"],
+  ["projects", "Projects", Layers, "Targets, status, quick edit"],
+  ["linktypes", "Link types", Info, "Canonical types & merges"],
+  ["automation", "Automation & sync", RefreshCw, "Office hours & auto sync"],
+  ["qa", "QA & rates", Gauge, "QA execution & productivity"],
+  ["security", "Security", Info, "IP rules & activity log"],
+  ["datahealth", "Data health", Activity, "Checks & maintenance"]
 ];
 
 // Every tab's human label (breadcrumb + palette) — derived from the nav
@@ -1735,7 +1757,11 @@ function Sidebar({
   onDashSection,
   dashSubFor,
   tasksSection,
-  onTasksSection
+  onTasksSection,
+  teamSection,
+  onTeamSection,
+  settingsSection,
+  onSettingsSection
 }: {
   activeTab: Tab;
   onTab: (tab: Tab) => void;
@@ -1753,6 +1779,10 @@ function Sidebar({
   // Tasks & Calendar sub-pages (same expandable pattern).
   tasksSection: TasksSection;
   onTasksSection: (s: TasksSection) => void;
+  teamSection: string;
+  onTeamSection: (s: string) => void;
+  settingsSection: string;
+  onSettingsSection: (s: string) => void;
 }) {
   // ── Rail (collapsed) mode + per-group collapse, both remembered. Hydrated
   // in effects (never in initializers) so static prerender stays clean. ──
@@ -1996,6 +2026,24 @@ function Sidebar({
                               <span className={clsx("block text-[13px] leading-tight", son ? "font-semibold text-ocean" : "font-medium text-ink")}>
                                 {slabel}
                               </span>
+                              <span className="block truncate text-[10px] leading-tight text-muted">{sdesc}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {(id === "team" || id === "settings") && active ? (
+                    <div className="ml-3.5 mt-1 space-y-0.5 border-l-2 border-ocean/25 pl-2 pb-1">
+                      {(id === "team" ? TEAM_SECTIONS : SETTINGS_SECTIONS).map(([sid, slabel, SIcon, sdesc]) => {
+                        const cur = id === "team" ? teamSection : settingsSection;
+                        const son = cur === sid;
+                        return (
+                          <button key={sid} onClick={() => { onTab(id); (id === "team" ? onTeamSection : onSettingsSection)(sid); }}
+                            className={clsx("flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition", son ? "bg-ocean/10" : "hover:bg-field")}>
+                            <SIcon className={clsx("mt-0.5 h-3.5 w-3.5 shrink-0", son ? "text-ocean" : "text-muted")} />
+                            <span className="min-w-0">
+                              <span className={clsx("block text-[13px] leading-tight", son ? "font-semibold text-ocean" : "font-medium text-ink")}>{slabel}</span>
                               <span className="block truncate text-[10px] leading-tight text-muted">{sdesc}</span>
                             </span>
                           </button>
@@ -20555,16 +20603,22 @@ function ProductivityCard({ token, onNotice }: { token: string | null; onNotice:
 function SettingsDesk({
   token,
   projectId,
-  onNotice
+  onNotice,
+  section,
+  onSectionChange
 }: {
   token: string | null;
   projectId: string;
   onNotice: (text: string) => void;
+  section?: string;
+  onSectionChange?: (s: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [newDomain, setNewDomain] = useState("");
   // Settings area tabs (owner rule: sub-categorized, not one long page).
-  const [settingsTab, setSettingsTab] = useState("company");
+  const [settingsTabLocal, setSettingsTabLocal] = useState("company");
+  const settingsTab = section ?? settingsTabLocal;
+  const setSettingsTab = (v: string) => { onSectionChange ? onSectionChange(v) : setSettingsTabLocal(v); };
 
   const settings = useQuery({
     queryKey: ["project-settings", token, projectId],
@@ -25537,7 +25591,7 @@ function TeamSettingsHub({ token, onNotice }: { token: string | null; onNotice: 
   );
 }
 
-function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
+function TeamDesk({ token, onNotice, section, onSectionChange }: { token: string | null; onNotice: (text: string) => void; section?: string; onSectionChange?: (s: string) => void }) {
   const showAvatars = useShowAvatars(token);
   const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
@@ -25545,7 +25599,9 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [role, setRole] = useState<Role>("viewer");
   const [password, setPassword] = useState("");
   // One desk, two sections: workspace accounts vs sheet-employee mapping.
-  const [teamTab, setTeamTab] = useState<"members" | "employees" | "gmail" | "email" | "settings">("members");
+  const [teamTabLocal, setTeamTabLocal] = useState<"members" | "employees" | "gmail" | "email" | "settings">("members");
+  const teamTab = (section as "members" | "employees" | "gmail" | "email" | "settings" | undefined) ?? teamTabLocal;
+  const setTeamTab = (v: "members" | "employees" | "gmail" | "email" | "settings") => { onSectionChange ? onSectionChange(v) : setTeamTabLocal(v); };
   const [showInvite, setShowInvite] = useState(false);
   const [membersShown, setMembersShown] = useState(25);
   // Members toolbar (owner #9): active-only by default (white-label), search,
