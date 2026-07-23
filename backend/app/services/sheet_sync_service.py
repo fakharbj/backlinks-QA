@@ -700,10 +700,14 @@ async def sync_project(
     # Duplicate accounting: how many duplicate-group memberships among this
     # sheet's links are NEW this run vs already known before it started.
     try:
+        # "New" = the duplicate's LINK was created this run (b.created_at) — NOT
+        # the membership row's created_at, which detect_for_canonicals rebuilds
+        # every sync (it deletes+reinserts members), so m.created_at would
+        # re-count the same pre-existing same-page groups as "new" forever.
         dup = (
             await db.execute(
                 text(
-                    "SELECT count(*) FILTER (WHERE m.created_at >= :t0) AS dup_new, "
+                    "SELECT count(*) FILTER (WHERE b.created_at >= :t0) AS dup_new, "
                     "count(*) AS dup_total "
                     "FROM backlink_conflict_members m "
                     "JOIN backlink_records b ON b.id = m.backlink_id "
@@ -719,8 +723,8 @@ async def sync_project(
         )
         if dup_new:
             await batch_service.add_log(
-                batch_id, f"{dup_new} NEW duplicate link(s) found in this sync "
-                f"({dup_prev} were already known).", level="warn",
+                batch_id, f"{dup_new} new same-page duplicate link(s) added this sync "
+                f"({dup_prev} already grouped before).", level="warn",
             )
     except Exception as exc:  # noqa: BLE001 — counters are best-effort
         log.warning("dup_counter_failed", error=repr(exc))
