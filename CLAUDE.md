@@ -516,6 +516,34 @@ design). NOTE: server test DB `linksentinel_test` was migrated to head (was
 stuck pre-0055) — integration tests run via
 `DATABASE_URL=…linksentinel_test venv/bin/python -m pytest`.
 
+**Finalization pass shipped + deployed** (2026-07-23 #3, no new migration,
+267 tests, commits f2f762b/7a1f0f1/df86e31): **B1** — completed tasks show
+GREEN everywhere incl. calendar day-boxes (`myCalStatus`/`planChipCls` return
+green when `actual_links>=expected_links` BEFORE the excused branch;
+`dayComplete` tints month/week day boxes; legend swatch fixed — all
+presentation-only, the `TASK_COMPLETION_START_DATE=2026-07-27` clock &
+performance math UNCHANGED, see [[finalization-decisions]]); SERP/index sort by
+each result's OWN time (`index_checked_at` added to `_DATETIME_SORTS`/
+`_DATE_COLS`/sort-pattern/`BacklinkFilters` + frontend "Index checked" date
+axis); viewers+interns scoped to their OWN batches on `/batches` list/get/
+logs/items (logs+items had NO own-guard before); avatars standardized on
+`AvatarBubble` (My Work header, My settings, Team list row, UserDashboards
+`personAvatar`, Performance per-person table); Quick Edit "Target domain"
+(already existed) shows the REFINED domain (`prettyDomain(target_domain||
+target_urls[0])`) + normalizes on save (prod: 112/160 stored full URLs, 48
+empty — bulk-normalize gated). **B2** — viewer "My submissions" tab (own review
+batches: status/QA/logs; `canModerate` excludes viewer); Interns clarity
+(approval-rate now of-DECIDED + Rejected card + client-summed aggregates,
+joined/last-active surfaced, submissions list shows date/count/error, no 8-cap);
+Team members table uses app-standard `SortTh` (Member/Role/Status/Login/Joined
++ dir toggle) replacing the 3-option select. **B3** — dashboard company
+entity-counts strip only returned to UNRESTRICTED users (project-scoped
+managers no longer see/contradicted-by workspace-wide counts); "Runs" counts
+TOP-LEVEL batches only; all-time "previous period" delta suppressed (was a fake
++N vs prev=0). Tests: `test_finalization_pass.py` (index sort accepted, viewer
+own-batch scoping + 404 on others' logs/items, counts strip admin-only). Prod
+verified: 160 projects / 45,399 backlinks / 1,665 tasks intact, bundle live.
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:
