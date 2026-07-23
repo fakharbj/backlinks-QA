@@ -167,6 +167,9 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
     identity_cache: dict[str, uuid.UUID] = {}
     canonical_cache: dict[str, uuid.UUID] = {}
     link_type_cache: dict = {}  # slug key → canonical LinkType row
+    # Sheet rows adopted this run via the rename/reorder fallback — so one
+    # existing link is never claimed twice within a single import.
+    adopted: set[uuid.UUID] = set()
     processed = 0
 
     # Resolve the sheet "User" label to an app user when it matches an account
@@ -194,7 +197,7 @@ async def process(db: AsyncSession, import_id: uuid.UUID, *, commit_every: int =
             created_id = await _process_row(
                 db, imp, row, user_map, dirty_identities, identity_cache,
                 canonical_cache, dirty_canonicals, link_type_cache, project_domain,
-                label_aliases,
+                label_aliases, adopted,
             )
             if created_id is not None:
                 new_ids.append(created_id)
@@ -247,6 +250,7 @@ async def _process_row(
     link_type_cache: dict,
     project_domain: str | None,
     label_aliases: dict[str, str],
+    adopted: set[uuid.UUID] | None = None,
 ) -> uuid.UUID | None:
     data = row.mapped or {}
     source = coerce_url_scheme((data.get("source_page_url") or "").strip())
@@ -330,6 +334,36 @@ async def _process_row(
                 .limit(1)
             )
         ).scalars().first()
+
+    # Rename/reorder resilience: if the (sheet, tab, row) position didn't match —
+    # because the TAB was renamed or rows were reordered — adopt the SINGLE
+    # existing link with the same (source, target) in this sheet+project and
+    # repoint it (its sheet_tab/row are rewritten below via _apply_input_fields),
+    # instead of inserting a duplicate copy. If more than one such link exists
+    # (a genuine same-URL-in-two-tabs duplicate) it's ambiguous → insert as
+    # before. This is what stops a canonical tab-name cleanup from re-duplicating.
+    if existing is None and from_sheet and imp.sheet_source_id is not None:
+        _cands = (
+            await db.execute(
+                select(BacklinkRecord).where(
+                    BacklinkRecord.workspace_id == imp.workspace_id,
+                    BacklinkRecord.project_id == imp.project_id,
+                    BacklinkRecord.source_sheet_id == imp.sheet_source_id,
+                    BacklinkRecord.source_url_normalized == src.normalized,
+                    BacklinkRecord.target_url_normalized == tgt.normalized,
+                )
+                .order_by(BacklinkRecord.created_at.asc())
+                .limit(10)
+            )
+        ).scalars().all()
+        # Exclude links already adopted by an earlier row this run (so two
+        # identical sheet rows still map to two records, as before).
+        _claimed = adopted or set()
+        _avail = [c for c in _cands if c.id not in _claimed]
+        if len(_avail) == 1:
+            existing = _avail[0]
+            if adopted is not None:
+                adopted.add(existing.id)
 
     if existing is not None:
         # Sheet row drift: rows shifted in the sheet mean this position now holds
