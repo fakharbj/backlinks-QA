@@ -1108,7 +1108,9 @@ async def decide_leave(
 
 # ── Task-sheet export (owner rule) ───────────────────────────────────────────
 TASK_EXPORT_HEADERS = [
-    "Task ID", "Date", "User", "Project", "Link types", "Target links",
+    # "Link #" is PER ROW (1..target, then "spare") — each row is ONE link to
+    # build, so the task's total lives in the guide, not repeated on every row.
+    "Task ID", "Date", "User", "Project", "Link types", "Link #",
     "Priority", "Task note", "Suggested domain", "DA", "PA", "Spam", "AS",
     "Why suggested", "Backlink URL (fill in)", "Anchor text (fill in)",
     "Remarks (fill in)",
@@ -1175,21 +1177,25 @@ async def task_export_rows(
         # At least one row per link the person must build — pad with blank
         # suggestion rows when the engine has fewer domains than the target,
         # so every built link still has a line to be written on.
-        want = max(len(items), int(t["expected_links"] or 0), 1)
-        if style == "simple":
-            meta = [
-                t["day"], t["user_label"],
-                project_names.get(t["project_id"], ""),
-                ", ".join(t["link_type_names"] or []),
-            ]
-        else:
-            meta = [
-                t["id"], t["day"], t["user_label"],
-                project_names.get(t["project_id"], ""),
-                ", ".join(t["link_type_names"] or []),
-                t["expected_links"], t["priority"] or "", t["note"] or "",
-            ]
+        target = int(t["expected_links"] or 0)
+        want = max(len(items), target, 1)
         for i in range(want):
+            # Per-row link number: 1..target are the task's target links; any
+            # extra rows are clearly labelled spares (the "+2" suggestions).
+            link_no = str(i + 1) if (target == 0 or i < target) else f"spare {i - target + 1}"
+            if style == "simple":
+                meta = [
+                    t["day"], t["user_label"],
+                    project_names.get(t["project_id"], ""),
+                    ", ".join(t["link_type_names"] or []),
+                ]
+            else:
+                meta = [
+                    t["id"], t["day"], t["user_label"],
+                    project_names.get(t["project_id"], ""),
+                    ", ".join(t["link_type_names"] or []),
+                    link_no, t["priority"] or "", t["note"] or "",
+                ]
             it = items[i] if i < len(items) else None
             if it is not None:
                 metrics = [

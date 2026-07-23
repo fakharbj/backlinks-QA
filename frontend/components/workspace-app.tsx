@@ -110,7 +110,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest" | "interns";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest" | "interns";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -526,6 +526,8 @@ export function WorkspaceApp() {
           {tab === "mywork" ? <MyWorkDesk token={token} onNotice={setNotice} onNav={setTab} /> : null}
           {/* Focused calendar page — full month view, straight from the sidebar. */}
           {tab === "mycal" ? <MyWorkDesk token={token} onNotice={setNotice} focus="calendar" onNav={setTab} /> : null}
+          {/* A viewer's own links with full QA + index tracking. */}
+          {tab === "mylinks" ? <MyWorkDesk token={token} onNotice={setNotice} focus="links" onNav={setTab} /> : null}
           {tab === "mydash" ? <MySelfDashboard token={token} onNotice={setNotice} section={dashSection} onSectionChange={setDashSection} /> : null}
           {tab === "apiusage" ? <ApiUsageDesk token={token} /> : null}
           {tab === "myopps" ? <MyOpportunitiesDesk token={token} /> : null}
@@ -882,6 +884,8 @@ const MY_NAV: NavGroup[] = [
     items: [
       ["mywork", "My Work", CalendarDays],
       ["mycal", "My calendar", CalendarDays],
+      // A viewer's own built links, with full QA + index tracking.
+      ["mylinks", "My links", Link2],
       // A viewer's own submissions: the review batches their task-sheet
       // uploads created — status, per-item QA results and logs, own-scoped.
       ["batches", "My submissions", Layers]
@@ -2345,6 +2349,8 @@ function Overview({
   projectId: string;
   onOpenBacklinks: (filters: Record<string, string>) => void;
 }) {
+  const ovLabelAvatars = useLabelAvatars(token);
+  const ovShowAvatars = useShowAvatars(token);
   // No project selected → company-wide main dashboard; a project → project dashboard.
   const dashboard = useQuery({
     queryKey: ["dashboard", token, projectId],
@@ -2794,7 +2800,14 @@ function Overview({
                         }
                         className="cursor-pointer hover:bg-field/60"
                       >
-                        <Td><span className="font-medium text-ocean hover:underline">{r.assigned_user_label}</span></Td>
+                        <Td>
+                          <span className="inline-flex items-center gap-1.5 font-medium text-ocean hover:underline">
+                            {r.assigned_user_label !== "(unassigned)" ? (
+                              <AvatarBubble uri={ovLabelAvatars.get(r.assigned_user_label.toLowerCase())} name={r.assigned_user_label} className="h-5 w-5" show={ovShowAvatars} />
+                            ) : null}
+                            {r.assigned_user_label}
+                          </span>
+                        </Td>
                         <Td>{r.total}</Td>
                         <Td>{pct(r.pass_count, r.total)}</Td>
                         <Td><span className="text-danger">{r.fail_count}</span></Td>
@@ -2915,6 +2928,8 @@ function Backlinks({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const blLabelAvatars = useLabelAvatars(token);
+  const blShowAvatars = useShowAvatars(token);
   // Deep-link filters: dashboards open this desk pre-filtered via f_* URL params
   // (read once on mount, then removed so refresh/back behave normally).
   const fParam = (k: string) => {
@@ -3833,8 +3848,9 @@ function Backlinks({
                         setUserF(row.assigned_user_label || "");
                       }}
                       title={`Show all links by ${row.assigned_user_label}`}
-                      className="whitespace-nowrap text-xs font-medium text-ocean hover:underline"
+                      className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-ocean hover:underline"
                     >
+                      <AvatarBubble uri={blLabelAvatars.get(row.assigned_user_label.toLowerCase())} name={row.assigned_user_label} className="h-5 w-5" show={blShowAvatars} />
                       {row.assigned_user_label}
                     </button>
                   ) : (
@@ -6604,53 +6620,101 @@ function MyPerformancePanel({ token, userLabel }: { token: string | null; userLa
 }
 
 // The person's latest links with live QA state — "what happened to what I built".
-function MyRecentLinks({ token, userLabel }: { token: string | null; userLabel: string }) {
+function MyRecentLinks({ token, userLabel, onNotice }: { token: string | null; userLabel: string; onNotice?: (t: string) => void }) {
+  // A viewer's OWN links (everything attributed to their sheet label) with full
+  // QA + index tracking, status filter, load-more and a click-through to the
+  // shared detail drawer — the read side of the direct-submission workflow.
+  const [statusF, setStatusF] = useState("");
+  const [limit, setLimit] = useState(25);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const links = useQuery({
-    queryKey: ["my-recent-links", token, userLabel],
+    queryKey: ["my-links", token, userLabel, statusF, limit],
     enabled: Boolean(token && userLabel),
     retry: false,
+    placeholderData: (prev) => prev,
     queryFn: () =>
       api<Page<BacklinkRow>>(
-        `/backlinks?assigned_user_label=${encodeURIComponent(userLabel)}&sort=updated_at&direction=desc&limit=8`,
+        `/backlinks?assigned_user_label=${encodeURIComponent(userLabel)}` +
+        `&sort=updated_at&direction=desc&limit=${limit}&with_total=true` +
+        (statusF ? `&status=${statusF}` : ""),
         { token }
       )
   });
   const rows = links.data?.items || [];
-  if (links.isError || (!links.isLoading && !rows.length)) return null;
+  const total = links.data?.total ?? null;
+  const hasMore = Boolean(links.data?.has_more);
+  const STATUS_TABS: Array<[string, string]> = [
+    ["", "All"], ["PASS", "Qualified"], ["NEEDS_MANUAL_REVIEW", "Needs review"],
+    ["WARNING", "Needs improvement"], ["FAIL", "Not qualified"], ["PENDING", "QA pending"]
+  ];
   return (
     <section className="rounded-xl border border-line bg-panel shadow-card">
-      <div className="flex items-center gap-1.5 border-b border-line p-3">
-        <h3 className="text-sm font-semibold text-ink">My recent links</h3>
-        <HelpTip text="Your latest links with their current QA verdict and score — hover a status to see what it means and what to do." />
+      <div className="flex flex-wrap items-center gap-2 border-b border-line p-3">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+          My links {total != null ? <span className="text-muted">· {total}</span> : null}
+          <HelpTip text="Every backlink attributed to you — its live QA verdict, score, and Google index status. Click a row for the full history and details. Links you submit appear here once a reviewer approves them." />
+        </h3>
+        <div className="ml-auto flex flex-wrap items-center gap-1">
+          {STATUS_TABS.map(([v, l]) => (
+            <button key={v || "all"} onClick={() => { setStatusF(v); setLimit(25); }}
+              className={clsx("rounded-full border px-2.5 py-1 text-xs font-medium transition",
+                statusF === v ? "border-ocean/40 bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink")}>
+              {l}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-left text-sm">
-          <thead className="bg-field text-xs uppercase text-muted">
-            <tr><Th>Source page</Th><Th>Type</Th><Th>Status</Th><Th>Score</Th><Th>Updated</Th></tr>
-          </thead>
-          <tbody className="divide-y divide-line">
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <Td>
-                  <span className="inline-flex max-w-[320px] items-center gap-1">
-                    <span className="min-w-0 truncate text-ink" title={r.source_page_url}>{r.source_page_url}</span>
-                    <CopyButton text={r.source_page_url} title="Copy URL" />
-                  </span>
-                </Td>
-                <Td><span className="whitespace-nowrap text-xs text-muted">{linkTypeLabel(r.link_type || "") || "—"}</span></Td>
-                <Td>
-                  <span className="inline-flex items-center gap-1">
-                    <Status value={r.override_status || r.status} compact />
-                    {r.qa_wait_reason ? <QaWaitBadge reason={r.qa_wait_reason} /> : null}
-                  </span>
-                </Td>
-                <Td>{r.score ?? "—"}</Td>
-                <Td><span className="whitespace-nowrap">{formatDate(r.updated_at ?? null)}</span></Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {links.isLoading && !rows.length ? (
+        <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
+      ) : !rows.length ? (
+        <Empty label={statusF ? "No links with this status." : "No links attributed to you yet. Links you submit appear here once a reviewer approves them."} />
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead className="bg-field text-xs uppercase text-muted">
+                <tr><Th>Source page</Th><Th>Type</Th><Th>Status</Th><Th>Score</Th><Th>Index</Th><Th>Link date</Th><Th>Updated</Th></tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {rows.map((r) => (
+                  <tr key={r.id} onClick={() => setDetailId(r.id)} className="cursor-pointer transition hover:bg-field/60">
+                    <Td>
+                      <span className="inline-flex max-w-[320px] items-center gap-1">
+                        <span className="min-w-0 truncate text-ink" title={r.source_page_url}>{r.source_page_url}</span>
+                        <span onClick={(e) => e.stopPropagation()}><CopyButton text={r.source_page_url} title="Copy URL" /></span>
+                      </span>
+                    </Td>
+                    <Td><span className="whitespace-nowrap text-xs text-muted">{linkTypeLabel(r.link_type || "") || "—"}</span></Td>
+                    <Td>
+                      <span className="inline-flex items-center gap-1">
+                        <Status value={r.override_status || r.status} compact />
+                        {r.qa_wait_reason ? <QaWaitBadge reason={r.qa_wait_reason} /> : null}
+                      </span>
+                    </Td>
+                    <Td>{r.score ?? "—"}</Td>
+                    <Td>{r.index_status ? <IndexBadge value={r.index_status} /> : <span className="text-xs text-muted">—</span>}</Td>
+                    <Td><span className="whitespace-nowrap text-xs text-muted">{formatDay(r.placement_date ?? null)}</span></Td>
+                    <Td><span className="whitespace-nowrap text-xs text-muted">{formatDate(r.updated_at ?? null)}</span></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {hasMore ? (
+            <div className="border-t border-line p-2 text-center">
+              <button onClick={() => setLimit((n) => n + 25)}
+                className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-field">
+                Load more{total != null ? ` (showing ${rows.length} of ${total})` : ""}
+              </button>
+            </div>
+          ) : total != null && rows.length > 0 ? (
+            <div className="border-t border-line p-2 text-center text-xs text-muted">Showing all {total}</div>
+          ) : null}
+        </>
+      )}
+      {detailId ? (
+        <BacklinkDetailDrawer token={token} backlinkId={detailId} onClose={() => setDetailId(null)} onNotice={onNotice || (() => {})} />
+      ) : null}
     </section>
   );
 }
@@ -7495,7 +7559,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
                       token, `/workforce/task-export?day=${today}&format=xlsx`, `task-sheet_${today}.xlsx`
                     );
                     onNotice(ok
-                      ? "Today's task sheet downloaded — paste each backlink you build next to its suggested domain"
+                      ? "Today's sheet downloaded — fill ONLY the Backlink URL column next to the domain you used, then Submit filled sheet"
                       : "Export failed — try again");
                   }}
                   className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-ink transition hover:bg-field"
@@ -7549,6 +7613,17 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
               ) : null}
             </span>
           </div>
+          {isCurrentWeek && todayRows.length ? (
+            <details className="border-b border-line bg-ocean/5 px-3 py-2 text-xs text-muted [&_summary]:cursor-pointer" open>
+              <summary className="font-semibold text-ink">How today&apos;s sheet &amp; submit works</summary>
+              <ol className="mt-1.5 list-decimal space-y-1 pl-4">
+                <li><b>Download</b> the sheet — <b>Today&apos;s sheet</b> (full) or <b>Simple</b> (main columns). Each row is <b>one link</b> to build.</li>
+                <li>Build your backlinks. Your <b>target</b> per task is the number of links to build; we also list <b>2 spare</b> suggested domains (marked <i>spare</i>) — use one only if a target domain doesn&apos;t work out.</li>
+                <li>In the sheet, fill <b>only the &ldquo;Backlink URL (fill in)&rdquo;</b> column with the link you built. Anchor text and Remarks are optional; leave every other column exactly as it is.</li>
+                <li>Click <b>Submit filled sheet</b>. Nothing goes live until a reviewer approves it — follow its progress under <b>My submissions</b>, and completed links show against each task here.</li>
+              </ol>
+            </details>
+          ) : null}
           <div className="space-y-2 p-3">
             {me.isLoading ? (
               <div className="space-y-2" aria-label="Loading today's tasks">
@@ -7698,7 +7773,7 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
 
       {/* Latest links with live QA verdicts — what happened to what I built. */}
       {showLinks && me.data?.labels.length ? (
-        <MyRecentLinks token={token} userLabel={me.data.labels[0]} />
+        <MyRecentLinks token={token} userLabel={me.data.labels[0]} onNotice={onNotice} />
       ) : null}
 
       {showLanding ? (
