@@ -153,9 +153,12 @@ async def sync_main(
 
 
 class SyncAllIn(BaseModel):
-    # Empty/omitted = every ACTIVE project's sheet; set = exactly these sheets
-    # (the "selectable sync" option — still active-projects only).
+    # Empty/omitted = every ACTIVE project's sheet. A set of ids = exactly those
+    # sheets (the "selectable sync" — synced regardless of active/inactive,
+    # since the caller explicitly picked them, e.g. the current filtered view or
+    # ticked rows). include_inactive with NO ids = every sheet, active + paused.
     sheet_source_ids: list[uuid.UUID] | None = None
+    include_inactive: bool = False
 
 
 @router.post("/sync-all", response_model=SheetSyncResponse, status_code=202)
@@ -164,10 +167,11 @@ async def sync_all(
     payload: SyncAllIn | None = None,
     ctx: AuthContext = Depends(require(Permission.IMPORT_BACKLINKS)),
 ) -> SheetSyncResponse:
-    """Queue a bulk sync — ALL active projects' sheets, or a selected subset.
-    Deactivated (paused/archived) projects are NEVER bulk-synced (owner rule);
-    their per-row manual sync still works. The whole run is ONE parent batch
-    (kind=sheet_sync_all) with live per-project progress."""
+    """Queue a bulk sync as ONE parent batch (kind=sheet_sync_all) with live
+    per-project progress. Default = every ACTIVE project's sheet. An explicit
+    ``sheet_source_ids`` selection syncs exactly those, including paused/archived
+    ones (the owner picked them — e.g. the Inactive filter or ticked rows).
+    ``include_inactive`` (no ids) syncs active + inactive together."""
     from sqlalchemy import select as _select
 
     from app.models.enums import ProjectStatus
@@ -175,23 +179,26 @@ async def sync_all(
     from app.services import batch_service
     from app.workers.tasks.sheets import sync_project_sheet
 
+    wanted = set(payload.sheet_source_ids or []) if payload else set()
+    include_inactive = bool(payload and payload.include_inactive)
     stmt = (
         _select(SheetSource, Project.name)
         .join(Project, Project.id == SheetSource.project_id)
-        .where(
-            SheetSource.workspace_id == ctx.workspace_id,
-            Project.status == ProjectStatus.ACTIVE,  # paused/archived projects: manual-only
-        )
+        .where(SheetSource.workspace_id == ctx.workspace_id)
     )
-    wanted = set(payload.sheet_source_ids or []) if payload else set()
+    # Active-only UNLESS the caller explicitly selected sheets or opted into
+    # inactive — an explicit selection overrides the manual-only default.
+    if not wanted and not include_inactive:
+        stmt = stmt.where(Project.status == ProjectStatus.ACTIVE)
     rows = (await db.execute(stmt)).all()
     if wanted:
         rows = [r for r in rows if r[0].id in wanted]
     sources = [r[0] for r in rows]
     if not sources:
         raise ValidationAppError(
-            "Nothing to sync — no ACTIVE project sheets matched (deactivated "
-            "projects are excluded from bulk sync; use their row's Sync button)."
+            "Nothing to sync — no matching project sheets. (The default bulk "
+            "sync covers active projects; pick sheets or include inactive to "
+            "sync paused/archived ones.)"
         )
     # ONE parent batch for the whole run; each project's live state lives in
     # meta under its own top-level key (shallow-merge-safe).

@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import String as sa_String
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -68,9 +69,41 @@ def _bind(stmt: str, params: dict):
     return t, params
 
 
+async def _narrow_by_status(
+    db: AsyncSession, ctx: AuthContext, project_status: str | None
+) -> AuthContext:
+    """Company-dashboard status filter (Active / Inactive / All). Narrows the
+    ctx's allowed project set to projects of the requested status, so EVERY
+    downstream helper's _scope_clause filters by it automatically — no per-query
+    threading. "inactive" = paused OR archived. Returns ctx unchanged for
+    all/blank. An empty match yields an empty set → an empty dashboard."""
+    if not project_status or project_status == "all":
+        return ctx
+    import dataclasses
+
+    if project_status == "inactive":
+        statuses = ["paused", "archived"]
+    else:
+        statuses = [project_status]
+    ids = set(
+        (
+            await db.execute(
+                text("SELECT id FROM projects WHERE workspace_id = :ws AND status::text = ANY(:st)")
+                .bindparams(bindparam("st", type_=ARRAY(sa_String))),
+                {"ws": ctx.workspace_id, "st": statuses},
+            )
+        ).scalars().all()
+    )
+    narrowed = ids if ctx.allowed_project_ids is None else (ctx.allowed_project_ids & ids)
+    return dataclasses.replace(ctx, allowed_project_ids=narrowed)
+
+
 async def build_dashboard(
-    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID | None = None
+    db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID | None = None,
+    project_status: str | None = None,
 ) -> DashboardResponse:
+    if project_id is None:
+        ctx = await _narrow_by_status(db, ctx, project_status)
     where, params = _scope_clause(ctx, project_id)
     eff = _effective()
 
@@ -282,6 +315,7 @@ async def trends(
     days: int = 30,
     granularity: str = "week",
     project_id: uuid.UUID | None = None,
+    project_status: str | None = None,
 ) -> dict:
     """Timeframe stats + equal-length previous-period comparison + a bucketed series
     (day / week / month, per ``granularity``). 'New domains' uses the owner rule:
@@ -293,7 +327,9 @@ async def trends(
     import json as _json
 
     bucket = granularity if granularity in ("day", "week", "month") else "week"
-    cache_key = f"ls:dash:trends:{ctx.workspace_id}:{project_id}:{days}:{bucket}"
+    if project_id is None:
+        ctx = await _narrow_by_status(db, ctx, project_status)
+    cache_key = f"ls:dash:trends:{ctx.workspace_id}:{project_id}:{project_status or 'all'}:{days}:{bucket}"
     try:
         from app.core.redis import get_redis
 

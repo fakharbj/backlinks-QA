@@ -2400,12 +2400,19 @@ function Overview({
   const ovLabelAvatars = useLabelAvatars(token);
   const ovShowAvatars = useShowAvatars(token);
   const [showAllChanges, setShowAllChanges] = useState(false);
+  // Company-view status filter: scope the whole dashboard to Active / Inactive
+  // (paused+archived) / All projects. Ignored in single-project view.
+  const [dashStatus, setDashStatus] = usePersistentState<"all" | "active" | "inactive">("ls_dash_status", "all");
+  const statusQ = !projectId && dashStatus !== "all" ? `&project_status=${dashStatus}` : "";
   // No project selected → company-wide main dashboard; a project → project dashboard.
   const dashboard = useQuery({
-    queryKey: ["dashboard", token, projectId],
+    queryKey: ["dashboard", token, projectId, projectId ? "" : dashStatus],
     enabled: Boolean(token),
     queryFn: () =>
-      api<Dashboard>(projectId ? `/dashboard?project_id=${projectId}` : "/dashboard", { token })
+      api<Dashboard>(
+        projectId ? `/dashboard?project_id=${projectId}` : `/dashboard?project_status=${dashStatus}`,
+        { token }
+      )
   });
   const projectsQ = useQuery({
     queryKey: ["projects", token],
@@ -2416,7 +2423,7 @@ function Overview({
   const [trendDays, setTrendDays] = useState("3650"); // default: All time
   const [trendGran, setTrendGran] = useState("week"); // chart bucket: day | week | month
   const trends = useQuery({
-    queryKey: ["dashboard-trends", token, projectId, trendDays, trendGran],
+    queryKey: ["dashboard-trends", token, projectId, trendDays, trendGran, projectId ? "" : dashStatus],
     enabled: Boolean(token),
     queryFn: () =>
       api<{
@@ -2427,7 +2434,7 @@ function Overview({
           qualified?: number; not_qualified?: number; needs_improvement?: number; indexed?: number;
         }>;
       }>(
-        `/dashboard/trends?days=${trendDays}&granularity=${trendGran}${projectId ? `&project_id=${projectId}` : ""}`,
+        `/dashboard/trends?days=${trendDays}&granularity=${trendGran}${projectId ? `&project_id=${projectId}` : statusQ}`,
         { token }
       )
   });
@@ -2502,12 +2509,29 @@ function Overview({
           <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-ocean to-teal-500 text-white shadow-soft">
             <Globe className="h-5 w-5" />
           </span>
-          <div>
+          <div className="min-w-0">
             <h2 className="flex items-center gap-1.5 text-lg font-bold tracking-tight text-ink">
               Company dashboard
               <HelpTip text="The combined picture across ALL projects. Pick a project (top-left selector) to switch to that project's own dashboard — it looks different on purpose, so you always know where you are." />
             </h2>
-            <p className="text-sm text-muted">All projects together — totals, activity and health.</p>
+            <p className="text-sm text-muted">
+              {dashStatus === "active" ? "Active projects only" : dashStatus === "inactive" ? "Inactive (paused/archived) projects only" : "All projects together"} — totals, activity and health.
+            </p>
+          </div>
+          {/* Scope the whole dashboard by project status. */}
+          <div className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel p-0.5">
+            {(["all", "active", "inactive"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setDashStatus(f)}
+                className={clsx(
+                  "rounded-md px-2.5 py-1 text-xs font-semibold capitalize transition",
+                  dashStatus === f ? "bg-ocean/10 text-ocean" : "text-muted hover:text-ink"
+                )}
+              >
+                {f}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -22814,23 +22838,38 @@ function SheetsDesk({
               {syncEverySheet.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Sync all active
             </button>
+            {/* Sync whatever the Active/Inactive/search filter is showing — the
+                way to bulk-sync INACTIVE sheets (filter → Inactive → Sync shown). */}
+            {(sheetStatusF || sheetQ.trim() || visibleSheets.some((x) => x.project_status && x.project_status !== "active")) ? (
+              <button
+                onClick={() => {
+                  const ids = visibleSheets.map((x) => x.id);
+                  const inactiveN = visibleSheets.filter((x) => x.project_status && x.project_status !== "active").length;
+                  const what = sheetStatusF === "inactive" ? "inactive" : sheetStatusF === "active" ? "active" : "shown";
+                  if (window.confirm(`Sync the ${ids.length} ${what} sheet(s) currently listed${inactiveN ? ` — includes ${inactiveN} INACTIVE project(s)` : ""}? One batch, per-project progress.`))
+                    syncEverySheet.mutate(ids);
+                }}
+                disabled={!cfg?.enabled || syncEverySheet.isPending || !visibleSheets.length}
+                title="Sync every sheet currently shown by the filter — including inactive projects"
+                className="flex items-center gap-2 rounded-md border border-plum/40 px-4 py-2 text-sm font-semibold text-plum transition hover:bg-plum/10 disabled:opacity-50"
+              >
+                <Play className="h-4 w-4" />
+                Sync shown ({visibleSheets.length})
+              </button>
+            ) : null}
             {selectedSheets.size ? (
               <button
                 onClick={() => {
                   const inactive = visibleSheets.filter(
                     (x) => selectedSheets.has(x.id) && x.project_status && x.project_status !== "active"
                   );
-                  if (inactive.length) {
-                    window.alert(
-                      `${inactive.length} of the selected sheets belong to INACTIVE projects (${inactive
-                        .map((x) => x.project_name)
-                        .join(", ")}) — bulk sync always skips them. Use each row's own Sync button to sync an inactive project deliberately.`
-                    );
-                  }
-                  syncEverySheet.mutate(Array.from(selectedSheets));
+                  const msg = inactive.length
+                    ? `Sync the ${selectedSheets.size} selected sheet(s) — including ${inactive.length} INACTIVE project(s) (${inactive.map((x) => x.project_name).join(", ")})?`
+                    : `Sync the ${selectedSheets.size} selected sheet(s)?`;
+                  if (window.confirm(msg)) syncEverySheet.mutate(Array.from(selectedSheets));
                 }}
                 disabled={!cfg?.enabled || syncEverySheet.isPending}
-                title="Sync exactly the ticked sheets (active projects only — inactive ones are skipped)"
+                title="Sync exactly the ticked sheets — active or inactive"
                 className="flex items-center gap-2 rounded-md bg-gradient-to-r from-ocean to-plum px-4 py-2 text-sm font-semibold text-white shadow-glow disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
