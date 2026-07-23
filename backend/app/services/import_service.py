@@ -356,14 +356,21 @@ async def _process_row(
                 .limit(10)
             )
         ).scalars().all()
-        # Exclude links already adopted by an earlier row this run (so two
-        # identical sheet rows still map to two records, as before).
+        # Adopt the OLDEST link not already claimed this run. Same (source,
+        # target) = the same link, so if the sheet has this row once we reuse
+        # the existing record instead of inserting another copy — even when the
+        # data already holds several stale copies (accumulated from earlier
+        # rename cycles). The `adopted` set keeps a 1:1 pairing, so a sheet that
+        # genuinely lists a URL twice still maps to two distinct records.
         _claimed = adopted or set()
         _avail = [c for c in _cands if c.id not in _claimed]
-        if len(_avail) == 1:
-            existing = _avail[0]
-            if adopted is not None:
-                adopted.add(existing.id)
+        if _avail:
+            existing = _avail[0]  # _cands is ordered created_at asc → oldest
+
+    # Whatever matched (position OR url-fallback), claim it so no later row this
+    # run can adopt the same record.
+    if existing is not None and adopted is not None:
+        adopted.add(existing.id)
 
     if existing is not None:
         # Sheet row drift: rows shifted in the sheet mean this position now holds
