@@ -119,8 +119,13 @@ async def build_dashboard(
     kpi = await _kpi_counts(db, ctx, project_id)
 
     # Company view: entity totals strip (owners: "no of projects, competitors…").
+    # Shown ONLY to unrestricted users — a project-scoped manager/QA must not
+    # see (or be contradicted by) workspace-wide counts outside their scope, and
+    # several of these entities (workspace users, the source-domain catalog) are
+    # not project-scoped at all. 'Runs' counts TOP-LEVEL batches only, matching
+    # the Batches desk (child batches of a bulk run are hidden there).
     extra: dict = {}
-    if project_id is None:
+    if project_id is None and ctx.allowed_project_ids is None:
         counts_row = (
             await db.execute(
                 text(
@@ -130,7 +135,8 @@ async def build_dashboard(
                       (SELECT count(*) FROM source_domains WHERE workspace_id = :ws)        AS source_domains,
                       (SELECT count(*) FROM competitor_source_domains WHERE workspace_id = :ws) AS competitor_domains,
                       (SELECT count(*) FROM workspace_members WHERE workspace_id = :ws)     AS users,
-                      (SELECT count(*) FROM batches WHERE workspace_id = :ws)               AS batches,
+                      (SELECT count(*) FROM batches
+                        WHERE workspace_id = :ws AND meta->>'parent_batch_id' IS NULL)      AS batches,
                       (SELECT count(*) FROM backlink_conflicts
                         WHERE workspace_id = :ws AND resolution_status = 'open')            AS open_duplicates,
                       (SELECT count(*) FROM backlink_records

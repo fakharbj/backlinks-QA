@@ -2619,9 +2619,9 @@ function Overview({
             <div className="text-xs font-semibold uppercase tracking-wide text-muted">New links</div>
             <div className="mt-1 text-2xl font-bold text-ink">
               {trends.data?.new_links ?? 0}
-              <DeltaPill now={trends.data?.new_links ?? 0} prev={trends.data?.prev_links} />
+              <DeltaPill now={trends.data?.new_links ?? 0} prev={Number(trendDays) >= 3650 ? null : trends.data?.prev_links} />
             </div>
-            <div className="text-[11px] text-muted">previous period: {trends.data?.prev_links ?? 0}</div>
+            <div className="text-[11px] text-muted">{Number(trendDays) >= 3650 ? "all time" : `previous period: ${trends.data?.prev_links ?? 0}`}</div>
           </button>
           <div className="rounded-lg border border-line bg-field/50 p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted">
@@ -2629,9 +2629,9 @@ function Overview({
             </div>
             <div className="mt-1 text-2xl font-bold text-ink">
               {trends.data?.new_domains ?? 0}
-              <DeltaPill now={trends.data?.new_domains ?? 0} prev={trends.data?.prev_domains} />
+              <DeltaPill now={trends.data?.new_domains ?? 0} prev={Number(trendDays) >= 3650 ? null : trends.data?.prev_domains} />
             </div>
-            <div className="text-[11px] text-muted">previous period: {trends.data?.prev_domains ?? 0}</div>
+            <div className="text-[11px] text-muted">{Number(trendDays) >= 3650 ? "all time" : `previous period: ${trends.data?.prev_domains ?? 0}`}</div>
           </div>
           <button
             type="button"
@@ -11778,6 +11778,8 @@ function PerformanceDesk({
   onNotice: (text: string) => void;
   onOpenUser?: (label: string) => void;
 }) {
+  const labelAvatars = useLabelAvatars(token);
+  const showAvatars = useShowAvatars(token);
   const [days, setDays] = useState("30");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -12065,8 +12067,9 @@ function PerformanceDesk({
                           onOpenUser?.(u.user_label);
                         }}
                         title={`Open ${u.user_label}'s full dashboard (hours, targets, calendar, quality, trends)`}
-                        className="font-medium text-ocean hover:underline"
+                        className="flex items-center gap-2 font-medium text-ocean hover:underline"
                       >
+                        <AvatarBubble uri={labelAvatars.get(u.user_label.toLowerCase())} name={u.user_label} className="h-6 w-6" show={showAvatars} />
                         {u.user_label}
                       </button>
                     </Td>
