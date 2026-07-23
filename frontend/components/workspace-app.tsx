@@ -8576,7 +8576,7 @@ function TasksDesk({
                     <tbody className="divide-y divide-line">
                       {people.map((p) => (
                         <tr key={p.user_label}>
-                          <td className="px-3 py-2 font-medium capitalize text-ink">{p.user_label}</td>
+                          <td className="px-3 py-2 font-medium capitalize text-ink"><span className="flex items-center gap-2"><AvatarBubble uri={labelAvatars.get((p.user_label || "").toLowerCase())} name={p.user_label} className="h-6 w-6" show={showAvatarsPref} />{p.user_label}</span></td>
                           <td className="px-3 py-2">
                             {capDaysFor === p.user_label ? (
                               <span className="flex items-center gap-1">
@@ -8812,7 +8812,7 @@ function TasksDesk({
                         only trims the unplanned tail of the roster. */}
                     {gridUsers.slice(0, Math.max(gridShown, planned.size)).map((u) => (
                       <tr key={u} className="align-top">
-                        <Td><span className="whitespace-nowrap font-medium text-ink">{u}</span></Td>
+                        <Td><span className="flex items-center gap-2 whitespace-nowrap font-medium text-ink"><AvatarBubble uri={labelAvatars.get((u || "").toLowerCase())} name={u} className="h-6 w-6" show={showAvatarsPref} />{u}</span></Td>
                         {weekDays.map((d) => {
                           const cell = rows.filter((r) => r.user_label === u && r.day === d);
                           const leave = onLeave(u, d);
@@ -8868,7 +8868,7 @@ function TasksDesk({
               {visibleRows.slice(0, listShown).map((r) => (
                 <tr key={r.id} className="cursor-pointer hover:bg-field/60" onClick={() => prefillForm({ row: r })}>
                   <Td><span className="whitespace-nowrap">{r.day}</span></Td>
-                  <Td><span className="font-medium text-ink">{r.user_label}</span></Td>
+                  <Td><span className="flex items-center gap-2 font-medium text-ink"><AvatarBubble uri={labelAvatars.get((r.user_label || "").toLowerCase())} name={r.user_label} className="h-6 w-6" show={showAvatarsPref} />{r.user_label}</span></Td>
                   <Td>{projectName(r.project_id)}</Td>
                   <Td>{r.hours}h</Td>
                   <Td><span className="text-xs text-muted">{r.link_type_names.map(linkTypeLabel).join(", ") || "—"}</span></Td>
@@ -11343,6 +11343,8 @@ function ProjectEffort({
   projectId: string;
   onOpenBacklinks: (filters: Record<string, string>) => void;
 }) {
+  const peLabelAvatars = useLabelAvatars(token);
+  const peShow = useShowAvatars(token);
   const [days, setDays] = useState("30");
   const [userF, setUserF] = useState("");
   const [ltF, setLtF] = useState("");
@@ -11509,6 +11511,7 @@ function ProjectEffort({
                         title={`See ${u.user_label}'s links on this project`}
                         className="font-medium text-ocean hover:underline"
                       >
+                        <AvatarBubble uri={peLabelAvatars.get((u.user_label || "").toLowerCase())} name={u.user_label} className="h-5 w-5" show={peShow} />
                         {u.user_label}
                       </button>
                     </Td>
@@ -16383,6 +16386,8 @@ function SourceDomainRow({
   selected: boolean;
   onToggle: () => void;
 }) {
+  const sdLabelAvatars = useLabelAvatars(token);
+  const sdShow = useShowAvatars(token);
   const [open, setOpen] = useState(false);
   const detail = useQuery({
     queryKey: ["source-domain", token, d.id],
@@ -16500,7 +16505,7 @@ function SourceDomainRow({
                                 {b.source_page_url}
                               </span>
                             </Td>
-                            <Td>{b.assigned_user_label || "—"}</Td>
+                            <Td>{b.assigned_user_label ? <span className="flex items-center gap-1.5"><AvatarBubble uri={sdLabelAvatars.get(b.assigned_user_label.toLowerCase())} name={b.assigned_user_label} className="h-5 w-5" show={sdShow} />{b.assigned_user_label}</span> : "—"}</Td>
                             <Td>{b.status ? <Status value={b.status} /> : "—"}</Td>
                             <Td>{b.index_status || "—"}</Td>
                           </tr>
@@ -16967,6 +16972,8 @@ function EmployeesDesk({
   onNotice: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const empLabelAvatars = useLabelAvatars(token);
+  const empShow = useShowAvatars(token);
   const [newCode, setNewCode] = useState("");
   const [newCodeName, setNewCodeName] = useState("");
 
@@ -17211,7 +17218,7 @@ function EmployeesDesk({
                   </Td>
                   <Td>
                     <div className="flex items-center gap-1.5">
-                      <span className="font-medium text-ink">{m.sheet_user_label}</span>
+                      <span className="flex items-center gap-1.5 font-medium text-ink"><AvatarBubble uri={empLabelAvatars.get((m.sheet_user_label || "").toLowerCase())} name={m.sheet_user_label} className="h-5 w-5" show={empShow} />{m.sheet_user_label}</span>
                       {m.canonical_label && m.canonical_label.trim().toLowerCase() !== m.sheet_user_label.trim().toLowerCase() ? (
                         <span
                           title={`Counts toward “${m.canonical_label}”`}
@@ -20431,6 +20438,8 @@ function QaSettingsCard({ token, onNotice }: { token: string | null; onNotice: (
 // the baseline lives with the other global config.
 function ProductivityCard({ token, onNotice }: { token: string | null; onNotice: (text: string) => void }) {
   const queryClient = useQueryClient();
+  const prodLabelAvatars = useLabelAvatars(token);
+  const prodShow = useShowAvatars(token);
   type Prod = { global: Array<{ link_type_name: string; links_per_hour: number }>; overrides: Array<{ user_label: string; link_type_name: string; links_per_hour: number }> };
   const q = useQuery({
     queryKey: ["productivity", token],
@@ -20500,7 +20509,7 @@ function ProductivityCard({ token, onNotice }: { token: string | null; onNotice:
           {(q.data?.overrides || []).map((o) => (
             <div key={`${o.user_label}|${o.link_type_name}`} className="flex items-center justify-between gap-3 px-4 py-2">
               <span className="text-sm text-ink">
-                <span className="font-medium capitalize">{o.user_label}</span>
+                <span className="inline-flex items-center gap-1.5 font-medium capitalize"><AvatarBubble uri={prodLabelAvatars.get((o.user_label || "").toLowerCase())} name={o.user_label} className="h-5 w-5" show={prodShow} />{o.user_label}</span>
                 <span className="text-muted"> · {linkTypeLabel(o.link_type_name)}</span>
               </span>
               <span className="flex items-center gap-2">
@@ -22688,7 +22697,32 @@ function SheetsDesk({
 
   const cfg = config.data;
   // Project scope: entering a project narrows the desk to that project's sheets.
-  const visibleSheets = (sheets.data || []).filter((s) => !projectId || s.project_id === projectId);
+  const [sheetQ, setSheetQ] = useState("");
+  const [sheetStatusF, setSheetStatusF] = useState<"" | "active" | "inactive">("");
+  const [sheetSort, setSheetSort] = usePersistentState<string>("ls_sheets_sort", "project");
+  const [sheetDir, setSheetDir] = usePersistentState<"asc" | "desc">("ls_sheets_dir", "asc");
+  const [sheetShown, setSheetShown] = useState(50);
+  const onSheetSort = (k: string) => {
+    if (sheetSort === k) setSheetDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSheetSort(k); setSheetDir("asc"); }
+  };
+  const _sheetNeedle = sheetQ.trim().toLowerCase();
+  const filteredSheets = (sheets.data || [])
+    .filter((s) => !projectId || s.project_id === projectId)
+    .filter((s) => {
+      if (!sheetStatusF) return true;
+      const active = (s.project_status || "active") === "active";
+      return sheetStatusF === "active" ? active : !active;
+    })
+    .filter((s) => !_sheetNeedle || `${s.project_name} ${s.source_url || ""}`.toLowerCase().includes(_sheetNeedle));
+  const visibleSheets = sortRows(filteredSheets, sheetSort, sheetDir, (s, k) => {
+    if (k === "status") return s.last_sync_status || "";
+    if (k === "rows") return s.row_count || 0;
+    if (k === "synced") return s.last_synced_at || "";
+    if (k === "active") return (s.project_status || "active") === "active" ? 1 : 0;
+    return (s.project_name || "").toLowerCase();
+  });
+  const shownSheets = visibleSheets.slice(0, sheetShown);
   return (
     <section className="space-y-4">
       {!projectId ? (
@@ -22909,6 +22943,29 @@ function SheetsDesk({
       })()}
 
       {projectId ? <p className="text-xs text-muted">Showing only this project&apos;s sheets.</p> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={sheetQ}
+          onChange={(e) => { setSheetQ(e.target.value); setSheetShown(50); }}
+          placeholder="Search project or URL…"
+          className="h-8 w-56 rounded-lg border border-line bg-panel px-2 text-sm"
+        />
+        {(["", "active", "inactive"] as const).map((f) => (
+          <button
+            key={f || "all"}
+            onClick={() => { setSheetStatusF(f); setSheetShown(50); }}
+            className={clsx(
+              "rounded-full border px-2.5 py-1 text-xs font-medium transition",
+              sheetStatusF === f ? "border-ocean/40 bg-ocean/10 text-ocean" : "border-line text-muted hover:text-ink"
+            )}
+          >
+            {f === "" ? "All" : f === "active" ? "Active" : "Inactive"}
+          </button>
+        ))}
+        <span className="text-xs text-muted">
+          {visibleSheets.length} sheet{visibleSheets.length === 1 ? "" : "s"}
+        </span>
+      </div>
       <div className="overflow-x-auto rounded-xl border border-line bg-panel shadow-card">
         <table className="min-w-[760px] w-full text-left text-sm">
           <thead className="bg-field text-xs uppercase text-muted">
@@ -22926,16 +22983,16 @@ function SheetsDesk({
                   className="h-3.5 w-3.5 accent-[rgb(var(--ocean))]"
                 />
               </Th>
-              <Th>Project</Th>
-              <Th>Status</Th>
-              <Th>Rows</Th>
+              <SortTh label="Project" sortKey="project" sort={sheetSort} dir={sheetDir} onSort={onSheetSort} />
+              <SortTh label="Status" sortKey="status" sort={sheetSort} dir={sheetDir} onSort={onSheetSort} />
+              <SortTh label="Rows" sortKey="rows" sort={sheetSort} dir={sheetDir} onSort={onSheetSort} />
               <Th>New / Updated</Th>
-              <Th>Last synced</Th>
+              <SortTh label="Last synced" sortKey="synced" sort={sheetSort} dir={sheetDir} onSort={onSheetSort} />
               <Th>Action</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {visibleSheets.map((s) => {
+            {shownSheets.map((s) => {
               const live = runningFor(s.id);
               const newCount = Math.max(0, s.imported_count - s.updated_count);
               return (
@@ -23071,6 +23128,14 @@ function SheetsDesk({
             })}
           </tbody>
         </table>
+        {visibleSheets.length > shownSheets.length ? (
+          <div className="border-t border-line p-2 text-center">
+            <button onClick={() => setSheetShown((v) => v + 50)}
+              className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-field">
+              Load more (showing {shownSheets.length} of {visibleSheets.length})
+            </button>
+          </div>
+        ) : null}
         {!sheets.isLoading && !visibleSheets.length ? (
           <Empty label={projectId ? "No sheets for this project yet." : "No project sheets yet — run a sync from the main sheet"} />
         ) : null}
@@ -26053,7 +26118,7 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
                 const value = leadDrafts[m.user_id] ?? (saved?.labels || []).join(", ");
                 return (
                   <div key={m.user_id} className="flex flex-wrap items-center gap-2 p-3">
-                    <span className="w-44 truncate text-sm font-medium text-ink">{m.full_name}</span>
+                    <span className="flex w-44 items-center gap-1.5 truncate text-sm font-medium text-ink"><AvatarBubble uri={m.avatar_data_uri} name={m.full_name} className="h-5 w-5" show={showAvatars} />{m.full_name}</span>
                     <input
                       value={value}
                       onChange={(e) => setLeadDrafts((d) => ({ ...d, [m.user_id]: e.target.value }))}
