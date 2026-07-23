@@ -335,13 +335,15 @@ async def _process_row(
             )
         ).scalars().first()
 
-    # Rename/reorder resilience: if the (sheet, tab, row) position didn't match —
-    # because the TAB was renamed or rows were reordered — adopt the SINGLE
-    # existing link with the same (source, target) in this sheet+project and
-    # repoint it (its sheet_tab/row are rewritten below via _apply_input_fields),
-    # instead of inserting a duplicate copy. If more than one such link exists
-    # (a genuine same-URL-in-two-tabs duplicate) it's ambiguous → insert as
-    # before. This is what stops a canonical tab-name cleanup from re-duplicating.
+    # ONE RECORD PER URL per project (owner rule). Match sheet rows by the
+    # SOURCE URL, not the (tab,row) position — so renaming a tab, reordering
+    # rows, or listing the same link twice never creates a duplicate:
+    #   • adopt the oldest existing sheet-link with this URL that a row hasn't
+    #     already claimed this run (its tab/row are rewritten below), else
+    #   • if the URL already has a record but every copy is claimed (the sheet
+    #     lists the same link again, same or different tab) → SKIP the repeat,
+    #     mapping the row to the canonical record instead of inserting a copy.
+    _dup_skip_id = None
     if existing is None and from_sheet and imp.sheet_source_id is not None:
         _cands = (
             await db.execute(
@@ -350,22 +352,24 @@ async def _process_row(
                     BacklinkRecord.project_id == imp.project_id,
                     BacklinkRecord.source_sheet_id == imp.sheet_source_id,
                     BacklinkRecord.source_url_normalized == src.normalized,
-                    BacklinkRecord.target_url_normalized == tgt.normalized,
                 )
                 .order_by(BacklinkRecord.created_at.asc())
                 .limit(10)
             )
         ).scalars().all()
-        # Adopt the OLDEST link not already claimed this run. Same (source,
-        # target) = the same link, so if the sheet has this row once we reuse
-        # the existing record instead of inserting another copy — even when the
-        # data already holds several stale copies (accumulated from earlier
-        # rename cycles). The `adopted` set keeps a 1:1 pairing, so a sheet that
-        # genuinely lists a URL twice still maps to two distinct records.
         _claimed = adopted or set()
         _avail = [c for c in _cands if c.id not in _claimed]
         if _avail:
-            existing = _avail[0]  # _cands is ordered created_at asc → oldest
+            existing = _avail[0]  # oldest unclaimed → adopt + repoint
+        elif _cands:
+            _dup_skip_id = _cands[0].id  # URL already recorded → skip this repeat
+
+    if _dup_skip_id is not None:
+        row.status = ImportRowStatus.IMPORTED
+        row.backlink_id = _dup_skip_id
+        imp.imported_rows += 1
+        imp.updated_rows = (imp.updated_rows or 0) + 1
+        return None
 
     # Whatever matched (position OR url-fallback), claim it so no later row this
     # run can adopt the same record.

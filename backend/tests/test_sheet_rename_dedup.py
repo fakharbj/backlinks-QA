@@ -47,8 +47,8 @@ def test_tab_rename_does_not_duplicate(live_stack):
 
         pid = uuid.UUID(project_id)
 
-        async def sync(tab: str) -> Import:
-            """One tab sync: two rows (A at row 2, B at row 3)."""
+        async def sync(tab: str, rows: list[dict] | None = None) -> Import:
+            """One tab sync (default: rows A then B)."""
             async with session_scope() as s:
                 ws = (await s.execute(
                     text("SELECT workspace_id FROM projects WHERE id = :p"), {"p": pid}
@@ -72,7 +72,7 @@ def test_tab_rename_does_not_duplicate(live_stack):
                 await s.flush()
                 # stage_rows numbers rows sequentially; both syncs keep the same
                 # order so only the TAB NAME differs between runs.
-                await import_service.stage_rows(s, imp, [
+                await import_service.stage_rows(s, imp, rows or [
                     {"source_page_url": src_a, "target_url": "https://acme.test/x"},
                     {"source_page_url": src_b, "target_url": "https://acme.test/x"},
                 ])
@@ -100,6 +100,22 @@ def test_tab_rename_does_not_duplicate(live_stack):
                 select(BacklinkRecord.sheet_tab).where(BacklinkRecord.project_id == pid)
             )).scalars().all())
             assert tabs == {"Web 2.0"}, tabs
+
+        # One-record-per-URL: a sheet that lists the SAME url twice (src_a) must
+        # NOT create a second record — the repeat is skipped, not inserted.
+        third = await sync("Web 2.0", rows=[
+            {"source_page_url": src_a, "target_url": "https://acme.test/x"},
+            {"source_page_url": src_a, "target_url": "https://acme.test/x"},  # duplicate row
+            {"source_page_url": src_b, "target_url": "https://acme.test/x"},
+        ])
+        assert (third.new_rows or 0) == 0, f"duplicate sheet row inserted ({third.new_rows})"
+        async with session_scope() as s:
+            n = (await s.execute(
+                select(func.count()).select_from(BacklinkRecord).where(
+                    BacklinkRecord.project_id == pid
+                )
+            )).scalar_one()
+            assert n == 2, f"expected 2 links (dup row skipped), got {n}"
 
         from app.db.session import engine, read_engine
         await engine.dispose()
