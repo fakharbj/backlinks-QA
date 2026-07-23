@@ -565,6 +565,27 @@ built links). NOTE: completed-green remains presentation-only; the
 `TASK_COMPLETION_START_DATE=2026-07-27` clock is unchanged (see
 [[finalization-decisions]]).
 
+**Final features batch shipped + deployed** (2026-07-24, commits eccd681/
+bb3f8d4/56e8b52 + sheet-sync fixes 3278a14→19f069f): **(A)** clean task sheet —
+dropped Task ID/Link #/Priority/Task note/Why; columns now Date/User/Project/
+Link type/Suggested domain/DA/PA/Spam/AS + 3 fill-ins; a per-task **divider
+row** groups it (divider has no URL → submit skips it); routing is User+Date
+(no Task ID). `style=simple/flat` omits dividers. **Viewer "My links"** now uses
+a new `/backlinks?no_sheet=true` filter (`source_sheet_id IS NULL`) → shows ONLY
+tool-submitted links, never the main-sheet catalog. **(B)** Sheets desk got
+search + Active/Inactive pills + sortable headers + load-more. Avatars added to
+the last person surfaces (Tasks capacity/planner/list, ProjectEffort, Source
+Domains user col, Employees mapping, Settings productivity rates, Team scoping)
+— hooks added where missing. **(C)** Team & Settings expand into **sidebar
+sub-items** (section state lifted to root, threaded through Sidebar; desk pills
+stay in sync via controlled `section` prop). Temp QA & Scoring are single-view
+(no sub-sections → left as single items, no empty modules). Sheet-sync
+dedup/rename saga (earlier same day): rename-proof URL matching + one-record-
+per-URL + 1,384 accumulated dups cleaned + link-type names canonicalized to the
+owner's 19-type scheme (see [[sheet-sync-tab-identity]], [[link-type-
+canonicalization]]). Dups review feature intact (57 conflict groups). 269 tests
+pass; prod verified (0 same-URL dup groups).
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:
