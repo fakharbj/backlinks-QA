@@ -881,7 +881,10 @@ const MY_NAV: NavGroup[] = [
     label: "My Work",
     items: [
       ["mywork", "My Work", CalendarDays],
-      ["mycal", "My calendar", CalendarDays]
+      ["mycal", "My calendar", CalendarDays],
+      // A viewer's own submissions: the review batches their task-sheet
+      // uploads created — status, per-item QA results and logs, own-scoped.
+      ["batches", "My submissions", Layers]
     ]
   },
   {
@@ -7047,9 +7050,9 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
       );
     },
     onSuccess: (d) => {
-      onNotice(d.skipped_unknown_task
+      onNotice((d.skipped_unknown_task
         ? `${d.message} (${d.skipped_unknown_task} row${d.skipped_unknown_task === 1 ? "" : "s"} skipped — edited/unknown Task ID)`
-        : d.message);
+        : d.message) + " — track it under My submissions.");
       queryClient.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (e: Error) => onNotice(e.message)
@@ -13261,9 +13264,9 @@ function BatchesDesk({
   onNotice: (text: string) => void;
   role?: string | null;
 }) {
-  // Interns submit and check; only QA+ approve/reject/delete (backend enforces
-  // the same rule — this just hides controls that would 403).
-  const canModerate = role !== "intern";
+  // Interns and viewers submit/track only; QA+ approve/reject/delete (backend
+  // enforces the same rule — this just hides controls that would 403).
+  const canModerate = role !== "intern" && role !== "viewer";
   const queryClient = useQueryClient();
   const [kind, setKind] = usePersistentState<string>("ls_batches_kind", "");
   const [statusF, setStatusF] = usePersistentState<string>("ls_batches_status", "");
@@ -25069,6 +25072,14 @@ function InternsDesk({ token, onNotice, onOpenBatch, role }: {
     onError: (e: Error) => onNotice(e.message)
   });
   const t = q.data?.totals;
+  // totals[] has no rejected/qa_pass/decided — sum them from the per-intern rows
+  // so the KPI row can show workspace-wide quality without a new backend field.
+  const allInterns = q.data?.items || [];
+  const aggRejected = allInterns.reduce((a, x) => a + (x.rejected || 0), 0);
+  const aggApproved = allInterns.reduce((a, x) => a + (x.approved || 0), 0);
+  const aggQaPass = allInterns.reduce((a, x) => a + (x.qa_pass || 0), 0);
+  const aggDecided = aggApproved + aggRejected;
+  const approvalOfDecided = aggDecided > 0 ? Math.round((100 * aggApproved) / aggDecided) : null;
   const needle = search.trim().toLowerCase();
   const rows = (q.data?.items || []).filter((r) =>
     (statusF === "all" || (statusF === "active" ? r.active : !r.active)) &&
@@ -25095,8 +25106,9 @@ function InternsDesk({ token, onNotice, onOpenBatch, role }: {
           <Metric label="Links submitted" value={t.items} icon={Upload} tone="ocean" sub="staged, isolated from production" />
           <Metric label="Approved" value={t.approved} icon={CheckCircle2} tone="success" sub="transferred into production" />
           <Metric label="Awaiting review" value={t.open_items} icon={History} tone="plum" sub="pending / checked, undecided" />
+          <Metric label="Rejected" value={aggRejected} icon={XCircle} tone="ink" sub={`${aggQaPass} passed QA`} />
+          <Metric label="Approval rate" value={approvalOfDecided != null ? `${approvalOfDecided}%` : "—"} icon={Gauge} tone="ink" sub={`approved of ${aggDecided} decided`} />
           <Metric label="Ready to promote" value={t.ready} icon={Star} tone="ember" sub="marked by reviewers" />
-          <Metric label="Approval rate" value={t.approved + t.items > 0 && t.items ? `${Math.round((100 * t.approved) / Math.max(1, t.items))}%` : "—"} icon={Gauge} tone="ink" sub="approved of submitted" />
         </div>
       ) : null}
 
@@ -25152,6 +25164,8 @@ function InternsDesk({ token, onNotice, onOpenBatch, role }: {
                     <span className="block truncate text-xs text-muted">
                       {r.email} · {r.batches} submission{r.batches === 1 ? "" : "s"}
                       {r.last_submission_at ? ` · last ${formatDay(r.last_submission_at)}` : " · nothing submitted yet"}
+                      {r.joined ? ` · joined ${formatDay(r.joined)}` : ""}
+                      {r.last_login_at ? ` · active ${formatDay(r.last_login_at)}` : " · never signed in"}
                     </span>
                   </span>
                   <span className="hidden shrink-0 items-center gap-1.5 md:flex">
@@ -25188,16 +25202,21 @@ function InternsDesk({ token, onNotice, onOpenBatch, role }: {
                       ))}
                     </div>
                     <div>
-                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Submissions — review &amp; transfer decisions happen inside each batch</div>
-                      <div className="space-y-1">
-                        {myBatches.slice(0, 8).map((b) => (
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+                        Submissions ({myBatches.length}) — review &amp; transfer decisions happen inside each batch
+                      </div>
+                      <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                        {myBatches.map((b) => (
                           <button key={b.id} onClick={() => onOpenBatch(b.id)}
                             className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-left text-xs transition hover:border-ocean/40">
                             <span className="font-semibold text-ink">#B-{b.seq}</span>
                             <span className="min-w-0 flex-1 truncate text-muted">{b.label || "Submission"}</span>
+                            {b.started_at ? <span className="shrink-0 text-muted">{formatDay(b.started_at)}</span> : null}
+                            {b.totals?.total ? <span className="shrink-0 rounded bg-field px-1.5 py-0.5 font-semibold text-ink">{b.totals.total} links</span> : null}
                             <BatchStatusChip value={b.status} />
                             {b.review_pending ? <span className="rounded-full bg-plum/10 px-2 py-0.5 font-semibold text-plum">{b.review_pending} to review</span> : null}
-                            <span className="text-ocean">Review →</span>
+                            {b.error ? <span className="w-full truncate text-danger" title={b.error}>⚠ {b.error}</span> : null}
+                            <span className="shrink-0 text-ocean">Review →</span>
                           </button>
                         ))}
                         {batchesQ.isLoading ? <p className="text-xs text-muted">Loading submissions…</p> : null}
@@ -25397,7 +25416,16 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
   const [mRole, setMRole] = useState("");
   const [mShowAll, setMShowAll] = usePersistentState<boolean>("ls_team_showall", false);
   const [mSort, setMSort] = usePersistentState<string>("ls_team_sort", "name");
+  const [mDir, setMDir] = usePersistentState<"asc" | "desc">("ls_team_dir", "asc");
   const [mView, setMView] = usePersistentState<"list" | "grid">("ls_team_view", "list");
+  // Clicking a header sorts by it; clicking the active header flips direction —
+  // the app-standard SortTh behaviour (both list headers and the grid select
+  // drive this one state).
+  const onMSort = (key: string) => {
+    if (mSort === key) setMDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setMSort(key); setMDir("asc"); }
+  };
+  const ROLE_ORDER: Record<string, number> = { admin: 5, manager: 4, qa: 3, teamlead: 3, viewer: 2, intern: 1 };
 
   const members = useQuery({
     queryKey: ["team", token],
@@ -25551,17 +25579,18 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
 
   const activeMembers = (members.data || []).filter((m) => m.is_active).length;
   const mNeedle = mSearch.trim().toLowerCase();
-  const visibleMembers = (members.data || [])
-    .filter((m) =>
-      (mShowAll || m.is_active) &&
-      (!mRole || m.role === mRole) &&
-      (!mNeedle || m.full_name.toLowerCase().includes(mNeedle) || m.email.toLowerCase().includes(mNeedle))
-    )
-    .sort((a, b) => {
-      if (mSort === "role") return a.role.localeCompare(b.role) || a.full_name.localeCompare(b.full_name);
-      if (mSort === "login") return (b.last_login_at || "").localeCompare(a.last_login_at || "");
-      return a.full_name.localeCompare(b.full_name);
-    });
+  const filteredMembers = (members.data || []).filter((m) =>
+    (mShowAll || m.is_active) &&
+    (!mRole || m.role === mRole) &&
+    (!mNeedle || m.full_name.toLowerCase().includes(mNeedle) || m.email.toLowerCase().includes(mNeedle))
+  );
+  const visibleMembers = sortRows(filteredMembers, mSort, mDir, (m, key) => {
+    if (key === "role") return ROLE_ORDER[m.role] ?? 0;
+    if (key === "login") return m.last_login_at || "";
+    if (key === "status") return m.is_active ? 1 : 0;
+    if (key === "joined") return m.member_since || "";
+    return m.full_name.toLowerCase();
+  });
   return (
     <div className="space-y-5">
       {/* Page header: what this desk is + the one primary action. */}
@@ -25676,12 +25705,21 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
         >
           {mShowAll ? "Showing all" : "Show all"}
         </button>
-        <select value={mSort} onChange={(e) => setMSort(e.target.value)} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
+        <select value={mSort} onChange={(e) => { setMSort(e.target.value); setMDir("asc"); }} className="h-9 rounded-lg border border-line bg-panel px-2 text-sm">
           <option value="name">Sort: name</option>
           <option value="role">Sort: role</option>
+          <option value="status">Sort: status</option>
           <option value="login">Sort: last sign-in</option>
+          <option value="joined">Sort: joined</option>
         </select>
-        <span className="text-xs text-muted">{visibleMembers.length} {visibleMembers.length === 1 ? "member" : "members"}</span>
+        <button
+          onClick={() => setMDir((d) => (d === "asc" ? "desc" : "asc"))}
+          title={`Sorted ${mDir === "asc" ? "ascending" : "descending"} — click to flip`}
+          className="h-9 rounded-lg border border-line bg-panel px-2 text-sm text-muted transition hover:text-ink"
+        >
+          {mDir === "asc" ? "▲" : "▼"}
+        </button>
+        <span className="text-xs text-muted">{visibleMembers.length} of {activeMembers} active{mShowAll ? " + inactive" : ""}</span>
         <span className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel p-0.5">
           {(["list", "grid"] as const).map((m) => (
             <button key={m} onClick={() => setMView(m)}
@@ -25783,16 +25821,16 @@ function TeamDesk({ token, onNotice }: { token: string | null; onNotice: (text: 
           <table className="w-full min-w-[920px] text-left text-sm">
             <thead className="border-b border-line bg-field text-xs uppercase text-muted">
               <tr>
-                <Th>Member</Th>
-                <Th>Role</Th>
+                <SortTh label="Member" sortKey="name" sort={mSort} dir={mDir} onSort={onMSort} />
+                <SortTh label="Role" sortKey="role" sort={mSort} dir={mDir} onSort={onMSort} />
                 <Th>
                   <span title="Which projects this member can open. TeamLead/QA with none selected see all projects; Users (viewers) only see what you pick.">
                     Projects
                   </span>
                 </Th>
-                <Th>Status</Th>
-                <Th>Last login</Th>
-                <Th>Joined</Th>
+                <SortTh label="Status" sortKey="status" sort={mSort} dir={mDir} onSort={onMSort} />
+                <SortTh label="Last login" sortKey="login" sort={mSort} dir={mDir} onSort={onMSort} />
+                <SortTh label="Joined" sortKey="joined" sort={mSort} dir={mDir} onSort={onMSort} />
                 <Th> </Th>
               </tr>
             </thead>
