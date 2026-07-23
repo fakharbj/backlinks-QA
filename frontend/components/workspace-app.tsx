@@ -2351,6 +2351,7 @@ function Overview({
 }) {
   const ovLabelAvatars = useLabelAvatars(token);
   const ovShowAvatars = useShowAvatars(token);
+  const [showAllChanges, setShowAllChanges] = useState(false);
   // No project selected → company-wide main dashboard; a project → project dashboard.
   const dashboard = useQuery({
     queryKey: ["dashboard", token, projectId],
@@ -2732,9 +2733,9 @@ function Overview({
           </div>
         </section>
         <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
-          <SectionTitle title="Recent Changes" />
+          <SectionTitle title={`Recent Changes${stats?.recent_changes?.length ? ` (${stats.recent_changes.length})` : ""}`} />
           <div className="divide-y divide-line">
-            {(stats?.recent_changes || []).slice(0, 8).map((item) => (
+            {(stats?.recent_changes || []).slice(0, showAllChanges ? undefined : 8).map((item) => (
               <div key={`${item.backlink_id}-${item.created_at}`} className="p-3">
                 <div className="truncate text-sm font-medium text-ink">{item.source_page_url}</div>
                 <div className="mt-1 flex items-center justify-between text-xs text-muted">
@@ -2747,6 +2748,14 @@ function Overview({
               <Empty label="No changes yet" />
             ) : null}
           </div>
+          {(stats?.recent_changes?.length ?? 0) > 8 ? (
+            <button
+              onClick={() => setShowAllChanges((v) => !v)}
+              className="w-full border-t border-line py-2 text-xs font-medium text-ocean transition hover:bg-field"
+            >
+              {showAllChanges ? "Show less" : `Show all ${stats?.recent_changes?.length} recent changes`}
+            </button>
+          ) : null}
         </section>
       </div>
 
@@ -2755,7 +2764,7 @@ function Overview({
           <ProjectEffort token={token} projectId={projectId} onOpenBacklinks={onOpenBacklinks} />
           <div className="grid gap-5 lg:grid-cols-2">
             <section className="rounded-xl border border-line bg-panel shadow-card">
-              <SectionTitle title="By link type" />
+              <SectionTitle title={`By link type${stats.link_type_breakdown?.length ? ` (${stats.link_type_breakdown.length})` : ""}`} />
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
@@ -2782,7 +2791,7 @@ function Overview({
               </div>
             </section>
             <section className="rounded-xl border border-line bg-panel shadow-card">
-              <SectionTitle title="Team performance" />
+              <SectionTitle title={`Team performance${stats.assigned_user_stats?.length ? ` (${stats.assigned_user_stats.length})` : ""}`} />
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
@@ -2860,7 +2869,7 @@ function Overview({
               </div>
             </section>
             <section className="rounded-xl border border-line bg-panel shadow-card">
-              <SectionTitle title="Top source domains" />
+              <SectionTitle title={`Top source domains${stats.top_source_domains?.length ? ` (${stats.top_source_domains.length})` : ""}`} />
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-field text-xs uppercase text-muted">
@@ -2889,7 +2898,7 @@ function Overview({
           </div>
 
           <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
-            <SectionTitle title="Recent regressions (high severity)" />
+            <SectionTitle title={`Recent regressions (high severity)${stats.recent_regressions?.length ? ` · ${stats.recent_regressions.length}` : ""}`} />
             <div className="divide-y divide-line">
               {(stats.recent_regressions || []).map((r) => (
                 <div

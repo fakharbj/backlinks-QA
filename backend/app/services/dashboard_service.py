@@ -561,7 +561,7 @@ async def _recent_changes(
         WHERE {where}
           AND h.event_type <> 'first_crawl'
         ORDER BY h.created_at DESC
-        LIMIT 15
+        LIMIT 50
         """,
         params,
     )
