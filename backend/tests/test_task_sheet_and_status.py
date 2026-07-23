@@ -20,6 +20,21 @@ import pytest
 
 from app.models.enums import ProjectStatus
 from app.services.sheet_sync_service import status_from_cell
+from app.services.workforce_service import _parse_sheet_date
+
+
+def test_sheet_date_parser_survives_spreadsheet_rewrites():
+    # We export ISO, but Excel re-saves CSV date cells in locale format —
+    # the simple sheet's ONLY routing key must survive that round trip.
+    iso = date(2026, 7, 23)
+    for raw in ("2026-07-23", "2026-07-23 00:00:00", "2026/07/23",
+                "7/23/2026", "07/23/2026", "23.07.2026", "23-Jul-2026"):
+        assert _parse_sheet_date(raw) == iso, raw
+    # Unambiguous day-first (day > 12) parses day-first.
+    assert _parse_sheet_date("23/07/2026") == iso
+    # Garbage/blank → None, never an exception.
+    for raw in ("", "  ", "not a date", "13/13/2026"):
+        assert _parse_sheet_date(raw) is None, raw
 
 
 def test_status_cell_active_variants():
@@ -173,6 +188,112 @@ def test_suggestion_count_and_task_sheet_export(live_stack):
         payload = links.json()
         items = payload["items"] if isinstance(payload, dict) else payload
         assert len(items) == 0  # staged only — approval is the gate
+
+        # ── Simple style: main columns only — no Task ID / plumbing columns.
+        exp_s = client.get(
+            f"/api/v1/workforce/task-export?day={day.isoformat()}&style=simple&format=csv",
+            headers=headers,
+        )
+        assert exp_s.status_code == 200, exp_s.text
+        s_rows = list(csv.reader(io.StringIO(exp_s.content.decode("utf-8-sig"))))
+        s_header = s_rows[0]
+        assert "Task ID" not in s_header
+        assert "Priority" not in s_header
+        assert "Why suggested" not in s_header
+        for col in ("Date", "User", "Project", "Link type", "Suggested domain",
+                    "Backlink URL (fill in)"):
+            assert col in s_header, col
+        s_data = s_rows[1:]
+        assert len(s_data) >= 5  # still padded to the task's target
+        assert "simple" in exp_s.headers["content-disposition"]
+
+        # Simple sheet round trip: no Task ID column → rows route by
+        # User + Date (narrowed by Project / Link type).
+        s_fill = s_header.index("Backlink URL (fill in)")
+        s_data[0][s_fill] = "https://directory.example.net/built-3"
+        s_buf = io.StringIO()
+        w3 = csv.writer(s_buf)
+        w3.writerow(s_header)
+        w3.writerows(s_data)
+        sub3 = client.post(
+            "/api/v1/workforce/task-import",
+            files={"file": ("task-sheet_simple.csv", s_buf.getvalue().encode("utf-8"), "text/csv")},
+            headers=headers,
+        )
+        assert sub3.status_code == 202, sub3.text
+        out3 = sub3.json()
+        assert out3["staged"] == 1
+        assert out3["skipped_unknown_task"] == 0
+
+        # Excel-style locale dates in the simple sheet still route (the Date
+        # column is the simple sheet's only key and Excel rewrites it).
+        date_ix = s_header.index("Date")
+        us_day = f"{day.month}/{day.day}/{day.year}"
+        s_data[1][s_fill] = "https://blog.example.io/built-4"
+        s_data[1][date_ix] = us_day
+        s_buf2 = io.StringIO()
+        w4 = csv.writer(s_buf2)
+        w4.writerow(s_header)
+        w4.writerow(s_data[1])
+        sub4 = client.post(
+            "/api/v1/workforce/task-import",
+            files={"file": ("task-sheet_simple.csv", s_buf2.getvalue().encode("utf-8"), "text/csv")},
+            headers=headers,
+        )
+        assert sub4.status_code == 202, sub4.text
+        assert sub4.json()["staged"] == 1
+
+        # ── Ambiguity handling. Assignments are unique per (project, user,
+        # day), so a second same-day task must live on a SECOND project:
+        # taskA = proj1 ["Profile"], taskB = proj2 ["Profile & Forums"].
+        proj2 = client.post(
+            "/api/v1/projects", json={"name": "TaskSheet Proj B"}, headers=headers
+        )
+        project2_id = proj2.json()["id"]
+        a2 = client.post(
+            "/api/v1/workforce/assignments",
+            json={
+                "project_id": project2_id, "user_label": label, "day": day.isoformat(),
+                "hours": 1, "link_type_names": ["Profile & Forums"], "expected_links": 2,
+            },
+            headers=headers,
+        )
+        assert a2.status_code == 200, a2.text
+
+        def submit_one(project_cell: str, ltype_cell: str, url: str):
+            row = list(s_data[2])
+            row[s_fill] = url
+            row[s_header.index("Project")] = project_cell
+            row[s_header.index("Link type")] = ltype_cell
+            buf2 = io.StringIO()
+            w = csv.writer(buf2)
+            w.writerow(s_header)
+            w.writerow(row)
+            return client.post(
+                "/api/v1/workforce/task-import",
+                files={"file": ("task-sheet_simple.csv", buf2.getvalue().encode("utf-8"), "text/csv")},
+                headers=headers,
+            )
+
+        # Substring types must NOT cross-match: with the Project cell blanked
+        # (edited sheet), "Profile" must route to taskA by EXACT type — not be
+        # conflated with "Profile & Forums" and min()-routed by UUID.
+        sub5 = submit_one("", "Profile", "https://wiki.example.edu/built-5")
+        assert sub5.status_code == 202, sub5.text
+        assert sub5.json()["staged"] == 1
+        assert sub5.json()["batches"][0]["project_id"] == project_id  # taskA's project
+
+        # A row naming a project that matches no candidate is SKIPPED, never
+        # guessed into another project (rename-after-export safety).
+        sub6 = submit_one(
+            "Renamed Project That Does Not Exist", "", "https://news.example.co/built-6"
+        )
+        assert sub6.status_code in (400, 422), sub6.text  # nothing routable
+
+        # No project + no link type + two candidates on different projects →
+        # ambiguous, skipped (never misattributed).
+        sub7 = submit_one("", "", "https://misc.example.dev/built-7")
+        assert sub7.status_code in (400, 422), sub7.text
 
         # A sheet with no filled Backlink URL cells is rejected with guidance.
         empty_buf = io.StringIO()

@@ -9,7 +9,7 @@ day drops out of the denominator); an unexcused shortfall counts against it.
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -1113,6 +1113,15 @@ TASK_EXPORT_HEADERS = [
     "Why suggested", "Backlink URL (fill in)", "Anchor text (fill in)",
     "Remarks (fill in)",
 ]
+# "Simple" style (owner ask): the same day sheet without the plumbing columns
+# (no Task ID / target counts / priority / reasons) — just the main columns a
+# builder actually reads. Submit-back still routes these rows by
+# User + Date (+ Project / Link type) — see task_sheet_submit's fallback.
+TASK_EXPORT_HEADERS_SIMPLE = [
+    "Date", "User", "Project", "Link type", "Suggested domain",
+    "DA", "PA", "Spam", "AS",
+    "Backlink URL (fill in)", "Anchor text (fill in)", "Remarks (fill in)",
+]
 
 
 async def task_export_rows(
@@ -1120,6 +1129,7 @@ async def task_export_rows(
     assignment_id: uuid.UUID | None = None,
     day: date | None = None,
     user_label: str | None = None,
+    style: str = "full",
 ) -> tuple[list[str], list[list], str]:
     """Rows for the hand-out work sheet: one row per suggested domain (the
     task's assigned links + 2 spare), with EMPTY fill-in columns next to each
@@ -1166,24 +1176,34 @@ async def task_export_rows(
         # suggestion rows when the engine has fewer domains than the target,
         # so every built link still has a line to be written on.
         want = max(len(items), int(t["expected_links"] or 0), 1)
-        meta = [
-            t["id"], t["day"], t["user_label"],
-            project_names.get(t["project_id"], ""),
-            ", ".join(t["link_type_names"] or []),
-            t["expected_links"], t["priority"] or "", t["note"] or "",
-        ]
+        if style == "simple":
+            meta = [
+                t["day"], t["user_label"],
+                project_names.get(t["project_id"], ""),
+                ", ".join(t["link_type_names"] or []),
+            ]
+        else:
+            meta = [
+                t["id"], t["day"], t["user_label"],
+                project_names.get(t["project_id"], ""),
+                ", ".join(t["link_type_names"] or []),
+                t["expected_links"], t["priority"] or "", t["note"] or "",
+            ]
         for i in range(want):
             it = items[i] if i < len(items) else None
-            detail = (
-                [
+            if it is not None:
+                metrics = [
                     it["domain_key"], it.get("da"), it.get("pa"),
                     it.get("spam_score"), it.get("semrush_as"),
-                    "; ".join(it.get("reasons") or []),
                 ]
-                if it is not None
-                else ["", None, None, None, None, "(no suggestion — pick your own domain)"]
-            )
+                why = ["; ".join(it.get("reasons") or [])]
+            else:
+                metrics = ["", None, None, None, None]
+                why = ["(no suggestion — pick your own domain)"]
+            detail = metrics if style == "simple" else metrics + why
             rows.append(meta + detail + ["", "", ""])
+    if style == "simple":
+        return TASK_EXPORT_HEADERS_SIMPLE, rows, f"{base}_simple"
     return TASK_EXPORT_HEADERS, rows, base
 
 
@@ -1194,6 +1214,29 @@ def _sheet_col(headers: list[str], *needles: str) -> str | None:
         low = (h or "").strip().lower()
         if any(n in low for n in needles):
             return h
+    return None
+
+
+def _parse_sheet_date(raw: str) -> date | None:
+    """Tolerant Date-cell parser. We export ISO, but Excel re-saves a CSV's
+    date cells in locale display format (e.g. "7/23/2026") — and for the
+    SIMPLE sheet the Date column is the only routing key, so it must survive
+    that round trip. US month-first is tried before day-first (Excel's most
+    common locale here); an unambiguous day>12 falls through to day-first."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:  # xlsx str()s datetimes → "2026-07-23 00:00:00"; take the date part
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        pass
+    token = raw.split(" ")[0]
+    for fmt in ("%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y",
+                "%d.%m.%Y", "%d-%b-%Y", "%d-%B-%Y"):
+        try:
+            return datetime.strptime(token, fmt).date()
+        except ValueError:
+            continue
     return None
 
 
@@ -1221,28 +1264,47 @@ async def task_sheet_submit(
 
     task_col = _sheet_col(headers, "task id")
     url_col = _sheet_col(headers, "backlink url")
-    if not task_col or not url_col:
+    user_col = _sheet_col(headers, "user")
+    date_col = _sheet_col(headers, "date")
+    # A submit-able sheet needs the Backlink URL column plus a way to route
+    # rows: the Task ID column (full sheet) OR User + Date (simple sheet).
+    if not url_col or (not task_col and not (user_col and date_col)):
         raise ValidationAppError(
-            "This doesn't look like an exported task sheet — the Task ID and "
-            "Backlink URL columns are missing. Export the sheet from a task "
-            "(or Today's sheet), fill the Backlink URL column, then submit it."
+            "This doesn't look like an exported task sheet — it needs the "
+            "Backlink URL column plus either Task ID or User + Date columns. "
+            "Export the sheet from a task (or Today's sheet), fill the "
+            "Backlink URL column, then submit it."
         )
     anchor_col = _sheet_col(headers, "anchor")
     remarks_col = _sheet_col(headers, "remark")
     domain_col = _sheet_col(headers, "suggested domain")
+    project_col = _sheet_col(headers, "project")
+    ltype_col = _sheet_col(headers, "link type")
+
+    def _cell(row: dict, col: str | None) -> str:
+        return (str(row.get(col, "")) or "").strip() if col else ""
 
     filled: list[dict] = []
+    unparsed_dates = 0
     for row in raw_rows:
-        url = (str(row.get(url_col, "")) or "").strip()
+        url = _cell(row, url_col)
         if not url:
             continue
+        raw_day = _cell(row, date_col)
+        day_val = _parse_sheet_date(raw_day)
+        if raw_day and day_val is None:
+            unparsed_dates += 1
         filled.append(
             {
-                "task_id": (str(row.get(task_col, "")) or "").strip(),
+                "task_id": _cell(row, task_col),
                 "url": url,
-                "anchor": (str(row.get(anchor_col, "")) or "").strip() if anchor_col else "",
-                "remarks": (str(row.get(remarks_col, "")) or "").strip() if remarks_col else "",
-                "domain": (str(row.get(domain_col, "")) or "").strip() if domain_col else "",
+                "anchor": _cell(row, anchor_col),
+                "remarks": _cell(row, remarks_col),
+                "domain": _cell(row, domain_col),
+                "user": _cell(row, user_col),
+                "day": day_val,
+                "project": _cell(row, project_col),
+                "ltype": _cell(row, ltype_col),
             }
         )
     if not filled:
@@ -1270,13 +1332,96 @@ async def task_sheet_submit(
             )
         ).scalars()
     }
+    # Fallback routing for rows without a (valid) Task ID — the SIMPLE sheet
+    # has no Task ID column, and full-sheet rows with an edited id land here
+    # too: match the row's User + Date to that day's assignments, narrowed by
+    # Project name and Link type when those columns are present. Narrowing is
+    # EVIDENCE, never a hint: a named project that matches no candidate skips
+    # the row (guessing could stage the link into the wrong project), and
+    # ambiguity only resolves deterministically when the remaining candidates
+    # are attribution-identical (same project + link types).
+    fb_rows = [f for f in filled if f["task_id"] not in tasks and f["user"] and f["day"]]
+    candidates: dict[tuple[str, date], list[TaskAssignment]] = {}
+    project_lnames: dict[uuid.UUID, str] = {}
+    if fb_rows:
+        from app.models.project import Project as _Project
+
+        for t in (
+            await db.execute(
+                select(TaskAssignment).where(
+                    TaskAssignment.workspace_id == ctx.workspace_id,
+                    func.lower(TaskAssignment.user_label).in_(
+                        {f["user"].lower() for f in fb_rows}
+                    ),
+                    TaskAssignment.day.in_({f["day"] for f in fb_rows}),
+                )
+            )
+        ).scalars():
+            candidates.setdefault((t.user_label.lower(), t.day), []).append(t)
+        pids = {t.project_id for ts in candidates.values() for t in ts}
+        if pids:
+            for pid, name in (
+                await db.execute(
+                    select(_Project.id, _Project.name).where(_Project.id.in_(pids))
+                )
+            ).all():
+                project_lnames[pid] = (name or "").lower()
+
+    def _resolve(f: dict) -> TaskAssignment | None:
+        ta = tasks.get(f["task_id"])
+        if ta is not None:
+            return ta
+        if not (f["user"] and f["day"]):
+            return None
+        opts = candidates.get((f["user"].lower(), f["day"]), [])
+        if f["project"]:
+            # The row NAMES a project: matching nothing means we cannot route
+            # this row safely (e.g. the project was renamed after export) —
+            # never fall back to guessing across other projects.
+            opts = [t for t in opts if project_lnames.get(t.project_id) == f["project"].lower()]
+        if f["ltype"] and len(opts) > 1:
+            low = f["ltype"].lower()
+            # Exact first: the exported cell is exactly ", ".join(names), and
+            # canonical types contain substring pairs ("Profile" vs
+            # "Profile & Forums") that bidirectional contains would conflate.
+            exact = [
+                t for t in opts
+                if ", ".join(t.link_type_names or []).lower() == low
+                or any(x.lower() == low for x in (t.link_type_names or []))
+            ]
+            if exact:
+                opts = exact
+            else:
+                sub = [
+                    t for t in opts
+                    if any(x.lower() in low or low in x.lower() for x in (t.link_type_names or []))
+                ]
+                if sub:
+                    opts = sub
+        if not opts:
+            return None
+        if len(opts) == 1:
+            return opts[0]
+        # Several left: only safe when they are attribution-identical — same
+        # project AND same link types — otherwise skip rather than misattribute.
+        if len({(t.project_id, tuple(t.link_type_names or [])) for t in opts}) == 1:
+            return min(opts, key=lambda t: str(t.id))
+        return None
+
     scope = await visible_labels(db, ctx)
     skipped_unknown = 0
     by_project: dict[uuid.UUID, list[dict]] = {}
     accepted = 0
     for f in filled:
-        ta = tasks.get(f["task_id"])
-        if ta is None or (scope is not None and ta.user_label not in scope):
+        ta = _resolve(f)
+        # Gate on BOTH scoping axes: label scope (viewer → own tasks only) and
+        # project scope (a project-scoped manager must not stage into projects
+        # outside their ProjectMember set — same rule as /imports).
+        if (
+            ta is None
+            or (scope is not None and ta.user_label not in scope)
+            or (ctx.allowed_project_ids is not None and ta.project_id not in ctx.allowed_project_ids)
+        ):
             skipped_unknown += 1
             continue
         mapped = {
@@ -1302,9 +1447,16 @@ async def task_sheet_submit(
             except Exception:  # noqa: BLE001 — bookkeeping must not block the submit
                 pass
     if not by_project:
+        if unparsed_dates:
+            raise ValidationAppError(
+                "None of the filled rows could be routed — the Date column "
+                f"couldn't be read on {unparsed_dates} row(s) (a spreadsheet "
+                "app may have rewritten the dates). Re-export the sheet or "
+                "format the Date column as YYYY-MM-DD, then submit again."
+            )
         raise ValidationAppError(
             "None of the filled rows matched a task you can submit for — "
-            "check the Task ID column wasn't edited."
+            "check the Task ID (or User + Date) columns weren't edited."
         )
 
     batches = []

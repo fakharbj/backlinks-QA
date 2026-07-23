@@ -7490,6 +7490,22 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
                 </button>
               ) : null}
               {isCurrentWeek && todayRows.length ? (
+                <button
+                  onClick={async () => {
+                    const ok = await downloadAuthed(
+                      token, `/workforce/task-export?day=${today}&style=simple&format=xlsx`, `task-sheet_${today}_simple.xlsx`
+                    );
+                    onNotice(ok
+                      ? "Simple day sheet downloaded — main columns only; it can still be submitted back (rows match by user + date)"
+                      : "Export failed — try again");
+                  }}
+                  className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:bg-field hover:text-ink"
+                  title="Same day sheet without the Task ID / targets / priority columns — just Date, User, Project, Link type, the suggested domains with their metrics, and the fill-in columns"
+                >
+                  <Download className="h-3 w-3" /> Simple
+                </button>
+              ) : null}
+              {isCurrentWeek && todayRows.length ? (
                 <label
                   className={clsx(
                     "flex cursor-pointer items-center gap-1 rounded-md border border-ocean/40 bg-ocean/10 px-2 py-1 text-[11px] font-semibold text-ocean transition hover:bg-ocean/20",

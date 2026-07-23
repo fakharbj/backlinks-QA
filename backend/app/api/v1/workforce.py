@@ -283,18 +283,21 @@ async def task_export(
     day: date | None = Query(None),
     user_label: str | None = Query(None),
     fmt: str = Query(default="csv", alias="format", pattern="^(csv|xlsx)$"),
+    style: str = Query(default="full", pattern="^(full|simple)$"),
 ):
     """The hand-out work sheet: one row per suggested domain (assigned links
     + 2), plus empty "Backlink URL / Anchor text / Remarks" columns to fill in
     next to each suggested row. ``assignment_id`` exports ONE task; otherwise
     ``day`` (default today) exports the whole day's plan the caller may see —
-    a viewer only ever gets their own tasks."""
+    a viewer only ever gets their own tasks. ``style=simple`` drops the
+    plumbing columns (Task ID / targets / priority / reasons) and keeps just
+    the main columns; submit-back routes those rows by User + Date instead."""
     from fastapi.responses import StreamingResponse
 
     from app.services import source_domain_service
 
     headers, rows, base = await workforce_service.task_export_rows(
-        db, ctx, assignment_id=assignment_id, day=day, user_label=user_label
+        db, ctx, assignment_id=assignment_id, day=day, user_label=user_label, style=style
     )
     # HTTP headers are latin-1 only — same ascii-ignore fix as the other exports.
     safe = base.encode("ascii", "ignore").decode("ascii").strip("_-. ") or "task-sheet"

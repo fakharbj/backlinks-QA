@@ -497,7 +497,15 @@ project default target applied) and `record_action(accepted, assignment_id)`
 marks used suggested domains. Nothing imports until reviewer approval — the
 staging gate is WHY any member may submit. UI: "Submit filled sheet" in My
 Work Today header + "Submit filled task sheet" in ImportDesk (routes itself,
-no project picker). (3) **Main-sheet Status column**
+no project picker). **Simple day sheet** (`style=simple` on task-export, "Simple"
+button in My Work): main cols only (Date/User/Project/Link type/domain/metrics
++ fill-ins — no Task ID/priority/reasons); submit-back routes those rows by
+User+Date via a fallback in `task_sheet_submit` (`_parse_sheet_date` survives
+Excel locale rewrites; project name narrowing is EVIDENCE — no match → row
+skipped, never guessed; link-type narrowing exact-first because canonical
+types contain substring pairs; ambiguous candidates skipped unless
+attribution-identical; `ctx.allowed_project_ids` enforced — the fallback
+would otherwise let a project-scoped manager stage into unscoped projects). (3) **Main-sheet Status column**
 (`GOOGLE_MAIN_STATUS_COL="Status"`): `status_from_cell` (active/inactive word
 sets; blank/typo → None = untouched; "inactive" checked before "active") in
 `discover_projects` sets `Project.status` + runs the SAME
