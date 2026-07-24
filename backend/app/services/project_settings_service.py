@@ -34,6 +34,45 @@ def normalize_domain_input(raw: str) -> str | None:
     return registrable_domain(host) or None
 
 
+async def ensure_primary_from_target(
+    db: AsyncSession, workspace_id: uuid.UUID, project_id: uuid.UUID, target_domain: str | None
+) -> bool:
+    """Reflect a project's ``target_domain`` (the Quick-Edit field) into its
+    Main domains (the ``ProjectDomain`` list that QA/reports/analytics use):
+    add the refined domain if it isn't there yet, and make it primary when the
+    project has no primary. Never overrides an existing primary. No-op for a
+    blank/invalid target. Returns True if it changed anything."""
+    domain = normalize_domain_input(target_domain or "")
+    if not domain:
+        return False
+    existing = (
+        await db.execute(
+            select(ProjectDomain).where(
+                ProjectDomain.project_id == project_id, ProjectDomain.domain == domain
+            )
+        )
+    ).scalar_one_or_none()
+    has_primary = (
+        await db.execute(
+            select(ProjectDomain.id).where(
+                ProjectDomain.project_id == project_id, ProjectDomain.is_primary.is_(True)
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(ProjectDomain(
+            workspace_id=workspace_id, project_id=project_id,
+            domain=domain, is_primary=(has_primary is None),
+        ))
+        await db.flush()
+        return True
+    if has_primary is None:
+        existing.is_primary = True
+        await db.flush()
+        return True
+    return False
+
+
 async def _ensure_project(db: AsyncSession, ctx: AuthContext, project_id: uuid.UUID) -> Project:
     project = await db.get(Project, project_id)
     if project is None or project.workspace_id != ctx.workspace_id:

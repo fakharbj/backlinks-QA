@@ -62,6 +62,14 @@ async def create_project(db: AsyncSession, ctx: AuthContext, payload: ProjectCre
     )
     db.add(project)
     await db.flush()
+    # The target domain doubles as the project's primary Main domain (what QA,
+    # reports and analytics use) — keep the two in sync from creation.
+    if project.target_domain:
+        from app.services import project_settings_service
+
+        await project_settings_service.ensure_primary_from_target(
+            db, ctx.workspace_id, project.id, project.target_domain
+        )
     return project
 
 
@@ -70,11 +78,21 @@ async def update_project(
 ) -> Project:
     project = await get_project(db, ctx, project_id)
     was_active = getattr(project.status, "value", str(project.status)) == "active"
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    for field, value in fields.items():
         setattr(project, field, value)
     now_active = getattr(project.status, "value", str(project.status)) == "active"
     if was_active and not now_active:
         await deactivation_cleanup(db, ctx.workspace_id, project.id)
+    await db.flush()
+    # Setting/changing the target domain (e.g. via Quick Edit) reflects into the
+    # project's Main domains automatically — never overriding an existing primary.
+    if "target_domain" in fields and project.target_domain:
+        from app.services import project_settings_service
+
+        await project_settings_service.ensure_primary_from_target(
+            db, ctx.workspace_id, project.id, project.target_domain
+        )
     await db.flush()
     return project
 
