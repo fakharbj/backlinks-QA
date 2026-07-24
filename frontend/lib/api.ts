@@ -594,6 +594,7 @@ export type BacklinkRow = {
   is_duplicate?: boolean;
   duplicate_status?: string | null;
   index_status?: string | null;
+  index_result_count?: number | null;
   domain_da?: number | null;
   domain_pa?: number | null;
   domain_as?: number | null;
@@ -668,6 +669,11 @@ export type SheetSource = {
   imported_count: number;
   updated_count: number;
   writeback_enabled: boolean;
+  // A parked Project-Sheet-URL change awaiting admin confirmation (the main sheet
+  // now points this project at a different spreadsheet). Null = none pending.
+  pending_spreadsheet_id?: string | null;
+  pending_source_url?: string | null;
+  url_change_detected_at?: string | null;
 };
 
 export type SheetConfig = {
@@ -797,6 +803,9 @@ export type BacklinkDetail = BacklinkRow & {
   scoring_rule_version_id?: string | null; // which rule set scored this link (if exposed)
   latest_result: CrawlResultOut | null;
   history: HistoryEventOut[];
+  // Source-site account credentials — only present when the caller is allowed to
+  // see them (managers, or the link's own assignee); absent otherwise.
+  credentials?: { login?: string | null; password?: string | null } | null;
 };
 
 export type Report = {

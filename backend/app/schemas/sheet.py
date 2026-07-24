@@ -27,6 +27,11 @@ class SheetSourceOut(ORMModel):
     imported_count: int
     updated_count: int
     writeback_enabled: bool
+    # Pending Project-Sheet-URL change parked for admin confirmation (the main
+    # sheet now points this project at a different spreadsheet). Null = none.
+    pending_spreadsheet_id: str | None = None
+    pending_source_url: str | None = None
+    url_change_detected_at: datetime | None = None
 
 
 class SheetTabOut(BaseModel):

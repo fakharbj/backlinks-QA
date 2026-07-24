@@ -25,6 +25,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.errors import NotFoundError, ValidationAppError
 from app.core.logging import get_logger
 from app.integrations import google_sheets
 from app.models.backlink import BacklinkRecord
@@ -205,8 +206,83 @@ async def _resolve_sheet_source(
         await db.flush()
     else:
         source.project_name = name
-        source.spreadsheet_id = spreadsheet_id
-        source.source_url = url
+        if spreadsheet_id != source.spreadsheet_id:
+            # The main sheet now points this project at a DIFFERENT spreadsheet.
+            # Do NOT repoint + resync automatically — park it as pending so an
+            # admin confirms (a wrong/accidental URL would otherwise pull another
+            # sheet's rows into this project). The active sheet keeps serving.
+            if source.pending_spreadsheet_id != spreadsheet_id:
+                source.pending_spreadsheet_id = spreadsheet_id
+                source.pending_source_url = url
+                source.url_change_detected_at = datetime.now(timezone.utc)
+                log.warning(
+                    "sheet_url_change_detected", project=name,
+                    old=source.spreadsheet_id, new=spreadsheet_id,
+                )
+        else:
+            source.source_url = url
+            # The main sheet reverted to the active sheet — clear any stale pending.
+            if source.pending_spreadsheet_id is not None:
+                source.pending_spreadsheet_id = None
+                source.pending_source_url = None
+                source.url_change_detected_at = None
+    return source
+
+
+async def apply_pending_url_change(
+    db: AsyncSession, workspace_id: uuid.UUID, sheet_id: uuid.UUID
+) -> SheetSource:
+    """Admin-confirmed Project-Sheet-URL change: VALIDATE the parked spreadsheet
+    is readable, then repoint the source at it and refresh its tabs. Raises if
+    there is no pending change or the new sheet cannot be read (so a bad URL can
+    never silently take over a project). Does NOT import rows — the operator runs
+    a normal sync afterwards, now safely pointed at the confirmed sheet."""
+    source = await db.get(SheetSource, sheet_id)
+    if source is None or source.workspace_id != workspace_id:
+        raise NotFoundError("Sheet source not found")
+    new_id = source.pending_spreadsheet_id
+    if not new_id:
+        raise ValidationAppError("This sheet has no pending URL change to confirm.")
+    # Validate the new spreadsheet is actually readable before we repoint.
+    try:
+        worksheets = await asyncio.to_thread(
+            google_sheets.list_worksheets_cached, new_id, use_cache=False
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ValidationAppError(
+            "The new sheet couldn't be opened — check the URL is a plain link "
+            "(not a smart chip) and that it's shared with the service account. "
+            f"({repr(exc)[:160]})"
+        ) from exc
+    if not worksheets:
+        raise ValidationAppError("The new sheet has no readable worksheets.")
+    source.spreadsheet_id = new_id
+    source.source_url = source.pending_source_url or source.source_url
+    source.pending_spreadsheet_id = None
+    source.pending_source_url = None
+    source.url_change_detected_at = None
+    # Refresh tabs against the new spreadsheet (old gids are marked missing).
+    try:
+        await _sync_tabs(db, source, worksheets)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("apply_url_change_tab_sync_failed", sheet_id=str(sheet_id), error=repr(exc))
+    await db.flush()
+    log.info("sheet_url_change_applied", sheet_id=str(sheet_id), new=new_id)
+    return source
+
+
+async def dismiss_pending_url_change(
+    db: AsyncSession, workspace_id: uuid.UUID, sheet_id: uuid.UUID
+) -> SheetSource:
+    """Reject a parked URL change — keep the active sheet. (If the main sheet
+    still shows the new URL, the next discovery re-detects it as pending.)"""
+    source = await db.get(SheetSource, sheet_id)
+    if source is None or source.workspace_id != workspace_id:
+        raise NotFoundError("Sheet source not found")
+    source.pending_spreadsheet_id = None
+    source.pending_source_url = None
+    source.url_change_detected_at = None
+    await db.flush()
     return source
 
 

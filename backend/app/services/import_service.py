@@ -538,6 +538,20 @@ def _apply_input_fields(
         bl.link_type = str(data["link_type"]).strip()[:60]
     if data.get("sheet_created_date"):
         bl.sheet_created_date = _parse_date(data.get("sheet_created_date"))
+    # Optional source-site credentials (task sheet Login/Password columns, or any
+    # import carrying them). Stored in a DEDICATED column (never the serialized
+    # ``extra`` bag) so they only surface through the role-gated detail field —
+    # never in the grid or exports. Only overwrite the field that was given, so a
+    # partial re-sync never wipes a previously-recorded login or password.
+    login = (str(data.get("source_login") or "")).strip()
+    password = (str(data.get("source_password") or "")).strip()
+    if login or password:
+        creds = dict(bl.source_credentials or {})
+        if login:
+            creds["login"] = login[:300]
+        if password:
+            creds["password"] = password[:300]
+        bl.source_credentials = creds
     if imp.sheet_source_id is not None:
         bl.source_sheet_id = imp.sheet_source_id
     bl.sheet_tab = imp.sheet_tab

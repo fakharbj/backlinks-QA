@@ -586,6 +586,38 @@ owner's 19-type scheme (see [[sheet-sync-tab-identity]], [[link-type-
 canonicalization]]). Dups review feature intact (57 conflict groups). 269 tests
 pass; prod verified (0 same-URL dup groups).
 
+**Final-day hardening batch shipped + deployed** (2026-07-24 #2, migrations
+`0058`+`0059`, 269 tests + 7 new serper/DataForSEO parser tests): (1) **Batch
+Details step-by-step progress** — a prominent progress panel (bar + %, tab
+progress, current step w/ spinner→check, failed count, live counter chips) in
+`BatchDetails` for non-review batches, above the existing Run log. (2) **Viewer
+Today UX** — the Download / Submit actions are now a bold action bar with a
+pending/done summary (was two tiny header buttons). (3) **Source-site
+credentials** (`0058`: `backlink_records.source_credentials` JSONB — a DEDICATED
+column, never the serialized `extra` bag): task sheet gained Login/Password
+fill-in columns; `import_parse` has `source_login`/`source_password` canonical
+fields (+ synonyms, deliberately NOT "email"/"account"); submit-back +
+`_apply_input_fields` store them; backlink-detail exposes a **role-gated**
+`credentials` field (unrestricted managers, or the link's own assignee via
+`visible_labels`) — masked password + reveal/copy in the drawer; never in the
+grid or exports. (4) **Project-Sheet-URL change detection** (`0059`:
+`sheet_sources.pending_spreadsheet_id`/`pending_source_url`/
+`url_change_detected_at`): `_resolve_sheet_source` PARKS a changed URL instead
+of silently repointing (the active sheet keeps serving); admin confirms via
+`POST /sheets/{id}/confirm-url-change` (validates the new sheet is readable, then
+repoints + refreshes tabs) or `dismiss-url-change`; SheetsDesk shows a
+confirm/keep banner. (5) **DataForSEO SERP provider** (`SERP_PROVIDER=dataforseo`
++ `DATAFORSEO_LOGIN`/`_PASSWORD`): new `_check_dataforseo` + pure
+`classify_dataforseo_payload` (UNCERTAIN on any ambiguity, never a false
+negative); INERT until creds set in prod `.env`. (6) **Indexing desk** (Monitor
+nav, global + project): breakdown cards (indexed/not/uncertain/unchecked, click
+to filter) + Run index check + time-based tracking plan editor (GET/PUT
+`/index/tracking`, admin) + a links table with each link's OWN "index checked"
+date → shared drawer. `index_result_count` now serialized on `BacklinkRow`.
+In-system Admin project creation already existed (project-picker "New project" →
+POST /projects, no sheet). Prod: migrated to 0059, api/worker/beat + frontend
+restarted, site 200, all new routes 401-gated (wired); test DB recreated clean.
+
 **Remaining (optional/P3):** task-sheet 2-way sync (flagged off), SMTP-based
 self-serve password reset, shared saved views. Reports-builder facet selects
 still top-50 single-pick (out of scope 2026-07-22). Demo rows from verification:

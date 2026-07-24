@@ -29,6 +29,7 @@ log = get_logger("services.api_usage")
 
 KNOWN_APIS = (
     "iproyal", "render", "serper", "moz", "semrush", "rdap", "google_sheets", "google_cse",
+    "dataforseo",
 )
 _TTL = 35 * 24 * 3600  # keep ~5 weeks of hour buckets for the charts
 

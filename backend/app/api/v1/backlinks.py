@@ -344,6 +344,15 @@ async def get_backlink(backlink_id: uuid.UUID, ctx: AuthCtx, db: ReadSession) ->
                         created_at=h.created_at)
         for h in history
     ]
+    # Source-site credentials are role-gated: unrestricted callers (managers/admins)
+    # always see them; a label-scoped caller (viewer / TeamLead) only for links
+    # attributed to a label they own. Everyone else gets no credentials at all.
+    if bl.source_credentials:
+        from app.services.workforce_service import visible_labels
+
+        scope = await visible_labels(db, ctx)
+        if scope is None or (bl.assigned_user_label or "") in scope:
+            detail.credentials = bl.source_credentials
     return detail
 
 

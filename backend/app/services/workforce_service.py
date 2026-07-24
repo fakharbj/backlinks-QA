@@ -1115,6 +1115,7 @@ TASK_EXPORT_HEADERS = [
     "Date", "User", "Project", "Link type", "Suggested domain",
     "DA", "PA", "Spam", "AS",
     "Backlink URL (fill in)", "Anchor text (fill in)", "Remarks (fill in)",
+    "Login (fill in)", "Password (fill in)",
 ]
 
 
@@ -1187,8 +1188,9 @@ async def task_export_rows(
                 [it.get("da"), it.get("pa"), it.get("spam_score"), it.get("semrush_as")]
                 if it is not None else [None, None, None, None]
             )
+            # Trailing blanks = the fill-in columns (URL, Anchor, Remarks, Login, Password).
             rows.append(
-                [t["day"], t["user_label"], project, ltypes, domain, *metrics, "", "", ""]
+                [t["day"], t["user_label"], project, ltypes, domain, *metrics, "", "", "", "", ""]
             )
     return TASK_EXPORT_HEADERS, rows, (f"{base}_flat" if not dividers else base)
 
@@ -1266,6 +1268,8 @@ async def task_sheet_submit(
     domain_col = _sheet_col(headers, "suggested domain")
     project_col = _sheet_col(headers, "project")
     ltype_col = _sheet_col(headers, "link type")
+    login_col = _sheet_col(headers, "login")
+    password_col = _sheet_col(headers, "password")
 
     def _cell(row: dict, col: str | None) -> str:
         return (str(row.get(col, "")) or "").strip() if col else ""
@@ -1291,6 +1295,8 @@ async def task_sheet_submit(
                 "day": day_val,
                 "project": _cell(row, project_col),
                 "ltype": _cell(row, ltype_col),
+                "login": _cell(row, login_col),
+                "password": _cell(row, password_col),
             }
         )
     if not filled:
@@ -1421,6 +1427,10 @@ async def task_sheet_submit(
             mapped["expected_anchor_text"] = f["anchor"]
         if f["remarks"]:
             mapped["notes"] = f["remarks"]
+        if f["login"]:
+            mapped["source_login"] = f["login"]
+        if f["password"]:
+            mapped["source_password"] = f["password"]
         by_project.setdefault(ta.project_id, []).append(mapped)
         if f["domain"]:
             try:

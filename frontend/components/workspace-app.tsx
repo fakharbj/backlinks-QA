@@ -110,7 +110,7 @@ import {
   TokenPair
 } from "@/lib/api";
 
-type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest" | "interns";
+type Tab = "overview" | "analytics" | "backlinks" | "conflicts" | "domains" | "competitors" | "imports" | "sheets" | "domain-import" | "batches" | "alerts" | "reports" | "performance" | "users" | "indexing" | "tasks" | "team" | "employees" | "scoring" | "settings" | "mywork" | "mycal" | "mylinks" | "mydash" | "apiusage" | "myopps" | "guidance" | "myscoring" | "statusguide" | "qatest" | "interns";
 
 const samplePaste = `source_url,target_url,expected_anchor_text,expected_rel,campaign,vendor,tags
 https://example.com/best-tools,https://acme.test/seo,Acme SEO,dofollow,Q3 Outreach,EditorialHub,"guest-post,tier1"
@@ -511,6 +511,9 @@ export function WorkspaceApp() {
             <UserDashboardsDesk token={token} projectId={activeProjectId} onOpenBacklinks={openBacklinks} onNotice={setNotice} onPlanWork={() => setTab("tasks")}
               section={dashSection} onSectionChange={setDashSection} onPersonChange={setDashPerson} />
           ) : null}
+          {tab === "indexing" ? (
+            <IndexingDesk token={token} projectId={activeProjectId} onNotice={setNotice} role={role} />
+          ) : null}
           {tab === "tasks" ? (
             <TasksDesk token={token} projectId={activeProjectId} projects={projects.data || []} onNotice={setNotice} section={tasksSection} />
           ) : null}
@@ -790,6 +793,7 @@ const WORKSPACE_NAV: NavGroup[] = [
       ["overview", "Dashboard", Gauge],
       ["analytics", "Analytics", BarChart3],
       ["performance", "Performance", Activity],
+      ["indexing", "Indexing", SearchIcon],
       ["users", "User Dashboards", Users],
       ["apiusage", "API Usage", Activity]
     ]
@@ -842,6 +846,7 @@ const PROJECT_NAV: NavGroup[] = [
     items: [
       ["analytics", "Analytics", BarChart3],
       ["performance", "Performance", Activity],
+      ["indexing", "Indexing", SearchIcon],
       ["users", "User Dashboards", Users],
       ["tasks", "Tasks", CalendarDays],
       ["reports", "Reports", FileSpreadsheet],
@@ -4032,6 +4037,8 @@ function BacklinkDetailDrawer({
   // The duplicate group this backlink belongs to (if any) — powers the inline
   // Duplicates panel + the "compare all records" view without leaving the drawer.
   const [showCompare, setShowCompare] = useState(false);
+  // Reveal toggle for the (role-gated) source-site password. Default masked.
+  const [showPw, setShowPw] = useState(false);
   const conflictGroup = useQuery({
     queryKey: ["backlink-conflict", token, backlinkId],
     enabled: Boolean(token),
@@ -4289,6 +4296,47 @@ function BacklinkDetailDrawer({
               })}
               <FactRow k="Next check due" v={data.next_check_at ? formatDate(data.next_check_at) : "—"} />
             </DetailBlock>
+
+            {/* Source-site credentials — only present when the API returns them
+                (role-gated: managers, or the link's own assignee). Password is
+                masked with a reveal toggle; nothing is shown to other users. */}
+            {data.credentials && (data.credentials.login || data.credentials.password) ? (
+              <DetailBlock title="Source-site login">
+                <FactRow k="Login" v={data.credentials.login || "—"} />
+                <FactRow
+                  k="Password"
+                  v={
+                    data.credentials.password ? (
+                      <span className="flex items-center gap-2">
+                        <span className="font-mono">
+                          {showPw ? data.credentials.password : "•".repeat(Math.min(12, data.credentials.password.length))}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowPw((v) => !v)}
+                          className="text-[11px] font-semibold text-ocean hover:underline"
+                        >
+                          {showPw ? "Hide" : "Reveal"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(data.credentials!.password || "");
+                            onNotice("Password copied");
+                          }}
+                          className="text-[11px] font-semibold text-muted hover:text-ink hover:underline"
+                        >
+                          Copy
+                        </button>
+                      </span>
+                    ) : "—"
+                  }
+                />
+                <p className="px-1 pt-1 text-[11px] text-muted">
+                  Account used to build this link. Visible to you because you manage this workspace or the link is yours.
+                </p>
+              </DetailBlock>
+            ) : null}
 
             {(() => {
               const occ = duplicates.data || [];
@@ -7635,31 +7683,48 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
                 : "Today"
             } />
             <span className="flex items-center gap-2">
-              {isCurrentWeek && todayRows.length ? (
-                <button
-                  onClick={async () => {
-                    const ok = await downloadAuthed(
-                      token, `/workforce/task-export?day=${today}&format=xlsx`, `task-sheet_${today}.xlsx`
-                    );
-                    onNotice(ok
-                      ? "Today's sheet downloaded — fill ONLY the Backlink URL column next to the domain you used, then Submit filled sheet"
-                      : "Export failed — try again");
-                  }}
-                  className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-ink transition hover:bg-field"
-                  title="Download today's work sheet: every task's suggested domains with empty Backlink URL / Anchor / Remarks columns to fill in"
-                >
-                  <Download className="h-3 w-3" /> Today&apos;s sheet
+              {todayRows.length > 4 ? (
+                <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
+                  {showAllToday ? "Show less" : `View all ${todayRows.length}`}
                 </button>
               ) : null}
-              {isCurrentWeek && todayRows.length ? (
+            </span>
+          </div>
+          {/* Prominent primary actions (owner rule: Download + Submit must be
+              impossible to miss) + a today at-a-glance pending/done summary. */}
+          {isCurrentWeek && todayRows.length ? (() => {
+            const doneCount = todayRows.filter((r) => (r.expected_links ?? 0) > 0 && (r.actual_links ?? 0) >= (r.expected_links ?? 0)).length;
+            const pendingCount = todayRows.length - doneCount;
+            return (
+              <div className="flex flex-wrap items-center gap-3 border-b border-line bg-gradient-to-r from-ocean/5 to-plum/5 p-3">
+                <div className="mr-auto flex items-center gap-4 text-sm">
+                  <span className="flex items-center gap-1.5" title="Tasks not yet complete today">
+                    <span className="grid h-7 w-7 place-items-center rounded-full bg-ember/15 text-xs font-bold text-ember">{pendingCount}</span>
+                    <span className="text-muted">pending</span>
+                  </span>
+                  <span className="flex items-center gap-1.5" title="Tasks completed today">
+                    <span className="grid h-7 w-7 place-items-center rounded-full bg-success/15 text-xs font-bold text-success">{doneCount}</span>
+                    <span className="text-muted">done</span>
+                  </span>
+                </div>
+                <button
+                  onClick={async () => {
+                    const ok = await downloadAuthed(token, `/workforce/task-export?day=${today}&format=xlsx`, `task-sheet_${today}.xlsx`);
+                    onNotice(ok ? "Today's sheet downloaded — fill the Backlink URL column, then Submit filled sheet" : "Export failed — try again");
+                  }}
+                  className="flex items-center gap-2 rounded-lg border border-ocean/40 bg-panel px-4 py-2 text-sm font-semibold text-ocean shadow-card transition hover:bg-ocean/10"
+                  title="Download today's work sheet — one row per link to build, with the columns to fill in"
+                >
+                  <Download className="h-4 w-4" /> Download today&apos;s sheet
+                </button>
                 <label
                   className={clsx(
-                    "flex cursor-pointer items-center gap-1 rounded-md border border-ocean/40 bg-ocean/10 px-2 py-1 text-[11px] font-semibold text-ocean transition hover:bg-ocean/20",
-                    submitSheet.isPending && "pointer-events-none opacity-50"
+                    "flex cursor-pointer items-center gap-2 rounded-lg bg-gradient-to-r from-ocean to-plum px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:opacity-90",
+                    submitSheet.isPending && "pointer-events-none opacity-60"
                   )}
-                  title="Upload the filled sheet — every row with a Backlink URL becomes a staged link for review (nothing is added until approval)"
+                  title="Upload your filled sheet — each row with a Backlink URL is staged for review (nothing goes live until approved)"
                 >
-                  {submitSheet.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                  {submitSheet.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                   Submit filled sheet
                   <input
                     type="file"
@@ -7672,20 +7737,15 @@ function MyWorkDesk({ token, onNotice, focus, onNav }: {
                     }}
                   />
                 </label>
-              ) : null}
-              {todayRows.length > 4 ? (
-                <button onClick={() => setShowAllToday((v) => !v)} className="text-xs font-medium text-ocean hover:underline">
-                  {showAllToday ? "Show less" : `View all ${todayRows.length}`}
-                </button>
-              ) : null}
-            </span>
-          </div>
+              </div>
+            );
+          })() : null}
           {isCurrentWeek && todayRows.length ? (
             <details className="border-b border-line bg-ocean/5 px-3 py-2 text-xs text-muted [&_summary]:cursor-pointer" open>
               <summary className="font-semibold text-ink">How today&apos;s sheet &amp; submit works</summary>
               <ol className="mt-1.5 list-decimal space-y-1 pl-4">
                 <li><b>Download</b> <b>Today&apos;s sheet</b>. Each task is a titled group; every row inside it is <b>one link</b> to build (with a suggested domain + its metrics).</li>
-                <li>Build your backlinks. Fill <b>only the &ldquo;Backlink URL (fill in)&rdquo;</b> column with the link you built (Anchor text and Remarks are optional). Leave every other column exactly as it is.</li>
+                <li>Build your backlinks. Fill the <b>&ldquo;Backlink URL (fill in)&rdquo;</b> column with the link you built (Anchor text, Remarks, and — if the site needed an account — Login/Password are optional). Leave every other column exactly as it is.</li>
                 <li>Click <b>Submit filled sheet</b>. Nothing goes live until a reviewer approves it — follow its progress under <b>My submissions</b>.</li>
                 <li>As your links are approved, each task fills in automatically and turns green when it&apos;s complete.</li>
               </ol>
@@ -12919,8 +12979,64 @@ function BatchDetails({
         <p className="mt-1 truncate text-sm text-muted" title={b.label || ""}>{b.label || "—"}</p>
         <p className="mt-1 text-xs text-muted">
           Started {formatDate(b.started_at)} · {b.finished_at ? `finished ${formatDate(b.finished_at)} · took ${dur}` : dur}
-          {b.meta?.current_step ? <span className="text-ocean"> · {String(b.meta.current_step)}</span> : null}
         </p>
+        {/* Prominent live progress for non-review batches (review batches have
+            their own Items/New/… summary cards below). Uses only real data:
+            totals.done/total, tab counts, meta.current_step, counters. */}
+        {!isReview ? (() => {
+          const total = Number(b.totals?.total || 0);
+          const doneRaw = Number(b.totals?.done ?? b.totals?.ok ?? 0);
+          const done = total ? Math.min(doneRaw, total) : doneRaw;
+          const running = b.status === "running" || b.status === "pending";
+          const pct = total ? Math.min(100, Math.round((done / total) * 100)) : (b.status === "completed" ? 100 : 0);
+          const totTabs = Number(b.totals?.total_tabs || 0);
+          const doneTabs = Number(b.totals?.done_tabs || 0);
+          const failed = Number(b.totals?.failed || 0);
+          const counters = Object.entries(b.counters || {}).filter(([, v]) => Number(v) > 0);
+          const indeterminate = running && !total;
+          return (
+            <div className="mt-3 rounded-lg border border-line bg-field/40 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted">Progress</span>
+                <span className="text-xs font-medium text-ink">
+                  {total ? `${done} / ${total}` : b.status === "completed" ? "Done" : running ? "Working…" : "—"}
+                  {totTabs ? ` · ${doneTabs}/${totTabs} tabs` : ""}
+                  {total ? ` · ${pct}%` : ""}
+                </span>
+              </div>
+              <div className="mt-1.5 h-2.5 w-full overflow-hidden rounded-full bg-field">
+                <div
+                  className={clsx(
+                    "h-full rounded-full transition-all",
+                    b.status === "failed" ? "bg-danger" : pct >= 100 ? "bg-success" : "bg-ocean",
+                    indeterminate && "w-1/3 animate-pulse"
+                  )}
+                  style={indeterminate ? undefined : { width: `${pct}%` }}
+                />
+              </div>
+              {b.meta?.current_step ? (
+                <p className="mt-2 flex items-center gap-1.5 text-sm text-ink">
+                  {running ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ocean" /> : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />}
+                  <span className="font-medium">{String(b.meta.current_step)}</span>
+                </p>
+              ) : running ? (
+                <p className="mt-2 flex items-center gap-1.5 text-sm text-muted">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ocean" /> Working… (see the live log below for step-by-step detail)
+                </p>
+              ) : null}
+              {failed ? <p className="mt-1 text-xs font-medium text-danger">{failed} failed</p> : null}
+              {counters.length ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {counters.map(([k, v]) => (
+                    <span key={k} className="rounded-full border border-line bg-panel px-2 py-0.5 text-[11px] text-muted">
+                      {k.replace(/_/g, " ")}: <span className="font-semibold text-ink">{String(v)}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })() : null}
         {b.error ? (
           <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-sm text-danger">
             Stopped because: {b.error}
@@ -22704,6 +22820,24 @@ function SheetsDesk({
     onSuccess: (r) => onNotice(r.message || "Write-back started"),
     onError: (e: Error) => onNotice(e.message)
   });
+  // Confirm / dismiss a parked Project-Sheet-URL change (the main sheet now
+  // points a project at a different spreadsheet — never auto-applied).
+  const confirmUrlChange = useMutation({
+    mutationFn: (id: string) => api<SheetSource>(`/sheets/${id}/confirm-url-change`, { method: "POST", token }),
+    onSuccess: () => {
+      onNotice("Sheet URL updated — run Sync to pull the new sheet's links.");
+      queryClient.invalidateQueries({ queryKey: ["sheets"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+  const dismissUrlChange = useMutation({
+    mutationFn: (id: string) => api<SheetSource>(`/sheets/${id}/dismiss-url-change`, { method: "POST", token }),
+    onSuccess: () => {
+      onNotice("Kept the current sheet.");
+      queryClient.invalidateQueries({ queryKey: ["sheets"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
 
   // Sync ALL sheets — one click, queued sequentially (manual trigger only).
   // Real catalog names for the sample-sheet template download.
@@ -22801,8 +22935,56 @@ function SheetsDesk({
     return (s.project_name || "").toLowerCase();
   });
   const shownSheets = visibleSheets.slice(0, sheetShown);
+  const pendingUrlChanges = (sheets.data || []).filter((s) => s.pending_spreadsheet_id);
+
   return (
     <section className="space-y-4">
+      {/* Project-Sheet-URL change detected in the main sheet — never auto-applied.
+          An admin confirms (validates the new sheet is readable, then repoints)
+          or dismisses (keeps the current sheet). */}
+      {pendingUrlChanges.length ? (
+        <div className="rounded-xl border border-ember/40 bg-ember/10 p-4 shadow-card">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-ink">
+            <AlertTriangle className="h-4 w-4 text-ember" />
+            {pendingUrlChanges.length} project sheet{pendingUrlChanges.length === 1 ? "" : "s"} changed URL in the main sheet — confirm before syncing
+          </div>
+          <div className="space-y-2">
+            {pendingUrlChanges.map((s) => (
+              <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-panel p-2.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-ink">{s.project_name}</p>
+                  <p className="truncate text-[11px] text-muted">
+                    New sheet: <span className="font-mono">{s.pending_source_url || s.pending_spreadsheet_id}</span>
+                  </p>
+                  <p className="text-[11px] text-muted">
+                    Still syncing the current sheet until you confirm{s.url_change_detected_at ? ` · detected ${formatDate(s.url_change_detected_at)}` : ""}.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Point "${s.project_name}" at the new sheet? The new sheet is validated first; then run Sync to pull its links. The old sheet stops being used.`))
+                        confirmUrlChange.mutate(s.id);
+                    }}
+                    disabled={confirmUrlChange.isPending}
+                    className="flex items-center gap-1 rounded-md bg-ocean px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                  >
+                    {confirmUrlChange.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                    Confirm new URL
+                  </button>
+                  <button
+                    onClick={() => dismissUrlChange.mutate(s.id)}
+                    disabled={dismissUrlChange.isPending}
+                    className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-muted transition hover:bg-field disabled:opacity-50"
+                  >
+                    Keep current
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {!projectId ? (
       <div className="rounded-xl border border-line bg-panel shadow-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -23807,6 +23989,273 @@ function loadViews(key: string): SavedView[] {
   } catch {
     return [];
   }
+}
+
+// ── Indexing Tracking desk ──────────────────────────────────────────────────
+// A dedicated view of Google indexation: the current index breakdown, a manual
+// check trigger, the time-based tracking plan (re-check links at age
+// checkpoints), and the links themselves with their OWN "index checked" date.
+function IndexingDesk({
+  token,
+  projectId,
+  onNotice,
+  role
+}: {
+  token: string | null;
+  projectId?: string;
+  onNotice: (text: string) => void;
+  role?: string | null;
+}) {
+  const queryClient = useQueryClient();
+  const canManage = role === "admin" || role === "manager";
+  const isAdmin = role === "admin";
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [limit, setLimit] = useState(50);
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  const pq = projectId ? `?project_id=${projectId}` : "";
+  const summary = useQuery({
+    queryKey: ["index-summary", token, projectId],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ indexed: number; not_indexed: number; uncertain: number; unchecked: number }>(
+        `/index/summary${pq}`,
+        { token }
+      )
+  });
+  const tracking = useQuery({
+    queryKey: ["index-tracking", token],
+    enabled: Boolean(token),
+    queryFn: () =>
+      api<{ enabled: boolean; checkpoints: number[]; daily_cap: number }>("/index/tracking", { token })
+  });
+
+  const links = useQuery({
+    queryKey: ["index-links", token, projectId, statusFilter, limit],
+    enabled: Boolean(token),
+    queryFn: () => {
+      const p = new URLSearchParams({ sort: "index_checked_at", direction: "desc", limit: String(limit) });
+      if (projectId) p.set("project_id", projectId);
+      if (statusFilter === "unchecked") p.set("index_status", "(blanks)");
+      else if (statusFilter) p.set("index_status", statusFilter);
+      return api<Page<BacklinkRow>>(`/backlinks?${p.toString()}`, { token });
+    }
+  });
+
+  const runCheck = useMutation({
+    mutationFn: () =>
+      api<{ message: string }>("/index/check", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ project_id: projectId || null, force: false })
+      }),
+    onSuccess: (r) => onNotice(r.message || "Index check started — results appear here as they complete."),
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  // Tracking config editor (admin). Draft mirrors the saved plan.
+  const [trkEnabled, setTrkEnabled] = useState(false);
+  const [trkCheckpoints, setTrkCheckpoints] = useState("1, 7, 30");
+  const [trkCap, setTrkCap] = useState("300");
+  useEffect(() => {
+    if (tracking.data) {
+      setTrkEnabled(tracking.data.enabled);
+      setTrkCheckpoints((tracking.data.checkpoints || []).join(", "));
+      setTrkCap(String(tracking.data.daily_cap ?? 300));
+    }
+  }, [tracking.data]);
+  const saveTracking = useMutation({
+    mutationFn: () => {
+      const cps = trkCheckpoints
+        .split(",")
+        .map((x) => parseInt(x.trim(), 10))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= 365);
+      return api<{ enabled: boolean }>("/index/tracking", {
+        token,
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: trkEnabled,
+          checkpoints: cps,
+          daily_cap: Math.max(10, Math.min(2000, parseInt(trkCap, 10) || 300))
+        })
+      });
+    },
+    onSuccess: () => {
+      onNotice("Index tracking plan saved");
+      queryClient.invalidateQueries({ queryKey: ["index-tracking"] });
+    },
+    onError: (e: Error) => onNotice(e.message)
+  });
+
+  const s = summary.data;
+  const total = s ? s.indexed + s.not_indexed + s.uncertain + s.unchecked : 0;
+  const rows = links.data?.items || [];
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Indexing</h2>
+          <p className="text-sm text-muted">
+            Whether each source page is indexed by Google (a <span className="font-mono">site:</span> check), with the
+            date each link was last checked. Ambiguous checks stay <span className="font-medium text-ink">uncertain</span> —
+            never a false &ldquo;not indexed&rdquo;.
+          </p>
+        </div>
+        {canManage ? (
+          <button
+            onClick={() => runCheck.mutate()}
+            disabled={runCheck.isPending}
+            className="flex items-center gap-2 rounded-md bg-ocean px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+          >
+            {runCheck.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <SearchIcon className="h-4 w-4" />}
+            Run index check{projectId ? " (this project)" : ""}
+          </button>
+        ) : null}
+      </div>
+
+      {/* Breakdown cards — click to filter the list below. */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {([
+          ["indexed", "Indexed", s?.indexed ?? 0, "success"],
+          ["not_indexed", "Not indexed", s?.not_indexed ?? 0, "danger"],
+          ["uncertain", "Uncertain", s?.uncertain ?? 0, "ember"],
+          ["unchecked", "Not checked yet", s?.unchecked ?? 0, "ink"]
+        ] as const).map(([key, label, value, tone]) => (
+          <Metric
+            key={key}
+            label={label}
+            value={value}
+            icon={SearchIcon}
+            tone={tone}
+            sub={total ? `${Math.round((value / total) * 100)}% of ${total.toLocaleString()}` : undefined}
+            onClick={() => {
+              setStatusFilter((cur) => (cur === key ? "" : key));
+              setLimit(50);
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Time-based tracking plan. */}
+      <div className="rounded-xl border border-line bg-panel p-4 shadow-card">
+        <div className="mb-2 flex items-center gap-2">
+          <History className="h-4 w-4 text-ocean" />
+          <h3 className="text-sm font-semibold text-ink">Time-based tracking</h3>
+          <span className={clsx("rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase", tracking.data?.enabled ? "bg-success/20 text-success" : "bg-field text-muted")}>
+            {tracking.data?.enabled ? "On" : "Off"}
+          </span>
+        </div>
+        <p className="mb-3 text-xs text-muted">
+          Re-check each link&apos;s indexation when its age crosses a checkpoint (days after the link was built), so
+          &ldquo;how fast do our links get indexed&rdquo; is measurable. Serper/API quota is always respected.
+        </p>
+        {isAdmin ? (
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex items-center gap-2 text-sm text-ink">
+              <input type="checkbox" checked={trkEnabled} onChange={(e) => setTrkEnabled(e.target.checked)} />
+              Enabled
+            </label>
+            <div>
+              <label className="block text-[11px] font-medium text-muted">Checkpoints (days, comma-separated)</label>
+              <input
+                value={trkCheckpoints}
+                onChange={(e) => setTrkCheckpoints(e.target.value)}
+                placeholder="1, 7, 30"
+                className="mt-1 h-9 w-48 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-muted">Daily cap</label>
+              <input
+                value={trkCap}
+                onChange={(e) => setTrkCap(e.target.value)}
+                className="mt-1 h-9 w-24 rounded-lg border border-line bg-panel px-2.5 text-sm focus:border-ocean focus:outline-none"
+              />
+            </div>
+            <button
+              onClick={() => saveTracking.mutate()}
+              disabled={saveTracking.isPending}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+            >
+              {saveTracking.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save plan
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-ink">
+            Checkpoints: <span className="font-medium">{(tracking.data?.checkpoints || []).join(", ") || "—"}</span> days ·
+            cap {tracking.data?.daily_cap ?? "—"}/day. {canManage ? "Only an admin can change the plan." : ""}
+          </p>
+        )}
+      </div>
+
+      {/* Links + their own "index checked" date. */}
+      <div className="rounded-xl border border-line bg-panel shadow-card">
+        <div className="flex items-center justify-between gap-2 border-b border-line p-3">
+          <h3 className="text-sm font-semibold text-ink">
+            Links {statusFilter ? `· ${statusFilter.replace(/_/g, " ")}` : "· most recently checked"}
+          </h3>
+          {statusFilter ? (
+            <button onClick={() => setStatusFilter("")} className="text-xs font-medium text-ocean hover:underline">
+              Clear filter
+            </button>
+          ) : null}
+        </div>
+        {links.isLoading ? (
+          <div className="space-y-2 p-3">
+            {[0, 1, 2].map((i) => <div key={i} className="h-10 animate-pulse rounded bg-field" />)}
+          </div>
+        ) : rows.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-[11px] uppercase text-muted">
+                  <th className="px-3 py-2 font-semibold">Source page</th>
+                  <th className="px-3 py-2 font-semibold">Assigned</th>
+                  <th className="px-3 py-2 font-semibold">Index status</th>
+                  <th className="px-3 py-2 font-semibold">Results</th>
+                  <th className="px-3 py-2 font-semibold">Index checked</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr
+                    key={r.id}
+                    onClick={() => setDetailId(r.id)}
+                    className="cursor-pointer border-b border-line/60 transition hover:bg-field"
+                  >
+                    <td className="max-w-[420px] truncate px-3 py-2 text-ink" title={r.source_page_url}>{r.source_page_url}</td>
+                    <td className="px-3 py-2 text-muted">{r.assigned_user_label || "—"}</td>
+                    <td className="px-3 py-2">{r.index_status ? <IndexBadge value={r.index_status} /> : <span className="text-xs text-muted">not checked</span>}</td>
+                    <td className="px-3 py-2 text-muted">{r.index_result_count ?? "—"}</td>
+                    <td className="px-3 py-2 text-muted">{r.index_checked_at ? formatDate(r.index_checked_at) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty label={statusFilter ? "No links match this index status." : "No links to show yet."} />
+        )}
+        {links.data?.has_more ? (
+          <div className="border-t border-line p-2 text-center">
+            <button
+              onClick={() => setLimit((n) => Math.min(200, n + 50))}
+              disabled={limit >= 200}
+              className="text-sm font-medium text-ocean hover:underline disabled:opacity-50"
+            >
+              {limit >= 200 ? "Showing the 200 most recent — narrow with a filter" : `Load more (showing ${rows.length})`}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {detailId ? (
+        <BacklinkDetailDrawer token={token} backlinkId={detailId} onClose={() => setDetailId(null)} onNotice={onNotice} />
+      ) : null}
+    </section>
+  );
 }
 
 function AnalyticsDesk({

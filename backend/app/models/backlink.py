@@ -239,6 +239,10 @@ class BacklinkRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # Free-form extension bag (e.g. third-party metric enrichment later).
     extra: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Optional source-site account credentials ({"login": ..., "password": ...}).
+    # Kept in a DEDICATED column (never in ``extra``, which is serialized to every
+    # user) so it only surfaces via the role-gated backlink-detail field. Nullable.
+    source_credentials: Mapped[dict | None] = mapped_column(JSONB)
 
     @property
     def effective_status(self) -> OverallStatus:

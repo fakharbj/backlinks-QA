@@ -57,3 +57,13 @@ class SheetSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Write-back (Phase 6) — RESULT columns only; never overwrite input columns.
     writeback_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     writeback_columns: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Pending Project-Sheet-URL change (owner rule): when the main sheet points a
+    # project at a DIFFERENT spreadsheet, we do NOT silently repoint + resync (that
+    # could pull a wrong sheet's data). The new target is parked here and the
+    # active spreadsheet_id keeps serving until an admin confirms it — at which
+    # point the new sheet is validated (readable) and applied. Cleared on confirm
+    # or dismiss.
+    pending_spreadsheet_id: Mapped[str | None] = mapped_column(String(120))
+    pending_source_url: Mapped[str | None] = mapped_column(String(1000))
+    url_change_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

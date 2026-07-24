@@ -127,6 +127,43 @@ async def list_sheets(ctx: AuthCtx, db: ReadSession) -> list[SheetSourceOut]:
     return out
 
 
+@router.post("/{sheet_id}/confirm-url-change", response_model=SheetSourceOut)
+async def confirm_url_change(
+    sheet_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
+) -> SheetSourceOut:
+    """Confirm a parked Project-Sheet-URL change: validate the new sheet is
+    readable, repoint the source at it and refresh its tabs (admin, audited).
+    Run a normal Sync afterwards to pull the new sheet's rows."""
+    before = await db.get(SheetSource, sheet_id)
+    old_id = before.spreadsheet_id if before is not None else None
+    source = await sheet_sync_service.apply_pending_url_change(db, ctx.workspace_id, sheet_id)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="sheet_source", entity_id=sheet_id,
+        summary=f"Sheet URL change confirmed for '{source.project_name}'",
+        before={"spreadsheet_id": old_id}, after={"spreadsheet_id": source.spreadsheet_id},
+    )
+    await db.commit()
+    return SheetSourceOut.model_validate(source)
+
+
+@router.post("/{sheet_id}/dismiss-url-change", response_model=SheetSourceOut)
+async def dismiss_url_change(
+    sheet_id: uuid.UUID, db: DbSession,
+    ctx: AuthContext = Depends(require(Permission.MANAGE_WORKSPACE)),
+) -> SheetSourceOut:
+    """Reject a parked Project-Sheet-URL change — keep the active sheet (admin)."""
+    source = await sheet_sync_service.dismiss_pending_url_change(db, ctx.workspace_id, sheet_id)
+    await audit_service.record(
+        db, action=AuditAction.UPDATE, actor_user_id=ctx.user.id, workspace_id=ctx.workspace_id,
+        entity_type="sheet_source", entity_id=sheet_id,
+        summary=f"Sheet URL change dismissed for '{source.project_name}'",
+    )
+    await db.commit()
+    return SheetSourceOut.model_validate(source)
+
+
 @router.post("/sync", response_model=SheetSyncResponse, status_code=202)
 async def sync_main(
     db: DbSession,

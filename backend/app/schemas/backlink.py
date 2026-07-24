@@ -100,6 +100,7 @@ class BacklinkRow(ORMModel):
     is_duplicate: bool = False
     duplicate_status: str | None = None
     index_status: str | None = None
+    index_result_count: int | None = None  # Google "site:" result count at last check
     tags: list[str]
     extra: dict[str, Any] = Field(default_factory=dict)  # carries extra["metrics"]
 
@@ -171,6 +172,11 @@ class BacklinkDetail(BacklinkRow):
     score_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     latest_result: CrawlResultOut | None = None
     history: list[HistoryEventOut] = Field(default_factory=list)
+    # Source-site account credentials ({"login", "password"}). Populated by the
+    # endpoint ONLY for callers allowed to see them (unrestricted managers, or the
+    # link's own assignee) — absent otherwise. Never present on BacklinkRow, so it
+    # cannot leak through the grid or exports.
+    credentials: dict[str, Any] | None = None
 
 
 class BacklinkFilters(BaseModel):

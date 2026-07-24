@@ -59,3 +59,57 @@ def test_unrecognised_page_is_uncertain():
 def test_parse_result_count():
     assert serp.parse_result_count("About 1,234 results") == 1234
     assert serp.parse_result_count("no count here") is None
+
+
+# ── DataForSEO SERP payload parsing (pure) ───────────────────────────────────
+def _dfs_ok(items, se_count=None):
+    result = {"items": items}
+    if se_count is not None:
+        result["se_results_count"] = se_count
+    return {"status_code": 20000, "tasks": [{"status_code": 20000, "result": [result]}]}
+
+
+def test_dataforseo_http_error_is_uncertain():
+    v, _, _ = serp.classify_dataforseo_payload(402, {})
+    assert v == UNCERTAIN
+
+
+def test_dataforseo_api_error_is_uncertain():
+    v, _, reason = serp.classify_dataforseo_payload(200, {"status_code": 40200, "tasks": []})
+    assert v == UNCERTAIN
+    assert reason.startswith("api_")
+
+
+def test_dataforseo_task_error_is_uncertain():
+    payload = {"status_code": 20000, "tasks": [{"status_code": 40501, "result": None}]}
+    v, _, reason = serp.classify_dataforseo_payload(200, payload)
+    assert v == UNCERTAIN
+    assert reason.startswith("task_")
+
+
+def test_dataforseo_no_result_block_is_not_indexed():
+    payload = {"status_code": 20000, "tasks": [{"status_code": 20000, "result": None}]}
+    v, c, _ = serp.classify_dataforseo_payload(200, payload)
+    assert v == NOT_INDEXED
+    assert c == 0
+
+
+def test_dataforseo_organic_present_is_indexed():
+    items = [{"type": "organic", "url": "https://example.com/post"}]
+    v, c, _ = serp.classify_dataforseo_payload(200, _dfs_ok(items, se_count=7))
+    assert v == INDEXED
+    assert c == 7
+
+
+def test_dataforseo_organic_present_without_count_falls_back_to_len():
+    items = [{"type": "organic"}, {"type": "organic"}]
+    v, c, _ = serp.classify_dataforseo_payload(200, _dfs_ok(items))
+    assert v == INDEXED
+    assert c == 2
+
+
+def test_dataforseo_no_organic_items_is_not_indexed():
+    items = [{"type": "people_also_ask"}]
+    v, c, _ = serp.classify_dataforseo_payload(200, _dfs_ok(items))
+    assert v == NOT_INDEXED
+    assert c == 0

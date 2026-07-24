@@ -75,12 +75,86 @@ async def check_indexed(source_page_url: str) -> dict:
     if settings.SERP_PROVIDER == "serper" and serper_pool.all_keys():
         return await _check_serper(source_page_url)
     if (
+        settings.SERP_PROVIDER == "dataforseo"
+        and settings.DATAFORSEO_LOGIN
+        and settings.DATAFORSEO_PASSWORD
+    ):
+        return await _check_dataforseo(source_page_url)
+    if (
         settings.SERP_PROVIDER == "google_cse"
         and settings.GOOGLE_CSE_API_KEY
         and settings.GOOGLE_CSE_CX
     ):
         return await _check_google_cse(source_page_url)
     return await _check_proxy_scrape(source_page_url)
+
+
+def classify_dataforseo_payload(status_code: int, data: dict) -> tuple[str, int | None, str]:
+    """Pure parser for a DataForSEO SERP response → (verdict, result_count, reason).
+
+    Kept separate from the network call so the verdict logic is unit-testable.
+    A task-level or API-level error → UNCERTAIN (never a false 'not indexed').
+    """
+    if status_code != 200:
+        return UNCERTAIN, None, f"http_{status_code}"
+    if not isinstance(data, dict):
+        return UNCERTAIN, None, "bad_payload"
+    # API envelope status (20000 = OK). Anything else = quota/auth/format problem.
+    if int(data.get("status_code") or 0) != 20000:
+        return UNCERTAIN, None, f"api_{data.get('status_code')}"
+    tasks = data.get("tasks") or []
+    if not tasks:
+        return UNCERTAIN, None, "no_tasks"
+    task = tasks[0] or {}
+    if int(task.get("status_code") or 0) != 20000:
+        return UNCERTAIN, None, f"task_{task.get('status_code')}"
+    results = task.get("result") or []
+    if not results:
+        # No result block usually means zero SERP results for the query.
+        return NOT_INDEXED, 0, "no_result_block"
+    result = results[0] or {}
+    se_count = result.get("se_results_count")
+    items = result.get("items") or []
+    organic = [it for it in items if isinstance(it, dict) and it.get("type") == "organic"]
+    if organic:
+        count = int(se_count) if se_count is not None else len(organic)
+        return INDEXED, count, "results_present"
+    # No organic items → the site: query returned nothing indexed.
+    return NOT_INDEXED, 0, "zero_results"
+
+
+async def _check_dataforseo(source_page_url: str) -> dict:
+    """DataForSEO Google Organic (Live Advanced) `site:` check — reliable JSON.
+
+    Any ambiguity (auth, quota, transient error, unexpected shape) → UNCERTAIN.
+    """
+    body = [{
+        "keyword": f"site:{source_page_url}",
+        "location_code": settings.DATAFORSEO_LOCATION_CODE,
+        "language_code": settings.DATAFORSEO_LANGUAGE_CODE,
+        "depth": 10,
+    }]
+    auth = (settings.DATAFORSEO_LOGIN or "", settings.DATAFORSEO_PASSWORD or "")
+    try:
+        async with httpx.AsyncClient(timeout=settings.INDEX_TIMEOUT_SECONDS) as client:
+            resp = await client.post(settings.DATAFORSEO_SERP_ENDPOINT, json=body, auth=auth)
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+        verdict, count, reason = classify_dataforseo_payload(resp.status_code, data)
+    except Exception as exc:  # noqa: BLE001 - any failure is UNCERTAIN, never negative
+        log.warning("dataforseo_check_failed", url=source_page_url, error=repr(exc))
+        return {"verdict": UNCERTAIN, "result_count": None,
+                "evidence": {"reason": "dataforseo_error", "error": repr(exc)[:200]}}
+
+    from app.services import api_usage_service
+
+    await api_usage_service.record("dataforseo", ok=(verdict != UNCERTAIN), error=None if verdict != UNCERTAIN else reason)
+    if verdict == UNCERTAIN:
+        log.info("dataforseo_uncertain", url=source_page_url, reason=reason)
+    return {"verdict": verdict, "result_count": count,
+            "evidence": {"reason": reason, "provider": "dataforseo"}}
 
 
 async def _check_serper(source_page_url: str) -> dict:

@@ -19,6 +19,9 @@ CANONICAL_FIELDS = [
     "expected_status", "notes", "tags",
     # Sheet-sourced fields (Phase 2)
     "assigned_user_label", "employee_code", "link_type", "sheet_created_date",
+    # Optional account credentials for the source site (stored in extra.credentials,
+    # role-gated in the UI). Used by the task sheet's Login/Password fill-in columns.
+    "source_login", "source_password",
 ]
 
 # Structured metadata for every canonical field, in CANONICAL_FIELDS order. Powers
@@ -59,6 +62,10 @@ CANONICAL_FIELD_META: list[dict] = [
      "group": "meta", "help": "Free-text category (guest post, directory, profile, …)."},
     {"key": "sheet_created_date", "label": "Sheet date", "required": False,
      "group": "meta", "help": "Date the row was added in the source sheet."},
+    {"key": "source_login", "label": "Login", "required": False,
+     "group": "meta", "help": "Account username/login used on the source site (optional; stored securely, role-gated)."},
+    {"key": "source_password", "label": "Password", "required": False,
+     "group": "meta", "help": "Account password for the source site (optional; stored, role-gated, never shown to viewers)."},
 ]
 
 # Header synonyms → canonical field. Compared after lower/strip/space-collapse.
@@ -103,6 +110,13 @@ _SYNONYMS: dict[str, str] = {
     "expected status": "expected_status", "status": "expected_status",
     "notes": "notes", "note": "notes", "comment": "notes", "comments": "notes",
     "tags": "tags", "labels": "tags", "tag": "tags",
+    # Source-site account credentials (task sheet + any import with these headers).
+    # Deliberately NOT "email"/"account" — those collide with person-email columns.
+    "login": "source_login", "username": "source_login", "user name": "source_login",
+    "site login": "source_login", "account login": "source_login",
+    "password": "source_password", "pass": "source_password", "pwd": "source_password",
+    "account password": "source_password", "login password": "source_password",
+    "site password": "source_password",
 }
 
 

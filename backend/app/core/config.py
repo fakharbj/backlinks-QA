@@ -377,7 +377,10 @@ class Settings(BaseSettings):
     #    had it enabled previously. Needs GOOGLE_CSE_API_KEY + _CX.
     #  • "proxy_scrape" — scrape google.com/search via the proxy (unreliable; Google
     #    now serves a JS-only shell, so most results come back UNCERTAIN).
-    SERP_PROVIDER: Literal["serper", "google_cse", "proxy_scrape"] = "proxy_scrape"
+    #  • "dataforseo"   — DataForSEO SERP API (Google Organic Live Advanced). Reliable
+    #    JSON with real result counts; needs DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD
+    #    (HTTP Basic). Costs ~$0.002/query. Inert until those creds are set in .env.
+    SERP_PROVIDER: Literal["serper", "google_cse", "proxy_scrape", "dataforseo"] = "proxy_scrape"
     SERPER_API_KEY: str | None = None
     # Optional ROTATION POOL: comma-separated serper.dev keys. Each free key carries
     # a one-time 2,500-credit allowance, so we drain one fully, then automatically
@@ -388,6 +391,14 @@ class Settings(BaseSettings):
     GOOGLE_CSE_API_KEY: str | None = None
     GOOGLE_CSE_CX: str | None = None       # Programmable Search Engine ID
     INDEX_GOOGLE_ENDPOINT: str = "https://www.google.com/search"  # proxy_scrape only
+    # DataForSEO SERP API (SERP_PROVIDER="dataforseo"). Credentials are the account
+    # login/password (HTTP Basic) — never an env key. Location/language default to
+    # US-English (matching the serper defaults) so index verdicts stay comparable.
+    DATAFORSEO_LOGIN: str | None = None
+    DATAFORSEO_PASSWORD: str | None = None
+    DATAFORSEO_SERP_ENDPOINT: str = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced"
+    DATAFORSEO_LOCATION_CODE: int = 2840   # United States
+    DATAFORSEO_LANGUAGE_CODE: str = "en"
 
     # ── Integrations ─────────────────────────────────────────────────────────
     SMTP_HOST: str | None = None
